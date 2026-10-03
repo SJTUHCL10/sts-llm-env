@@ -9,8 +9,14 @@ from pathlib import Path
 parser = argparse.ArgumentParser()
 parser.add_argument("--port", type=int, default=8000)
 parser.add_argument("--delay", type=float, default=0)
+parser.add_argument("--fixture", type=Path, default=Path(__file__).parent.parent / "examples" / "cards.json")
+parser.add_argument("--card-index", type=int, default=0)
+parser.add_argument("--reasoning-content", default="Offline fixture diagnostics; this is not model reasoning.")
 options = parser.parse_args()
-fixture = json.loads((Path(__file__).parent.parent / "examples" / "cards.json").read_text(encoding="utf-8"))["cards"][0]
+fixtures = json.loads(options.fixture.read_text(encoding="utf-8"))["cards"]
+if not 0 <= options.card_index < len(fixtures):
+    parser.error("--card-index must refer to a card in --fixture")
+fixture = fixtures[options.card_index]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -28,7 +34,8 @@ class Handler(BaseHTTPRequestHandler):
         count = min(3, int(match.group(1))) if match else 1
         cards = [dict(fixture, name=fixture["name"] + (str(i + 1) if count > 1 else "")) for i in range(count)]
         time.sleep(options.delay)
-        output = json.dumps({"choices": [{"message": {"role": "assistant", "content": json.dumps({"cards": cards}, ensure_ascii=False)},
+        output = json.dumps({"choices": [{"message": {"role": "assistant", "reasoning_content": options.reasoning_content,
+            "content": json.dumps({"cards": cards}, ensure_ascii=False)},
             "finish_reason": "stop"}]}, ensure_ascii=False).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")

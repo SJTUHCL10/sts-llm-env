@@ -1,0 +1,78 @@
+{
+  "cards": [
+    {
+      "schema_version": 2,
+      "name": "余烬编织",
+      "type": "attack",
+      "rarity": "uncommon",
+      "cost": 2,
+      "keywords": [],
+      "flavor": "涅奥将散落的火星缝进你的下一步。",
+      "effects": [
+        {
+          "kind": "damage", "target": "enemy", "amount": 3, "upgrade_amount": 1,
+          "repeat": 2, "condition": "target_vulnerable",
+          "scaling": "exhaust_size", "scaling_amount": 1, "scaling_cap": 3
+        },
+        {
+          "kind": "block", "target": "self", "amount": 3, "upgrade_amount": 1,
+          "trigger": "next_turn_start"
+        }
+      ]
+    },
+    {
+      "schema_version": 2,
+      "name": "余烬之心",
+      "type": "power",
+      "rarity": "rare",
+      "cost": 2,
+      "effects": [
+        {
+          "kind": "block", "target": "self", "amount": 1, "upgrade_amount": 1,
+          "trigger": "card_exhausted", "duration": 0, "max_per_turn": 3
+        }
+      ]
+    },
+    {
+      "schema_version": 2,
+      "name": "明日馈赠",
+      "type": "skill",
+      "rarity": "uncommon",
+      "cost": 1,
+      "effects": [
+        { "kind": "block", "target": "self", "amount": 4, "upgrade_amount": 2 },
+        { "kind": "draw", "target": "self", "amount": 1, "trigger": "next_turn_start" },
+        { "kind": "energy", "target": "self", "amount": 1, "trigger": "next_turn_start" }
+      ]
+    },
+    {
+      "schema_version": 2,
+      "name": "守夜的回声",
+      "type": "skill",
+      "rarity": "uncommon",
+      "cost": 1,
+      "effects": [
+        { "kind": "block", "target": "self", "amount": 3, "upgrade_amount": 1 },
+        {
+          "kind": "damage", "target": "random_enemy", "amount": 3, "upgrade_amount": 1,
+          "trigger": "skill_played", "duration": 2, "max_per_turn": 2
+        }
+      ]
+    },
+    {
+      "schema_version": 2,
+      "name": "灰烬归途",
+      "type": "skill",
+      "rarity": "uncommon",
+      "cost": 1,
+      "effects": [
+        { "kind": "exhaust_random_hand", "target": "self", "amount": 1 },
+        {
+          "kind": "block", "target": "self", "amount": 3, "upgrade_amount": 2,
+          "scaling": "exhaust_size", "scaling_amount": 2, "scaling_cap": 3
+        },
+        { "kind": "return_random_discard", "target": "self", "amount": 1 }
+      ]
+    }
+  ]
+}

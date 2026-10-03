@@ -93,7 +93,11 @@ internal static class RewardSelectPatch
     private static async Task<bool> Observe(Task<bool> original, CardReward reward, ForgeRuntime runtime)
     {
         bool selected = await original;
-        Bootstrap.Safe(() => runtime.Audit("reward_closed", new { selected, deck = runtime.CaptureCards(reward.Player.Deck.Cards) }));
+        Bootstrap.Safe(() =>
+        {
+            runtime.RecordRewardChoice(reward.Player);
+            runtime.Audit("reward_closed", new { selected, deck = runtime.CaptureCards(reward.Player.Deck.Cards) });
+        });
         return selected;
     }
 
@@ -114,7 +118,10 @@ internal static class RewardSelectPatch
             reward.Player.RunState.AddCard(card, reward.Player);
             card.AfterCreated();
         }
-        cards.AddRange(additions.Select(card => new CardCreationResult(card)));
+        var results = additions.Select(card => new CardCreationResult(card)).ToArray();
+        foreach (var result in results)
+            GeneratedRewardModifiers.Apply(result, cards, reward.Player.RunState.CloneCard);
+        cards.AddRange(results);
         Bootstrap.Safe(() => runtime.Audit("reward_shown", new { original_count = cards.Count - additions.Length,
             generated_count = additions.Length, options = runtime.CaptureCards(cards.Select(c => c.Card)) }));
     }
@@ -137,4 +144,10 @@ internal static class RewardPopulatePatch
 {
     private static void Postfix(CardReward __instance) => Bootstrap.Safe(() => RewardSelectPatch.AfterPopulate(__instance));
     // Populate runs during an open-screen reroll: reattach frozen cards and refresh that screen immediately.
+}
+
+[HarmonyPatch(typeof(RunManager), nameof(RunManager.CleanUp))]
+internal static class RunCleanupPatch
+{
+    private static void Prefix() => Bootstrap.Safe(() => Bootstrap.Runtime?.StopRun());
 }

@@ -31,8 +31,10 @@ internal sealed class StateCapture
             room_type = run.CurrentRoom?.RoomType.ToString(), room_id = run.CurrentRoom?.Id,
             map_path = run is RunState concrete ? concrete.VisitedMapCoords.Select(c => new { c.row, c.col }).ToArray() : null,
             deck = player.Deck.Cards.Select(Card).ToArray(), gold = player.Gold,
-            relics = player.Relics.Select(m => new { id = m.Id.Entry, state = Scalars(m) }).ToArray(),
-            potions = player.Potions.Select(m => new { id = m.Id.Entry, state = Scalars(m) }).ToArray()
+            relics = player.Relics.Select(m => new { id = m.Id.Entry, title = Safe(() => m.Title.GetFormattedText()),
+                description = Safe(() => m.DynamicDescription.GetFormattedText()), state = Scalars(m) }).ToArray(),
+            potions = player.Potions.Select(m => new { id = m.Id.Entry, title = Safe(() => m.Title.GetFormattedText()),
+                description = Safe(() => m.DynamicDescription.GetFormattedText()), state = Scalars(m) }).ToArray()
         };
     }
 
@@ -60,7 +62,8 @@ internal sealed class StateCapture
         instance = _cardIds.GetValue(card, _ => new Identity(++_nextId)).Id,
         id = card.Id.Entry, title = Safe(() => card.Title), type = card.Type.ToString(), rarity = card.Rarity.ToString(),
         cost = card.EnergyCost.Canonical, current_cost = Safe(() => card.EnergyCost.GetWithModifiers(CostModifiers.All)),
-        x_cost = card.EnergyCost.CostsX, upgraded = card.IsUpgraded, upgrade_level = card.CurrentUpgradeLevel,
+        star_cost = card.CanonicalStarCost, current_star_cost = Safe(() => card.GetStarCostWithModifiers()),
+        star_x_cost = card.HasStarCostX, x_cost = card.EnergyCost.CostsX, upgraded = card.IsUpgraded, upgrade_level = card.CurrentUpgradeLevel,
         target = card.TargetType.ToString(), keywords = card.Keywords.Select(k => k.ToString()).ToArray(),
         variables = card.DynamicVars.ToDictionary(v => v.Key, v => new { base_value = v.Value.BaseValue, preview = v.Value.PreviewValue }),
         description = Safe(() => card.GetDescriptionForPile(card.Pile?.Type ?? PileType.Deck)),

@@ -53,8 +53,11 @@ public static class Bootstrap
 
     internal static void VerifyCompatibility()
     {
+        if (AccessTools.PropertySetter(typeof(MegaCrit.Sts2.Core.Models.CardModel), "BaseStarCost") is null)
+            throw new MissingMethodException("CardModel.BaseStarCost setter");
         foreach (var (type, name) in new[]
         {
+            (typeof(MegaCrit.Sts2.Core.Runs.RunManager), "_startTime"),
             (typeof(MegaCrit.Sts2.Core.Models.CardModel), "_dynamicVars"),
             (typeof(MegaCrit.Sts2.Core.Models.CardModel), "_keywords"),
             (typeof(MegaCrit.Sts2.Core.Localization.LocTable), "_translations"),

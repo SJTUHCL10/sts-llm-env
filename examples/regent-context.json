@@ -1,0 +1,114 @@
+{
+  "schema_version": 2,
+  "combat_key": "example-regent",
+  "run": {
+    "act": 1,
+    "floor": 3,
+    "ascension": 0,
+    "character": "REGENT",
+    "room_type": "Monster",
+    "gold": 99,
+    "deck": [
+      {
+        "id": "FALLING_STAR",
+        "title": "陨星",
+        "type": "Attack",
+        "rarity": "Basic",
+        "cost": 0,
+        "star_cost": 2,
+        "current_cost": 0,
+        "current_star_cost": 2,
+        "upgraded": false,
+        "description": "造成8点伤害。给予1层虚弱和1层易伤。",
+        "generated_definition": null,
+        "count": 1
+      },
+      {
+        "id": "VENERATE",
+        "title": "崇拜",
+        "type": "Skill",
+        "rarity": "Basic",
+        "cost": 1,
+        "star_cost": -1,
+        "current_cost": 1,
+        "current_star_cost": -1,
+        "upgraded": false,
+        "description": "获得2点星。",
+        "generated_definition": null,
+        "count": 1
+      }
+    ],
+    "relics": [],
+    "potions": []
+  },
+  "state": {
+    "round": 2,
+    "side": "Player",
+    "player": {
+      "id": "REGENT",
+      "side": "Player",
+      "hp": 60,
+      "max_hp": 75,
+      "block": 0,
+      "alive": true,
+      "powers": []
+    },
+    "player_combat": {
+      "turn": 2,
+      "phase": "PlayPhase",
+      "energy": 3,
+      "max_energy": 3,
+      "stars": 4,
+      "piles": [],
+      "orbs": []
+    },
+    "allies": [],
+    "enemies": []
+  },
+  "recent_events": [],
+  "total_events": 2,
+  "omitted_events": 2,
+  "combat_summary": {
+    "complete": false,
+    "won": null,
+    "event_counts": {},
+    "cards_played": [
+      {
+        "id": "VENERATE",
+        "title": "崇拜",
+        "type": "Skill",
+        "origin": "native",
+        "count": 1
+      }
+    ],
+    "damage_dealt": 0,
+    "damage_taken": 3,
+    "damage_blocked": 5,
+    "block_gained": 5,
+    "stars_gained": 2,
+    "stars_spent": 0,
+    "energy_spent": 1
+  },
+  "first_round_summary": {
+    "complete": true,
+    "won": null,
+    "event_counts": {},
+    "cards_played": [
+      {
+        "id": "VENERATE",
+        "title": "崇拜",
+        "type": "Skill",
+        "origin": "native",
+        "count": 1
+      }
+    ],
+    "damage_dealt": 0,
+    "damage_taken": 3,
+    "damage_blocked": 5,
+    "block_gained": 5,
+    "stars_gained": 2,
+    "stars_spent": 0,
+    "energy_spent": 1
+  },
+  "generation_history": []
+}

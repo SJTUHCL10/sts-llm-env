@@ -1,7 +1,9 @@
 **/bin/
 **/obj/
 build/
+/NeowsCompany-*.zip
 *.local.json
 config.json
 data/
 .dotnet/
+notes/

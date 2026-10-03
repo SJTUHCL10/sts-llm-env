@@ -1,0 +1,34 @@
+{
+  "cards": [
+    {
+      "schema_version": 2,
+      "name": "涅奥的重击",
+      "type": "attack",
+      "rarity": "rare",
+      "cost": 4,
+      "effects": [
+        { "kind": "damage", "target": "enemy", "amount": 52, "upgrade_amount": 11 }
+      ]
+    },
+    {
+      "schema_version": 2,
+      "name": "沉星馈赠",
+      "type": "attack",
+      "rarity": "rare",
+      "cost": 5,
+      "effects": [
+        { "kind": "damage", "target": "enemy", "amount": 65, "upgrade_amount": 15 }
+      ]
+    },
+    {
+      "schema_version": 2,
+      "name": "厚壁之梦",
+      "type": "skill",
+      "rarity": "uncommon",
+      "cost": 3,
+      "effects": [
+        { "kind": "block", "target": "self", "amount": 40, "upgrade_amount": 10 }
+      ]
+    }
+  ]
+}

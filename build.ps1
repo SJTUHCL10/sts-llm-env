@@ -27,6 +27,13 @@ try {
     Copy-Item -LiteralPath 'src\Forge.Mod\mod_manifest.json' -Destination (Join-Path $package 'NeowsCompany.json')
     Copy-Item -LiteralPath 'config.example.json' -Destination $package
     Copy-Item -LiteralPath 'README.md' -Destination $package
+    New-Item -ItemType Directory -Force -Path (Join-Path $package 'docs'), (Join-Path $package 'examples') | Out-Null
+    Copy-Item -LiteralPath 'docs\CARD_PROGRAM.md' -Destination (Join-Path $package 'docs')
+    Copy-Item -LiteralPath 'docs\LLM_PROTOCOL.md' -Destination (Join-Path $package 'docs')
+    Copy-Item -LiteralPath 'examples\complex-cards.json' -Destination (Join-Path $package 'examples')
+    Copy-Item -LiteralPath 'examples\high-cost-cards.json' -Destination (Join-Path $package 'examples')
+    Copy-Item -LiteralPath 'examples\star-cards.json' -Destination (Join-Path $package 'examples')
+    Copy-Item -LiteralPath 'examples\regent-context.json' -Destination (Join-Path $package 'examples')
     Compress-Archive -LiteralPath $package -DestinationPath (Join-Path $PSScriptRoot 'build\NeowsCompany-0.1.0.zip') -Force
     Write-Output "Built package: $package"
 }

@@ -1,0 +1,58 @@
+{
+  "cards": [
+    {
+      "schema_version": 3,
+      "name": "星潮斩",
+      "type": "attack",
+      "rarity": "uncommon",
+      "cost": 0,
+      "star_cost": 2,
+      "upgrade_star_cost": 1,
+      "effects": [
+        {
+          "kind": "damage",
+          "target": "enemy",
+          "amount": 8,
+          "upgrade_amount": 3,
+          "scaling": "self_stars",
+          "scaling_amount": 2,
+          "scaling_cap": 0
+        }
+      ]
+    },
+    {
+      "schema_version": 3,
+      "name": "余辉回响",
+      "type": "power",
+      "rarity": "rare",
+      "cost": 2,
+      "star_cost": -1,
+      "effects": [
+        {
+          "kind": "stars",
+          "target": "self",
+          "amount": 1,
+          "trigger": "attack_played",
+          "duration": 0,
+          "max_per_turn": 0
+        }
+      ]
+    },
+    {
+      "schema_version": 3,
+      "name": "织星",
+      "type": "skill",
+      "rarity": "common",
+      "cost": 1,
+      "star_cost": -1,
+      "effects": [
+        {
+          "kind": "stars",
+          "target": "self",
+          "amount": 3,
+          "upgrade_amount": 1
+        }
+      ]
+    }
+  ]
+}
