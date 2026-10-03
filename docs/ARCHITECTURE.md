@@ -6,7 +6,7 @@ The game remains authoritative. Generated content is a validated data program, i
 
 | Layer | Responsibility | Dependencies |
 | --- | --- | --- |
-| `Forge.Core` | Definitions, configuration, prompt assembly, provider protocol, bounds, generation lifecycle, persistence | .NET BCL only |
+| `Forge.Core` | Definitions, configuration, prompt assembly, provider protocol, validation, generation lifecycle, persistence | .NET BCL only |
 | `Forge.Mod` | Detached state capture, game callbacks, card implementation, rewards, localization | Game's sts2/Godot/Harmony assemblies |
 | `Forge.Tool` | Config scaffolding, provider integration, offline observation replay | Core |
 | `Forge.Tests` | Invalid input, transport failures, concurrency and persistence behavior | Core, no live network |
@@ -46,7 +46,7 @@ Card schema v2 introduced independent trigger, lifetime, per-turn quota, repetit
 
 Every play arms a separate instanced `GeneratedEffectPower` after immediate effects finish. Its versioned `RuntimePayload` native SavedProperty captures the full definition, current base values, upgraded source state, remaining lifetimes, per-turn counters and arming-play exclusion. Clones deep-copy arrays. Native `SavedProperties` round-trips state; actual combat checkpoint persistence remains the game's responsibility.
 
-The power resets quotas before owner turn setup, fires future start effects with `AfterPlayerTurnStart`'s choice context, fires end effects before hand cleanup, and expires finite event effects after cleanup. Event hooks scope to the owning player. Activation is consumed before awaiting effects, including failed conditions. Per-instance re-entry suppression and a shared async-flow depth cap prevent self/cross-power event cycles; random selections use native run RNG streams. Runtime power icons reuse native placeholders through scoped getter patches. See [CARD_PROGRAM.md](CARD_PROGRAM.md) for the DSL, budget, semantics and unsupported routes.
+The power resets quotas before owner turn setup, fires future start effects with `AfterPlayerTurnStart`'s choice context, fires end effects before hand cleanup, and expires finite event effects after cleanup. Event hooks scope to the owning player. Activation is consumed before awaiting effects, including failed conditions. Per-instance re-entry suppression and a shared async-flow depth cap prevent self/cross-power event cycles; random selections use native run RNG streams. Runtime power icons reuse native placeholders through scoped getter patches. See [CARD_PROGRAM.md](CARD_PROGRAM.md) for the DSL, legacy budgets, semantics and unsupported routes.
 
 - `CombatManager.CombatBegan/TurnStarted/TurnEnded/CombatWon/CombatEnded`; `Reset` postfix closes sessions.
 - `CombatHistory.Add(ICombatState, CombatHistoryEntry)` postfix captures events before after-event hooks.
@@ -65,10 +65,9 @@ Runtime localization keys are hashes of definitions and language, so multiple ge
 2. New effect: add the typed effect kind, allowed target/numeric bounds, prompt contract, native execution and text/hovers together; add behavioral checks. Never infer effects from generated prose.
 3. New schema version: explicitly migrate saved card payloads before changing field meanings; keep old definitions executable. Future changes must not reinterpret existing saves.
 4. New prompt strategy: consume `GenerationContext`, preserving explicit truncation and observation/instruction boundaries.
-5. Architect's Gaze: use a distinct versioned monster definition and validator, implement `IContentGenerator<MonsterBatch>`, and add its own native adapter and injection hooks. Reuse journals/transport and the bounded-session pattern. Do not expand card-reward patches to own encounters.
 
 ## Current limits
 
 Singleplayer only. No new monsters, arbitrary rule powers, images, in-game configuration UI, automatic journal retention, full hidden-state capture, replay determinism across providers, multiplayer synchronization or complete balance simulation. Unknown provider fields are deliberately rejected at the card boundary. Optional protocol fields are configurable instead of automatic parameter retries. No current claim of a live game UI/combat pass.
 
-`ProviderConfig.ReasoningEffort` is an optional Chat Completions request field. Null/missing values omit it entirely, preserving provider defaults and older configurations. Non-null validated values are sent verbatim, including `none` for providers supporting disabled reasoning, and recorded in request audits. DeepSeek compatibility aliases are accepted without remapping by the client; provider-specific support remains the provider's responsibility. Card decoding reads only `message.content`; `reasoning_content` is separately extracted for diagnostics.
+`ProviderConfig.ReasoningEffort` is an optional Chat Completions request field. Null/missing values omit it entirely, preserving provider defaults and older configurations. Non-null validated values are sent verbatim, including `none` for providers supporting disabled reasoning, and recorded in request audits. Accepted values are sent without remapping by the client; provider-specific support remains the provider's responsibility. Card decoding reads only `message.content`; `reasoning_content` is separately extracted for diagnostics.

@@ -7,3 +7,15 @@ config.json
 data/
 .dotnet/
 notes/
+
+# Local credentials, diagnostics and editor state
+.env
+.env.*
+!.env.example
+*.log
+*.jsonl
+*.pfx
+*.p12
+*.key
+*.pem
+.vs/

@@ -6,7 +6,7 @@ Neow's Company adds LLM-generated card rewards to Slay the Spire 2 singleplayer.
 
 - `src/Forge.Core/`: game-independent configuration, contracts, validation, provider transport, generation sessions, and persistence; .NET BCL only.
 - `src/Forge.Mod/`: Godot state capture, Harmony hooks, generated cards, and mod manifest. Core sources are linked into its single DLL.
-- `src/Forge.Tool/`: CLI for configuration, generation, and validation.
+- `src/Forge.Tool/`: CLI for configuration, offline prompt inspection, generation, and validation.
 - `tests/Forge.Tests/` and `tests/Forge.GameSmoke/`: core behavior tests and installed-game API checks.
 - `examples/`: JSON fixtures; `tools/mock_provider.py`: local HTTP fixture provider.
 - `docs/`: architecture and validation notes. `build/` contains generated packages; card visuals use game placeholders.
@@ -36,4 +36,4 @@ Use `main` and imperative commits, such as `Fix reward cache restoration`. Revie
 
 ## Security & Architecture Constraints
 
-Keep credentials in ignored `config.json` or `NEOWS_COMPANY_API_KEY`; never commit logs or game assemblies. Capture game state on the Godot thread, keep provider work detached, validate generated definitions, and preserve saved-card schema compatibility.
+Keep credentials in ignored `config.json` or `NEOWS_COMPANY_API_KEY`; never put credentials in `config.example.json`, and never commit logs or game assemblies. Before publishing, inspect staged files and Git history for secrets; ignore rules do not remove already tracked content. Capture game state on the Godot thread, keep provider work detached, validate generated definitions, and preserve saved-card schema compatibility.

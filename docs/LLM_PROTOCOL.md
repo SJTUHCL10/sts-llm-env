@@ -1,4 +1,4 @@
-# LLM 请求与输出协议 · 2026-10-04
+# LLM 请求与输出协议
 
 当前新生成卡牌使用 schema v3；观测上下文使用 schema v2。此文档描述代码实际发送的字段，不是原始战斗日志的字段全集。
 
@@ -15,7 +15,7 @@
 | `reasoning_effort` | 非 null 时原样发送；null/缺省时整个字段省略，使用服务端默认 |
 | `response_format` | 仅 `json_mode=true` 时为 `{"type":"json_object"}` |
 
-密钥只通过 Authorization header 发送，不进入 prompt。`deepseek-flash` 通过哪个网关提供、网关是否转发 reasoning、实际默认强度，由服务端决定；客户端不会把 null 自动转换成 high，也不添加 thinking 参数。
+密钥只通过 Authorization header 发送，不进入 prompt。模型及网关是否支持 reasoning、实际默认强度，由服务端决定；客户端不会把 null 自动转换成 high，也不添加 thinking 参数。
 
 用户消息结构：
 
@@ -140,7 +140,7 @@ v3：`max_per_turn=0` 表示事件不限次数；`scaling_cap=0` 表示缩放不
 
 服务端 reasoning 来自 `choices[0].message.reasoning_content`，独立于最终 card JSON。即使最终内容无法解析或服务端报告 length，也先记录能够读取到的 reasoning。
 
-`data/generation/<战斗>.jsonl` 新增 `generation_response`：
+`data/generation/<战斗>.jsonl` 中的 `generation_response`：
 
 - `revision`：与 generation_request 相同的请求序号。
 - `reasoning_content`：服务端字符串；服务未返回或 `record_generation_reasoning=false` 时为 null。

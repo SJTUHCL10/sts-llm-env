@@ -1,50 +1,60 @@
-# Validation · 2026-10-04
+# 验证指南
 
-Target: installed Slay the Spire 2 v0.111.0, SDK 9.0.318.
+目标游戏版本为 `v0.111.0`。核心测试无需游戏或外部服务；GameSmoke 读取本机游戏程序集，不启动 Godot，也不修改游戏存档。两者均为控制台测试程序，以退出码和本次输出为准。
 
-Current implementation checks:
+## 自动检查
 
-- 82 core behavior tests, including schema v3 unconstrained balance parameters versus legacy capped semantics; unlimited-event persistence/finite expiration; star/cost structure validation; bilingual duration-one and unlimited text; provider reasoning before malformed final content, missing reasoning, null effort omission and credential redaction; compact grouped cards/star costs/generated origins; full combat summary statistics; durable multi-batch pool deduplication, capacity expiry, stable empty/nonempty rewards, late results for later rewards, closure/stale-result rejection and failed-write rollback.
-- 11 native game API smoke checks, including unchanged slot not marked WasJustUpgraded/green, native star-cost fallback-cache replacement, energy/star upgrade reductions, native save/load/downgrade, alongside all previous native card/Power/reward/Harmony checks.
-- Release compilation without warnings/errors. No live Godot process, game save or installed mod was changed by these checks.
-- Offline replay of all 2,207 recorded combat events and reconstruction of all 35 requests, restoring the full 60-event recent window and cumulative summaries: new prompts range from 14,251 to 43,627 characters, median 25,994 (old recorded request median 52,189). No provider calls; these replays omit newly available star-cost fields and generation history, so they do not establish future live request sizes or latency.
-- Local mock HTTP v3 star Power generation -> final JSON validation -> CLI diagnostic sidecar: fixture reasoning_content was retained with stop finish reason, absent token usage stayed null. Three new star examples and five legacy v2 examples pass CLI validation.
+```powershell
+dotnet run --project tests/Forge.Tests -c Release
+$env:STS2_GAME_DIR = 'C:\Games\Slay the Spire 2'
+dotnet run --project tests/Forge.GameSmoke -c Release
+# 或运行完整测试、编译与打包：
+.\build.ps1 -GameDir $env:STS2_GAME_DIR
+```
 
-Required live follow-up: enemy-first-turn timing including fully blocked/non-attacking openings; first-turn wins; cross-combat late completions; reward reload/reroll stability; run exit/reload cancellation; actual reasoning returned by the configured gateway; star income/payment/scaling and UI icons; multi-instance triggered effects without quotas. The mocked transport and native managed tests do not establish actual UI layout, gameplay balance or arbitrary mid-combat persistence.
+核心测试覆盖配置、协议校验、旧版兼容、提示词裁剪、请求形状、失败与超时、凭据脱敏、触发生命周期、候选池去重与容量、稳定奖励、取消和持久化回滚。GameSmoke 覆盖原生卡牌/能力的复制、升级、降级、保存恢复、星费用、白银熔炉奖励升级及 Harmony 挂钩契约。
 
-## Earlier checks and historical notes (2026-10-03)
+这些检查不能证明实际 UI 布局、卡牌平衡、游戏中的效果执行或任意战斗检查点恢复正确。不要把历史测试数量当作当前验证结果。
 
+## 本地接口联调
 
-Target: Slay the Spire 2 `v0.111.0`, commit `41cef1ea`, installed game assemblies. .NET SDK `9.0.318`.
+在一个终端运行固定响应服务：
 
-Completed:
+```powershell
+python tools/mock_provider.py --port 8000
+```
 
-- Release compilation against installed `sts2.dll`, `GodotSharp.dll`, `0Harmony.dll`: zero warnings/errors.
-- 71 core behavior tests: invalid definitions/markup/targets/enums, schema, bounds, config, prompt size/old-event trimming, OpenAI-compatible HTTP shape, keys, fenced JSON, sanitized HTTP errors, timeout, byte limits, truncated completion, deduplication/cooldown/budget, frozen late-result handling, failed-refresh retention, wrong-count rejection, atomic cache and concurrent JSONL writing. Additional diagnostics checks cover metadata with prompts disabled, provider/validation stage and reason, HTTP status, malformed/truncated/filtered response redaction, and freeze cancellation versus timeout. Reasoning effort checks cover old/missing/null config compatibility, supported values/aliases, invalid-value rejection, exact outgoing parameter values and omission by default, audit metadata, and decoding final card JSON alongside unrelated reasoning content.
-- 10 managed checks against the real game DLL: fallback-cache reset, native card clone isolation, native `ToSerializable` / `FromSerializable` with upgraded per-card SavedProperty definition, downgrade preservation, Silver Crucible third-charge provenance with no extra counter consumption or repeated upgrade, and Harmony patch installation/field compatibility. The test bootstraps only the model's serialization metadata; it does not start Godot or touch live saves.
-- Local HTTP integration with the bundled Python mock provider: CLI sent an actual Chat Completions request, received one structured card, validated it, wrote it and revalidated from disk. This verifies transport, not an actual LLM's generation quality.
+另一个终端使用仓库示例配置：
 
-- Schema v2 checks cover legacy immediate defaults, unknown/illegal structured slots, trigger/lifetime/condition/scaling/repetition bounds, worst-case budgets, random hand routes, future start lifetimes, finite/combat-long expiration, quota consumption/reset/persistence, corrupted state rejection, bilingual descriptions, minimum prompt budget and atomic batch retention after an invalid complex refresh.
-- Native v2 checks cover upgraded Power card restoration, multi-hit/condition/scaling/delay card serialization, captured upgraded values in an instanced Power, native SavedProperties restoration, clone isolation, corrupted payload rejection without mutation and placeholder icon routing. These establish managed contracts, not live effect execution.
-- `examples/complex-cards.json`: all five card programs validated by the CLI. Actual local mock HTTP -> CLI generation -> file revalidation produced three v2 combat-long Power definitions. No external provider or credentials used in this check.
+```powershell
+dotnet run --project src/Forge.Tool -- generate config.example.json examples/context.json generated.local.json
+dotnet run --project src/Forge.Tool -- validate generated.local.json
+dotnet run --project src/Forge.Tool -- prompt config.example.json examples/context.json prompt.local.json
+```
 
-- Relaxed bounds: four-cost 52→63 and five-cost 65→80 attacks pass; all effect families test upgraded maximum, over-limit upgrade and scaled-total rejection. Low-cost oversized and repeated high-cost payloads remain rejected. Native high-cost cost/value upgrade, save and downgrade contracts pass.
-- Opening request timing: default/missing config threshold 2, explicit 0–10 round trip, invalid threshold rejection, no requests/cooldown consumption before opening plays, latest opening observations, turn-end fallback with 0/1 plays, later refresh cooldown/budget, wait-on-reward bypass, fresh combat gating and freeze-before-threshold behavior pass.
+`generate` 会实际调用本地 HTTP 服务，并默认写入 `generated.local.json.response.local.json` 响应诊断；`prompt` 完全离线。可用 `--fixture examples/complex-cards.json --card-index N`（N 为 0–4）或 `--fixture examples/star-cards.json --card-index N`（N 为 0–2）切换模拟卡牌。星机制观测示例为 `examples/regent-context.json`。
 
-Pending live verification:
+所有卡牌夹具均可直接交给 `validate`：`cards.json`、`complex-cards.json`、`high-cost-cards.json`、`star-cards.json`。模拟接口只验证传输与协议，不代表真实模型的生成质量。
 
-1. Enable the Mod with a configured endpoint or `tools/mock_provider.py` and start a new singleplayer run.
-2. Spend at least one turn long enough for generation to finish; verify vanilla reward choices plus the generated card.
-3. Verify a fast combat/slow provider gives immediate vanilla-only rewards; late results do not appear on an already open screen.
-4. Pick and play a generated attack/skill; verify native strength/weak/vulnerable/block hooks, AoE, draw/energy, poison and keywords.
-5. Upgrade a generated card, save/reload and verify identical definition/cost/values.
-6. Save/reload an unclaimed reward, close/reopen it, skip it, and test a reroll relic; verify stable options/no duplicates.
-7. Test game over, restart, a new run and singleplayer coexistence with the user's usual Mods; ensure stale generation never attaches to another battle.
-8. Confirm multiplayer generation is skipped and original rewards remain normal.
-9. With Silver Crucible, verify generated candidates upgrade alongside vanilla candidates on each of the first three rewards, including reward save/load and reroll. Later randomly upgraded vanilla candidates must not force generated upgrades.
-10. Disable combat and prompt recording; verify compact `data/generation` request/results still appear, no new combat journal is written, and a canceled request has its final diagnostic recorded across the next combat/reset.
-11. Configure DeepSeek reasoning effort as `low` or `none` and restart the game; verify the request audit records that value and assess live latency/card validity. This change was checked with a fake HTTP handler; no additional paid provider calls were made to validate these settings.
-12. Use `tools/mock_provider.py --fixture examples/complex-cards.json --card-index N` (N=0..4) to obtain/play each fixture. Verify conditional multi-hit damage and capped exhaust-pile scaling, future draw/energy, skill-play random damage over two turns, exhaust-event Power quotas and random hand/return commands. Confirm generated effects cannot recursively trigger themselves and duplicate Power instances retain separate counts.
-13. Check Power title/description/placeholder icons, card description wrapping, all-enemy conditions, upgrades and downgrades. End a turn with Ethereal cards to verify exhaust events happen before finite effects expire; verify normal hand draw events count after the next owner-turn quota reset. Reload at native supported checkpoints and verify consistent definitions; do not assume arbitrary mid-combat persistence.
+## 实机验收
 
-The running game and live saves were left untouched. The user's four recorded combats show valid early batches retained across failed refreshes in the first two battles, only FormatException failures in the third/fourth battles, and one in-flight request canceled by reward freezing. With explicit permission, one recorded failed context was replayed against the configured provider with its existing 1800-token limit and reproduced `completion_token_limit`. Old logs cannot prove every historical failure had this cause. New configurations default to 4096 tokens; the larger budget has not been verified with another live call. Full live combat and visual layout have not been validated.
+使用测试存档，记录游戏/Mod 版本、配置及复现步骤；分享材料前检查凭据与日志内容。
+
+1. **生成时机**：敌方首回合结束后启动请求，包括完全格挡、敌方不攻击；第一轮获胜也应提交最终摘要。检查每场预算和请求间隔。
+2. **奖励稳定**：可用候选追加到原版选项；慢请求或失败时默认模式立即给出原版奖励。晚到结果不改变已打开界面，可供之后战斗使用。
+3. **候选池与读档**：重新打开、跳过、重掷、保存/加载奖励，确认无重复且选项固定，包括空奖励。重开同种子新局不得沿用上一局候选。
+4. **生命周期**：死亡、放弃、退出和重新加载局时取消旧请求；结果不能进入新局。检查 `wait_on_reward` 和其他修改奖励的 Mod 共存。
+5. **即时效果**：实际打出攻击/技能，核对力量、虚弱、易伤、格挡、全体伤害、抽牌、能量、中毒及关键词。
+6. **触发效果**：逐一使用复杂示例，核对条件、多次命中、缩放、未来回合效果、随机牌堆操作、事件额度及多个独立能力实例。虚无消耗应发生在有限事件效果到期之前；递归触发不得卡死。
+7. **星资源**：储君获得/支付星、按剩余星缩放，以及能量/星费用升级；核对费用图标、文本和原生扣费。
+8. **保存与显示**：升级、复制、保存/加载及降级后定义与数值一致。核对卡牌/能力描述换行、占位图标、条件和动态数值；零升级增量不应误标绿色。战斗中恢复范围以原生检查点为准。
+9. **白银熔炉**：前三次奖励的生成牌随原版候选升级，不额外消耗次数；后续原版随机升级不能强制生成牌升级。检查读档和重掷。
+10. **日志与服务**：关闭战斗、提示词、reasoning 记录后核对开关；保留生成审计时应仍有请求结果和取消诊断。真实服务的参数支持、耗时和卡牌有效率需单独验证。
+11. **多人**：确认跳过生成，保留原版奖励。
+
+## 发布前检查
+
+- 查看 `git status` 与待提交差异，确认 `config.example.json` 无凭据。
+- 检查当前文件及 Git 历史中的凭据；`.gitignore` 不会移除已跟踪文件或历史内容。
+- 确认包中只有 Mod 文件、无凭据的示例配置和公开文档/示例，不含 `config.json`、`data`、日志或游戏程序集。
+- 发布说明列明实际执行的检查、目标游戏版本及未完成的实机项目。

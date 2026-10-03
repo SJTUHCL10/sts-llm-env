@@ -9,6 +9,9 @@ New-Item -ItemType Directory -Force -Path $destination | Out-Null
 foreach ($name in @('NeowsCompany.dll', 'NeowsCompany.json', 'config.example.json', 'README.md')) {
     Copy-Item -LiteralPath (Join-Path $source $name) -Destination (Join-Path $destination $name)
 }
+foreach ($folder in @('docs', 'examples')) {
+    Copy-Item -LiteralPath (Join-Path $source $folder) -Destination $destination -Recurse -Force
+}
 $configuration = Join-Path $destination 'config.json'
 if (!(Test-Path -LiteralPath $configuration)) { Copy-Item -LiteralPath (Join-Path $source 'config.example.json') -Destination $configuration }
 Write-Output "Installed to $destination; configure config.json and enable the mod in game. Existing config/data preserved."
