@@ -1,0 +1,17 @@
+{
+  "cards": [
+    {
+      "schema_version": 1,
+      "name": "涅奥的低语",
+      "type": "attack",
+      "rarity": "common",
+      "cost": 1,
+      "keywords": [],
+      "effects": [
+        { "kind": "damage", "target": "enemy", "amount": 7, "upgrade_amount": 2 },
+        { "kind": "weak", "target": "enemy", "amount": 1, "upgrade_amount": 0 }
+      ],
+      "flavor": "那双沉静的眼睛，记得你每一次挥击。"
+    }
+  ]
+}

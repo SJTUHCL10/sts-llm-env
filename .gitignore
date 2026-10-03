@@ -1,0 +1,7 @@
+**/bin/
+**/obj/
+build/
+*.local.json
+config.json
+data/
+.dotnet/

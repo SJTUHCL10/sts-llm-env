@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "combat_key": "example-combat",
+  "run": {
+    "seed": "NEOW_EXAMPLE",
+    "act": 1,
+    "floor": 3,
+    "ascension": 0,
+    "character": "IRONCLAD",
+    "deck": [
+      { "id": "STRIKE_IRONCLAD", "type": "Attack", "cost": 1, "count": 5 },
+      { "id": "DEFEND_IRONCLAD", "type": "Skill", "cost": 1, "count": 4 },
+      { "id": "BASH", "type": "Attack", "cost": 2, "count": 1 }
+    ]
+  },
+  "state": { "round": 2, "energy": 0, "hp": 57, "enemies": [{ "id": "EXAMPLE", "hp": 4, "block": 0 }] },
+  "recent_events": [
+    { "sequence": 1, "type": "CardPlayStartedEntry", "card": "BASH", "target": "enemy:0" },
+    { "sequence": 2, "type": "CardPlayFinishedEntry", "card": "STRIKE_IRONCLAD", "target": "enemy:0" }
+  ],
+  "total_events": 2,
+  "omitted_events": 0
+}

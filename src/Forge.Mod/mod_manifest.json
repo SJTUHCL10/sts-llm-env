@@ -1,0 +1,11 @@
+{
+  "id": "NeowsCompany",
+  "name": "涅奥的陪伴 (Neow's Company)",
+  "author": "NeowsCompany contributors",
+  "description": "Neow observes your deck and combat choices, offering LLM-generated cards alongside vanilla rewards.",
+  "version": "0.1.0",
+  "min_game_version": "0.111.0",
+  "has_pck": false,
+  "has_dll": true,
+  "affects_gameplay": true
+}
