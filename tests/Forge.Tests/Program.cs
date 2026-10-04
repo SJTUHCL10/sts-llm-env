@@ -25,7 +25,7 @@ foreach (var (name, invalid) in new (string, CardDefinition)[]
 {
     ("markup", valid with { Name = "[img]bad[/img]" }),
     ("negative cost", valid with { Cost = -1 }),
-    ("future schema", valid with { SchemaVersion = 4 }),
+    ("future schema", valid with { SchemaVersion = 5 }),
     ("attack without damage", valid with { Effects = [new() { Kind = EffectKind.Block, Target = EffectTarget.Self, Amount = 3 }] }),
     ("skill with damage", valid with { Type = ForgeCardType.Skill }),
     ("self damage", valid with { Effects = [valid.Effects[0] with { Target = EffectTarget.Self }] }),
@@ -80,7 +80,7 @@ await Test("high-cost cards accept 52 to 63 damage upgrades and five-cost payloa
         CardValidator.Validate(Wire.Decode<CardDefinition>(Wire.Encode(heavy)));
         CardValidator.Validate(heavy with { Cost = 5, Effects = [heavy.Effects[0] with { Amount = 65, UpgradeAmount = 15 }] });
     }
-    Check(PromptBuilder.Contract.Contains("schema_version\":3") && !PromptBuilder.Contract.Contains("Score="));
+    Check(PromptBuilder.Contract.Contains("schema_version\":4") && !PromptBuilder.Contract.Contains("Score="));
     return Task.CompletedTask;
 });
 await Test("relaxed effect bounds still reject excess values, scaled totals and cheap oversized payoffs", async () =>
@@ -220,9 +220,9 @@ await Test("description projects repeat, conditional scaling, triggers and bilin
     var zh = CardText.Render(complex, true, i => $"{{E{i}:diff()}}");
     var en = CardText.Render(engine, false, _ => "2");
     Check(zh.Contains("下回合") && zh.Contains("易伤") && zh.Contains("重复 2 次") && zh.Contains("最多计 3")
-        && zh.Contains("{E0:diff()}") && en.Contains("For this combat") && en.Contains("3 times per turn"));
-    Check(PromptBuilder.Contract.Contains("schema_version\":3") && PromptBuilder.Contract.Contains("card_exhausted")
-        && PromptBuilder.Contract.Contains("scaling_cap"));
+        && zh.Contains("{E0:diff()}") && !en.Contains("For this combat") && en.Contains("3 times per turn"));
+    Check(PromptBuilder.Contract.Contains("schema_version\":4") && PromptBuilder.Contract.Contains("card_exhausted")
+        && !PromptBuilder.Contract.Contains("scaling_cap"));
     return Task.CompletedTask;
 });
 await Test("v2 complete batch publication and invalid complex refresh preserve previous definitions", async () =>
@@ -269,7 +269,7 @@ await Test("prompt has count, explicit contract, event truncation metadata", () 
     return Task.CompletedTask;
 });
 await Test("prompt size is bounded", () => Reject(() => PromptBuilder.Build(config with { MaxPromptCharacters = 1 }, context)));
-await Test("v3 contract fits the minimum configured prompt size with a small observation", () =>
+await Test("v4 contract fits the minimum configured prompt size with a small observation", () =>
 {
     var prompt = PromptBuilder.Build(config with { MaxPromptCharacters = 4000 }, context);
     Check(prompt.System.Length + prompt.User.Length <= 4000);
@@ -579,6 +579,121 @@ await Test("duration one text says this turn and unlimited scaling/events omit q
     Check(CardText.RenderEffect(effect with { MaxPerTurn = 2, ScalingCap = 3 }, true, "3").Contains("最多 2 次"));
     return Task.CompletedTask;
 });
+await Test("v4 omits caps and rejects their presence while old capped saves round trip", async () =>
+{
+    var card = valid with { SchemaVersion = 4, Effects = [valid.Effects[0] with { Scaling = EffectScaling.HandSize, ScalingAmount = 2 }] };
+    string json = Wire.Encode(CardValidator.Validate(card));
+    Check(!json.Contains("scaling_cap") && EffectRules.ResolveAmount(card.Effects[0], 8, 100) == 208);
+    CardValidator.Validate(Wire.Decode<CardDefinition>(json));
+    foreach (int cap in new[] { 0, 5 })
+        await Reject(() => Wire.Decode<CardDefinition>(json.Replace("\"scaling_amount\":2", $"\"scaling_amount\":2,\"scaling_cap\":{cap}")));
+    await Reject(() => CardValidator.Validate(card with { Effects = [card.Effects[0] with { ScalingCap = 5 }] }));
+    var legacy = card with { SchemaVersion = 3, Effects = [card.Effects[0] with { ScalingCap = 5 }] };
+    var restored = CardValidator.Validate(Wire.Decode<CardDefinition>(Wire.Encode(legacy)));
+    Check(restored.Effects[0].ScalingCap == 5 && EffectRules.ResolveAmount(restored.Effects[0], 8, 100) == 18);
+});
+await Test("resource icons preserve small upgraded counts and abbreviate large counts", () =>
+{
+    const string path = "res://images/packed/sprite_fonts/star_icon.png";
+    string icon = $"[img]{path}[/img]";
+    Check(CardText.ResourceIcons(2, "2", path) == icon + icon);
+    Check(CardText.ResourceIcons(2, "[green]2[/green]", path) == "[green]" + icon + icon + "[/green]");
+    Check(CardText.ResourceIcons(4, "[green]4[/green]", path) == "[green]4[/green]" + icon);
+    var power = engine with { SchemaVersion = 4, Effects = [engine.Effects[0] with { MaxPerTurn = 0 }] };
+    Check(!CardText.Render(power, true, _ => "5").Contains("本场战斗中"));
+    Check(!CardText.Render(power with { Effects = [power.Effects[0] with { Trigger = EffectTrigger.AttackPlayed }] }, true, _ => "5").Contains("另一张"));
+    Check(CardText.Render(power with { Effects = [power.Effects[0] with { Duration = 1 }] }, true, _ => "5").Contains("本回合"));
+    return Task.CompletedTask;
+});
+await Test("character instructions append optional Regent mechanics without changing the common prefix", () =>
+{
+    GenerationContext WithCharacter(string name) => context with { Run = JsonSerializer.SerializeToElement(new { character = name, deck = new[] { "Strike" } }) };
+    var regent = PromptBuilder.Build(config, WithCharacter("REGENT"));
+    var ironclad = PromptBuilder.Build(config, WithCharacter("IRONCLAD"));
+    Check(regent.System.StartsWith(ironclad.System, StringComparison.Ordinal) && regent.System.Contains("self_stars"));
+    Check(!ironclad.System.Contains("self_stars") && !ironclad.System.Contains("star_cost") && !regent.System.Contains("Explore star income"));
+    Check(regent.System.Contains("A single effect is welcome") && !regent.System.Contains("usually one or two"));
+    Check(!regent.User.Contains("STYLE:"));
+    return Task.CompletedTask;
+});
+await Test("character availability limits extensions without assigning a design preference", () =>
+{
+    foreach (string character in new[] { "IRONCLAD", "SILENT", "REGENT", "NECROBINDER", "DEFECT" })
+    {
+        var source = context with { Run = JsonSerializer.SerializeToElement(new { character, deck = Array.Empty<object>() }) };
+        string system = PromptBuilder.Build(config, source).System;
+        Check(system.StartsWith(PromptBuilder.Contract, StringComparison.Ordinal));
+        Check(system.Contains("target_poison") == (character == "SILENT"));
+        Check(system.Contains("self_stars") == (character == "REGENT"));
+        Check(system.Contains("not a preference or checklist"));
+        Check(!system.Contains("summon") && !system.Contains("doom") && !system.Contains("focus"));
+    }
+    return Task.CompletedTask;
+});
+await Test("Prismatic Gem and native foreign pools expand availability without trusting prose or generated cards", () =>
+{
+    JsonElement Run(object[] deck, object[] relics) => JsonSerializer.SerializeToElement(new { character = "NECROBINDER", deck, relics });
+    var prismatic = Run([], [new { id = "PRISMATIC_GEM" }]);
+    Check(CharacterMechanics.FromRun(prismatic) == new CharacterMechanics(true, true));
+    var foreign = Run([new { pool = "SILENT_CARD_POOL", origin = "native" }, new { pool = "REGENT_CARD_POOL" }], []);
+    Check(CharacterMechanics.FromRun(ObservationProjector.Compact(context with { Run = foreign }).Run)
+        == new CharacterMechanics(true, true));
+    var generated = Run([new { pool = "SILENT_CARD_POOL", origin = "generated" },
+        new { pool = "REGENT_CARD_POOL", generated_definition = valid }], [new { id = "OTHER", title = "PRISMATIC_GEM" }]);
+    Check(CharacterMechanics.FromRun(generated) == new CharacterMechanics(false, false));
+    string system = PromptBuilder.Build(config, context with { Run = prismatic }).System;
+    Check(system.Contains("target_poison") && system.Contains("self_stars"));
+    return Task.CompletedTask;
+});
+await Test("unavailable mechanics are rejected for generation while saved definitions remain valid", async () =>
+{
+    var common = new CharacterMechanics(false, false);
+    var poison = valid with { SchemaVersion = 4, Type = ForgeCardType.Skill,
+        Effects = [new() { Kind = EffectKind.Poison, Target = EffectTarget.Enemy, Amount = 2 }] };
+    var stars = poison with { Effects = [new() { Kind = EffectKind.Stars, Target = EffectTarget.Self, Amount = 2 }] };
+    var poisonScaling = valid with { SchemaVersion = 4,
+        Effects = [valid.Effects[0] with { Scaling = EffectScaling.TargetPoison, ScalingAmount = 1 }] };
+    var starScaling = poisonScaling with { Effects = [poisonScaling.Effects[0] with { Scaling = EffectScaling.SelfStars }] };
+    foreach (var card in new[] { poison, stars, poisonScaling, starScaling, valid with { SchemaVersion = 4, StarCost = 0 } })
+    {
+        CardValidator.Validate(card);
+        await Reject(() => common.Validate(card));
+        new CharacterMechanics(true, true).Validate(card);
+    }
+    common.Validate(valid);
+});
+await Test("a provider cannot publish unavailable mechanics and a Prismatic run can publish them", async () =>
+{
+    var poison = valid with { SchemaVersion = 4, Type = ForgeCardType.Skill,
+        Effects = [new() { Kind = EffectKind.Poison, Target = EffectTarget.Enemy, Amount = 2 }] };
+    foreach (bool prismatic in new[] { false, true })
+    {
+        var source = context with { Run = JsonSerializer.SerializeToElement(new { character = "NECROBINDER",
+            relics = prismatic ? new[] { new { id = "PRISMATIC_GEM" } } : [] }) };
+        bool published = false;
+        var audits = new List<string>();
+        using var session = new GenerationSession(source.CombatKey, config,
+            new FakeGenerator((_, _) => Task.FromResult(new CardBatch { Cards = [poison] })),
+            (kind, _) => audits.Add(kind), _ => published = true);
+        Check(session.TryPrefetch(source, DateTimeOffset.UtcNow));
+        await session.WaitForPendingAsync();
+        Check(published == prismatic && audits.Contains(prismatic ? "generation_ready" : "generation_failed"));
+    }
+});
+await Test("stable deck prefix survives reordered deck and changed combat metadata", () =>
+{
+    var a = new { id = "A", title = "A", description = "damage" };
+    var b = new { id = "B", title = "B", description = "block" };
+    var first = context with { Run = JsonSerializer.SerializeToElement(new { character = "REGENT", ascension = 10, floor = 2, deck = new[] { a, b } }) };
+    var second = first with { CombatKey = "combat-b", TotalEvents = 120,
+        Run = JsonSerializer.SerializeToElement(new { character = "REGENT", ascension = 10, floor = 3, deck = new[] { b, a } }) };
+    string one = PromptBuilder.Build(config, first).User, two = PromptBuilder.Build(config, second).User;
+    int end = one.IndexOf("\"floor\":", StringComparison.Ordinal);
+    Check(end > one.IndexOf("\"deck\":", StringComparison.Ordinal) && one[..end] == two[..end]);
+    Check(one.IndexOf("\"combat_key\":", StringComparison.Ordinal) > end
+        && one.IndexOf("\"recent_events\":", StringComparison.Ordinal) > one.IndexOf("\"combat_summary\":", StringComparison.Ordinal));
+    return Task.CompletedTask;
+});
 await Test("provider logs reasoning, usage and revision before malformed final content and redacts credentials", async () =>
 {
     ProviderDiagnostics? response = null;
@@ -589,12 +704,13 @@ await Test("provider logs reasoning, usage and revision before malformed final c
         return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(JsonSerializer.Serialize(new
         {
             choices = new[] { new { message = new { content = "invalid", reasoning_content = "idea TEST_SECRET" }, finish_reason = "stop" } },
-            usage = new { prompt_tokens = 12, completion_tokens = 34, total_tokens = 46 }
+            usage = new { prompt_tokens = 12, completion_tokens = 34, total_tokens = 46,
+                prompt_cache_hit_tokens = 8, prompt_cache_miss_tokens = 4 }
         })) };
     }));
     await RejectAsync(() => new OpenAiCardGenerator(client, new() { ApiKey = "TEST_SECRET", ApiKeyEnvironmentVariable = "", ReasoningEffort = null },
         diagnostics => response = diagnostics).GenerateAsync(new("s", "u") { Revision = 2 }, default));
-    Check(response is { Revision: 2, PromptTokens: 12, CompletionTokens: 34, TotalTokens: 46 }
+    Check(response is { Revision: 2, PromptTokens: 12, CompletionTokens: 34, TotalTokens: 46, PromptCacheHitTokens: 8, PromptCacheMissTokens: 4 }
         && response.ReasoningContent == "idea [redacted]");
 });
 await Test("truncated responses without a message still retain token-limit diagnosis", async () =>
@@ -612,6 +728,19 @@ await Test("missing reasoning is logged as null independently of final card deco
     using var client = new HttpClient(new FakeHandler((_, _) => Task.FromResult(Response(Wire.Encode(new CardBatch { Cards = [valid] })))));
     var batch = await new OpenAiCardGenerator(client, new(), diagnostics => response = diagnostics).GenerateAsync(new("s", "u"), default);
     Check(batch.Cards.Length == 1 && response is { ReasoningContent: null, FinishReason: "stop" });
+    Check(response?.PromptCacheHitTokens is null && response?.PromptCacheMissTokens is null);
+});
+await Test("standard cached-token diagnostics are read without inventing cache misses", async () =>
+{
+    ProviderDiagnostics? response = null;
+    using var client = new HttpClient(new FakeHandler((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+    { Content = new StringContent(JsonSerializer.Serialize(new
+    {
+        choices = new[] { new { message = new { content = Wire.Encode(new CardBatch { Cards = [valid] }) }, finish_reason = "stop" } },
+        usage = new { prompt_tokens = 20, prompt_tokens_details = new { cached_tokens = 12 } }
+    })) })));
+    await new OpenAiCardGenerator(client, new(), value => response = value).GenerateAsync(new("s", "u"), default);
+    Check(response is { PromptCacheHitTokens: 12, PromptCacheMissTokens: null });
 });
 await Test("compact observations group deck copies and preserve star costs, generated origin and summaries", () =>
 {
@@ -629,8 +758,9 @@ await Test("compact observations group deck copies and preserve star costs, gene
         FirstRoundSummary = JsonSerializer.SerializeToElement(new { damage_taken = 4 })
     };
     var compact = ObservationProjector.Compact(source);
-    Check(compact.Run.GetProperty("deck").GetArrayLength() == 2 && compact.Run.GetProperty("deck")[0].GetProperty("count").GetInt32() == 2);
-    Check(compact.Run.GetProperty("deck")[0].GetProperty("star_cost").GetInt32() == 2);
+    Check(compact.Run.GetProperty("deck").GetArrayLength() == 2);
+    var native = compact.Run.GetProperty("deck").EnumerateArray().Single(c => c.GetProperty("origin").GetString() == "native");
+    Check(native.GetProperty("count").GetInt32() == 2 && native.GetProperty("star_cost").GetInt32() == 2);
     Check(compact.State.GetProperty("player_combat").GetProperty("piles")[0].GetProperty("cards")[1].GetProperty("origin").GetString() == "generated");
     Check(!Wire.Encode(compact).Contains("PackedIconPath") && !Wire.Encode(compact).Contains("PrivateStuff") && !Wire.Encode(compact).Contains("\"omit\""));
     Check(compact.FirstRoundSummary!.Value.GetProperty("damage_taken").GetInt32() == 4);

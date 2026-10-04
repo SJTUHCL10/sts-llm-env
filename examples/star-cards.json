@@ -1,7 +1,7 @@
 {
   "cards": [
     {
-      "schema_version": 3,
+      "schema_version": 4,
       "name": "星潮斩",
       "type": "attack",
       "rarity": "uncommon",
@@ -15,13 +15,12 @@
           "amount": 8,
           "upgrade_amount": 3,
           "scaling": "self_stars",
-          "scaling_amount": 2,
-          "scaling_cap": 0
+          "scaling_amount": 2
         }
       ]
     },
     {
-      "schema_version": 3,
+      "schema_version": 4,
       "name": "余辉回响",
       "type": "power",
       "rarity": "rare",
@@ -39,7 +38,7 @@
       ]
     },
     {
-      "schema_version": 3,
+      "schema_version": 4,
       "name": "织星",
       "type": "skill",
       "rarity": "common",

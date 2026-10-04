@@ -4,8 +4,8 @@ public static class CardValidator
 {
     public static CardDefinition Validate(CardDefinition card)
     {
-        if (card is null || card.SchemaVersion is not (1 or 2 or 3)) throw new FormatException("Unsupported card schema.");
-        if (card.SchemaVersion == 3) return ValidateV3(card);
+        if (card is null || card.SchemaVersion is not (1 or 2 or 3 or 4)) throw new FormatException("Unsupported card schema.");
+        if (card.SchemaVersion >= 3) return ValidateModern(card);
         if (card.StarCost != -1 || card.UpgradeCost != 0 || card.UpgradeStarCost != 0
             || card.Effects?.Any(e => e is not null && (e.Kind == EffectKind.Stars || e.Scaling == EffectScaling.SelfStars)) == true)
             throw new FormatException("Star mechanics and cost upgrades require schema_version 3.");
@@ -76,7 +76,7 @@ public static class CardValidator
         EffectKind.Stars => (24, 6),
         _ => throw new FormatException("Unknown effect kind.")
     };
-    private static CardDefinition ValidateV3(CardDefinition card)
+    private static CardDefinition ValidateModern(CardDefinition card)
     {
         if (!SafeText(card.Name, 40) || !SafeText(card.Flavor, 160, allowEmpty: true))
             throw new FormatException("Invalid card name/flavor (plain text only).");
@@ -91,6 +91,7 @@ public static class CardValidator
         {
             if (e is null || !Enum.IsDefined(e.Kind) || !Enum.IsDefined(e.Target) || !Enum.IsDefined(e.Trigger)
                 || !Enum.IsDefined(e.Condition) || !Enum.IsDefined(e.Scaling)) throw new FormatException("Unknown effect.");
+            if (card.SchemaVersion == 4 && e.ScalingCap != 0) throw new FormatException("Scaling caps require a legacy card schema.");
             if (e.Amount < 1 || e.UpgradeAmount < 0 || (long)e.Amount + e.UpgradeAmount > int.MaxValue
                 || e.Repeat < 1 || e.Duration < 0 || e.MaxPerTurn < 0 || e.ScalingAmount < 0 || e.ScalingCap < 0)
                 throw new FormatException("Invalid numeric effect slots.");

@@ -34,11 +34,15 @@ Full combat journals and generation/reward audits use background JsonlJournal wr
 
 Generated reward cards inherit Silver Crucible upgrades from the vanilla candidates' `ModifyingRelics` provenance, through a registered clone and native upgrade/finalization. The already-consumed relic counter is not consulted and modification hooks are not repeated. Base card definitions remain unchanged in reward sidecars; an upgraded generated card retains its native serialization state.
 
-## Schema v3
+## Schema v4
 
-New requests ask for v3. Its validator checks executable structure and integer/sign consistency, but removes the legacy power score, zero-cost exhaust requirement and fixed numerical/repeat/duration ceilings. Event max_per_turn=0 and scaling_cap=0 mean unlimited; v1/v2 validation still rejects those formerly invalid meanings and preserves capped saved behavior. Structural effect/keyword counts remain bounded. Opcode/scaling enums are appended.
+New requests ask for v4, which rejects the removed scaling_cap field and always scales without a unit cap. v3's relaxed numeric budgets and unlimited event quotas remain. v1/v2/v3 definitions retain their original serialization, fingerprints and cap behavior. Structural effect/keyword counts, executable structure and integer/sign checks remain bounded. Opcode/scaling enums are appended.
 
-Stars use native PlayerCmd.GainStars and CanonicalStarCost/payment. Cost upgrades are explicit nonnegative reductions. Definition setters restore each instance's native star-cost cache; native upgrades/save/downgrade preserve costs. Only slots with a nonzero UpgradeAmount call UpgradeValueBy, avoiding the native WasJustUpgraded=true-on-zero behavior. CardText special-cases duration=1 and omits limit clauses for unlimited v3 effects. See [LLM_PROTOCOL.md](LLM_PROTOCOL.md) and [CARD_PROGRAM.md](CARD_PROGRAM.md).
+Stars use native PlayerCmd.GainStars and CanonicalStarCost/payment. Cost upgrades are explicit nonnegative reductions. Definition setters restore each instance's native star-cost cache; native upgrades/save/downgrade preserve costs. Only changed slots call UpgradeValueBy; upgrade-description rendering temporarily restores those slots' highlights after native finalization. Resource descriptions use native sprite-font icons and owner-specific energy colors. Power descriptions omit combat-long lifetime boilerplate. See [LLM_PROTOCOL.md](LLM_PROTOCOL.md) and [CARD_PROGRAM.md](CARD_PROGRAM.md).
+
+Immediate damage uses native attack commands; triggered damage uses CreatureCmd.Damage with Unpowered props and no card source, matching native damage powers. GeneratedEffectPreview resolves scale with deterministic preceding resource/pile effects and star payment, then runs native damage/block hooks without changing base variables or consuming RNG. Future events, random draw chains and newly applied powers/debuffs cannot be fully forecast.
+
+PromptBuilder starts with the shared protocol, then fixed style and optional character-specific mechanics. ObservationProjector orders stable deck data before combat metadata, canonically sorts grouped cards and removes redundant generated prose/default slots. ProviderDiagnostics records cache hit/miss usage when returned. Full audit snapshots and legacy saved definitions remain unchanged.
 
 ## Version-sensitive game API surface
 
@@ -54,6 +58,7 @@ The power resets quotas before owner turn setup, fires future start effects with
 - `CardReward.OnSelect` prefix + Harmony reverse patch; private `_cards`, `Options`, `_cardsWereManuallySet`, `_currentlyShownScreen`.
 - `CardReward.Populate` postfix preserves generated candidates during reward reroll.
 - `CardModel.Description` / `TitleLocString` getter postfixes apply only to `NeowGeneratedCard`.
+- `CardModel.GetDescriptionForUpgradePreview` scoped prefix/finalizer restores changed-slot highlights for generated cards.
 - RunManager `RunStarted/CleanUp`, native `_startTime`; CardModel private `BaseStarCost` setter.
 - CardModel `_dynamicVars`, `_keywords` caches; `LocTable._translations` for per-definition templates.
 

@@ -35,7 +35,8 @@ try
         });
         var batch = await generator.GenerateAsync(PromptBuilder.Build(config, context), default);
         if (batch.Cards.Length != config.GeneratedCardsPerReward) throw new FormatException("Wrong card count.");
-        foreach (var card in batch.Cards) CardValidator.Validate(card);
+        var mechanics = CharacterMechanics.FromRun(context.Run);
+        foreach (var card in batch.Cards) mechanics.Validate(card);
         AtomicStore.Write(Path.GetFullPath(output), batch);
         Console.WriteLine($"Generated {batch.Cards.Length} validated cards.");
     }

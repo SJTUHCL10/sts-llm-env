@@ -5,6 +5,7 @@ using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.HoverTips;
+using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Localization.DynamicVars;
 using MegaCrit.Sts2.Core.Models;
@@ -71,9 +72,9 @@ public sealed class NeowGeneratedCard : CardModel
 
     protected override IEnumerable<DynamicVar> CanonicalVars => _definition.Effects.Select((e, i) => e.Kind switch
     {
-        EffectKind.Damage => (DynamicVar)new DamageVar($"E{i}", e.Amount, ValueProp.Move),
-        EffectKind.Block => new BlockVar($"E{i}", e.Amount, ValueProp.Move),
-        _ => new DynamicVar($"E{i}", e.Amount)
+        EffectKind.Damage => (DynamicVar)new GeneratedDamageVar($"E{i}", e.Amount, e, i),
+        EffectKind.Block => new GeneratedBlockVar($"E{i}", e.Amount, i),
+        _ => new GeneratedAmountVar($"E{i}", e.Amount, i)
     });
 
     internal static IEnumerable<IHoverTip> EffectHoverTips(CardDefinition definition) => definition.Effects
@@ -126,10 +127,11 @@ public sealed class NeowGeneratedCard : CardModel
     internal LocString RuntimeDescription()
     {
         bool chinese = LocManager.Instance.Language is "zhs" or "zht";
-        string key = "LLM_SPIRE_FORGE." + AtomicStore.Key(_payload + chinese) + ".description";
+        bool scaledPreview = CombatState is not null && (Pile?.Type is PileType.Hand or PileType.Play || UpgradePreviewType == CardUpgradePreviewType.Combat);
+        string key = "NEOWS_COMPANY." + AtomicStore.Key(_payload + chinese + scaledPreview) + ".description";
         var table = LocManager.Instance.GetTable("cards");
         var translations = (Dictionary<string, string>)AccessTools.Field(typeof(LocTable), "_translations").GetValue(table)!;
-        if (!translations.ContainsKey(key)) translations[key] = RenderTemplate(chinese);
+        if (!translations.ContainsKey(key)) translations[key] = RenderTemplate(chinese, scaledPreview);
         return new LocString("cards", key);
     }
 
@@ -142,7 +144,48 @@ public sealed class NeowGeneratedCard : CardModel
         return new LocString("cards", key);
     }
 
-    private string RenderTemplate(bool chinese) => CardText.Render(_definition, chinese, i => $"{{E{i}:diff()}}");
+    protected override void AddExtraArgsToDescription(LocString description)
+    {
+        base.AddExtraArgsToDescription(description);
+        for (int i = 0; i < _definition.Effects.Length; i++)
+        {
+            var effect = _definition.Effects[i];
+            if (effect.Kind is not (EffectKind.Stars or EffectKind.Energy)) continue;
+            var variable = DynamicVars[$"E{i}"];
+            string path = effect.Kind == EffectKind.Stars ? "res://images/packed/sprite_fonts/star_icon.png"
+                : $"res://images/packed/sprite_fonts/{EnergyIconHelper.GetPrefix(this)}_energy_icon.png";
+            description.Add($"R{i}", CardText.ResourceIcons((int)variable.PreviewValue, variable.ToHighlightedString(false), path));
+        }
+    }
+
+    internal bool[] BeginUpgradePreview()
+    {
+        var previous = DynamicVars.Values.Select(v => v.WasJustUpgraded).ToArray();
+        for (int i = 0; i < _definition.Effects.Length; i++)
+            ((IGeneratedPreviewVar)DynamicVars[$"E{i}"]).SetUpgradeHighlight(IsUpgraded && _definition.Effects[i].UpgradeAmount > 0);
+        return previous;
+    }
+
+    internal void EndUpgradePreview(bool[] previous)
+    {
+        for (int i = 0; i < previous.Length; i++)
+            ((IGeneratedPreviewVar)DynamicVars[$"E{i}"]).SetUpgradeHighlight(previous[i]);
+    }
+
+    private string RenderTemplate(bool chinese, bool scaledPreview) => CardText.Render(_definition, chinese,
+        i => _definition.Effects[i].Kind is EffectKind.Stars or EffectKind.Energy ? $"{{R{i}}}" : $"{{E{i}:diff()}}",
+        resourceIcons: true, scaledPreview: scaledPreview);
+}
+
+[HarmonyPatch(typeof(CardModel), nameof(CardModel.GetDescriptionForUpgradePreview))]
+internal static class GeneratedUpgradePreviewPatch
+{
+    private static void Prefix(CardModel __instance, out bool[]? __state) =>
+        __state = __instance is NeowGeneratedCard card ? card.BeginUpgradePreview() : null;
+    private static void Finalizer(CardModel __instance, bool[]? __state)
+    {
+        if (__instance is NeowGeneratedCard card && __state is not null) card.EndUpgradePreview(__state);
+    }
 }
 
 [HarmonyPatch(typeof(CardModel), nameof(CardModel.Description), MethodType.Getter)]

@@ -8,6 +8,7 @@ using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Entities.Powers;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.HoverTips;
+using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Powers;
@@ -89,12 +90,22 @@ public sealed class GeneratedEffectPower : PowerModel
                 .Select(item => CardText.RenderEffect(item.effect with
                 {
                     Duration = snapshot.State.Remaining[item.index] < 0 ? 0 : snapshot.State.Remaining[item.index]
-                }, chinese, snapshot.Amounts[item.index].ToString(System.Globalization.CultureInfo.InvariantCulture))
+                }, chinese, RenderAmount(item.effect, snapshot.Amounts[item.index]),
+                    omitCombatLifetime: snapshot.Definition.Type == ForgeCardType.Power, resourceIcons: true)
                     + (EffectRules.IsEvent(item.effect.Trigger)
                         ? chinese ? $" 本回合已触发 {snapshot.State.Activations[item.index]} 次。"
                             : $" Triggered {snapshot.State.Activations[item.index]} times this turn." : "")));
             return Localize("description", text);
         }
+    }
+
+    private string RenderAmount(CardEffect effect, decimal amount)
+    {
+        string number = amount.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (effect.Kind is not (EffectKind.Stars or EffectKind.Energy)) return number;
+        string path = effect.Kind == EffectKind.Stars ? "res://images/packed/sprite_fonts/star_icon.png"
+            : $"res://images/packed/sprite_fonts/{EnergyIconHelper.GetPrefix(this)}_energy_icon.png";
+        return CardText.ResourceIcons((int)amount, number, path);
     }
 
     private static LocString Localize(string suffix, string text)

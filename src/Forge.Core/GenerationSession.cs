@@ -62,7 +62,8 @@ public sealed class GenerationSession : IDisposable
             if (batch.Cards is null || batch.Cards.Length != _config.GeneratedCardsPerReward)
                 throw new GenerationFailureException("wrong_card_count");
             CardDefinition[] cards;
-            try { cards = batch.Cards.Select(CardValidator.Validate).ToArray(); }
+            var mechanics = CharacterMechanics.FromRun(context.Run);
+            try { cards = batch.Cards.Select(mechanics.Validate).ToArray(); }
             // CardValidator messages are local constants/validated enums, with no provider text.
             catch (FormatException ex) { throw new GenerationFailureException(ex.Message); }
             if (cards.Select(c => c.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count() != cards.Length)

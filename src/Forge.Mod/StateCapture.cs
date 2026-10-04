@@ -60,7 +60,7 @@ internal sealed class StateCapture
     public object Card(CardModel card) => new
     {
         instance = _cardIds.GetValue(card, _ => new Identity(++_nextId)).Id,
-        id = card.Id.Entry, title = Safe(() => card.Title), type = card.Type.ToString(), rarity = card.Rarity.ToString(),
+        id = card.Id.Entry, pool = card.Pool.Id.Entry, title = Safe(() => card.Title), type = card.Type.ToString(), rarity = card.Rarity.ToString(),
         cost = card.EnergyCost.Canonical, current_cost = Safe(() => card.EnergyCost.GetWithModifiers(CostModifiers.All)),
         star_cost = card.CanonicalStarCost, current_star_cost = Safe(() => card.GetStarCostWithModifiers()),
         star_x_cost = card.HasStarCostX, x_cost = card.EnergyCost.CostsX, upgraded = card.IsUpgraded, upgrade_level = card.CurrentUpgradeLevel,

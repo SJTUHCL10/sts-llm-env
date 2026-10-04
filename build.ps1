@@ -27,8 +27,11 @@ try {
     Copy-Item -LiteralPath 'src\Forge.Mod\mod_manifest.json' -Destination (Join-Path $package 'NeowsCompany.json')
     Copy-Item -LiteralPath 'config.example.json' -Destination $package
     Copy-Item -LiteralPath 'README.md' -Destination $package
-    New-Item -ItemType Directory -Force -Path (Join-Path $package 'docs'), (Join-Path $package 'examples') | Out-Null
-    Get-ChildItem -LiteralPath 'docs' -Filter '*.md' | Copy-Item -Destination (Join-Path $package 'docs')
+    $packagedDocs = Join-Path $package 'docs'
+    if (Test-Path -LiteralPath $packagedDocs) {
+        Remove-Item -LiteralPath $packagedDocs -Recurse -Force
+    }
+    New-Item -ItemType Directory -Force -Path (Join-Path $package 'examples') | Out-Null
     Get-ChildItem -LiteralPath 'examples' -Filter '*.json' | Copy-Item -Destination (Join-Path $package 'examples')
     Compress-Archive -LiteralPath $package -DestinationPath (Join-Path $PSScriptRoot 'build\NeowsCompany-0.1.0.zip') -Force
     Write-Output "Built package: $package"

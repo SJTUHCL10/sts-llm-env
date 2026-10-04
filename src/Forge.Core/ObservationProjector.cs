@@ -15,13 +15,21 @@ public static class ObservationProjector
     }
     private static JsonObject Card(JsonObject card, bool full)
     {
-        var result = Pick(card, "id", "title", "type", "rarity", "cost", "star_cost", "current_cost", "current_star_cost",
+        var result = Pick(card, "id", "pool", "title", "type", "rarity", "cost", "star_cost", "current_cost", "current_star_cost",
             "x_cost", "star_x_cost", "upgraded", "target", "keywords", "enchantment", "affliction", "count");
         result["origin"] = card["origin"]?.ToString() ?? (card["generated_definition"] is null ? "native" : "generated");
         if (full)
         {
-            result["description"] = Clean(card["description"]?.ToString() ?? "");
-            result["generated_definition"] = card["generated_definition"]?.DeepClone();
+            if (card["generated_definition"] is JsonObject definition)
+            {
+                // The program already expresses generated mechanics. Avoid sending its expanded prose and flavor twice.
+                result["generated_definition"] = CompactDefinition(definition);
+            }
+            else
+            {
+                result["description"] = Clean(card["description"]?.ToString() ?? "");
+                result["generated_definition"] = null;
+            }
         }
         else
         {
@@ -29,6 +37,34 @@ public static class ObservationProjector
             result["instance"] = card["instance"]?.DeepClone();
         }
         return result;
+    }
+    private static JsonObject CompactDefinition(JsonObject definition)
+    {
+        var result = definition.DeepClone().AsObject();
+        result.Remove("flavor"); result.Remove("name");
+        RemoveDefaults(result, ("star_cost", "-1"), ("upgrade_cost", "0"), ("upgrade_star_cost", "0"));
+        if (result["effects"] is JsonArray effects) result["effects"] = CompactEffects(effects);
+        return result;
+    }
+    private static JsonArray CompactEffects(JsonArray effects) => new(effects.Select(effect =>
+    {
+        var copy = effect?.DeepClone();
+        if (copy is JsonObject slots)
+            RemoveDefaults(slots, ("upgrade_amount", "0"), ("trigger", "on_play"), ("duration", "1"), ("max_per_turn", "1"),
+                ("repeat", "1"), ("condition", "none"), ("scaling", "none"), ("scaling_amount", "0"), ("scaling_cap", "0"));
+        return copy;
+    }).ToArray());
+    private static void RemoveDefaults(JsonObject value, params (string Key, string Default)[] defaults)
+    {
+        foreach (var (key, expected) in defaults)
+            if (value[key]?.ToString() == expected) value.Remove(key);
+    }
+    private static JsonElement CompactHistory(JsonElement entry)
+    {
+        if (JsonNode.Parse(entry.GetRawText()) is not JsonObject obj) return entry;
+        var result = Pick(obj, "name", "type", "cost", "star_cost", "effects", "keywords", "status", "combat_key");
+        if (result["effects"] is JsonArray effects) result["effects"] = CompactEffects(effects);
+        return JsonSerializer.SerializeToElement(result, Wire.Json);
     }
     private static string Clean(string text)
     {
@@ -48,7 +84,8 @@ public static class ObservationProjector
         if (node is JsonArray array) return new JsonArray(array.Select(EventNode).ToArray());
         if (node is not JsonObject obj) return node?.DeepClone();
         if (obj.ContainsKey("hp") && obj.ContainsKey("side")) return Pick(obj, "instance", "id", "side", "hp", "block", "alive");
-        if (obj.ContainsKey("rarity") && obj.ContainsKey("cost")) return Card(obj, false);
+        if (obj.ContainsKey("rarity") && obj.ContainsKey("cost"))
+            return Pick(Card(obj, false), "instance", "id", "title", "type", "origin");
         var result = new JsonObject();
         foreach (var pair in obj)
         {
@@ -64,13 +101,13 @@ public static class ObservationProjector
         var state = JsonNode.Parse(context.State.GetRawText()) as JsonObject;
         if (run is not null && run["deck"] is JsonArray deck)
         {
-            var compact = Pick(run, "act", "floor", "ascension", "character", "room_type", "gold");
+            var compact = Pick(run, "character", "ascension");
             compact["deck"] = new JsonArray(deck.OfType<JsonObject>().Select(c => Card(c, true))
                 .Concat(deck.Where(c => c is not JsonObject).Select(c => new JsonObject { ["id"] = c?.DeepClone() }))
                 .GroupBy(c => c.ToJsonString()).Select(group =>
                 {
                     var card = group.First(); card["count"] = group.Sum(c => c["count"]?.GetValue<int>() ?? 1); return (JsonNode)card;
-                }).ToArray());
+                }).OrderBy(c => c.ToJsonString(), StringComparer.Ordinal).ToArray());
             foreach (string kind in new[] { "relics", "potions" })
                 compact[kind] = new JsonArray((run[kind] as JsonArray ?? new()).OfType<JsonObject>().Select(entity =>
                 {
@@ -80,6 +117,8 @@ public static class ObservationProjector
                         item["counters"] = Pick(counters, "Amount", "TimesUsed", "Charges", "Counter", "Stacks");
                     return (JsonNode)item;
                 }).ToArray());
+            foreach (string key in new[] { "act", "floor", "room_type", "gold" })
+                if (run.TryGetPropertyValue(key, out var value)) compact[key] = value?.DeepClone();
             run = compact;
         }
         if (state is not null && state["player"] is JsonObject player)
@@ -106,7 +145,8 @@ public static class ObservationProjector
         return context with { SchemaVersion = 2,
             Run = run is null ? context.Run : JsonSerializer.SerializeToElement(run, Wire.Json),
             State = state is null ? context.State : JsonSerializer.SerializeToElement(state, Wire.Json),
-            RecentEvents = context.RecentEvents.Select(CompactEvent).ToArray() };
+            RecentEvents = context.RecentEvents.Select(CompactEvent).ToArray(),
+            GenerationHistory = context.GenerationHistory.Select(CompactHistory).ToArray() };
     }
 }
 

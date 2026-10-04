@@ -34,8 +34,14 @@ internal static class GeneratedEffectExecutor
                 && effect.Scaling != EffectScaling.TargetPoison)
             {
                 if (targets.Length > 0 && MeetsCondition(effect.Condition, owner.Creature, targets[0]))
-                    await DamageCmd.Attack(ResolveAmount(effect, baseAmount, source, targets[0])).FromCard(source, play)
-                        .TargetingAllOpponents(combat).WithHitFx("vfx/vfx_attack_blunt", null, "blunt_attack.mp3").Execute(choice);
+                {
+                    decimal amount = ResolveAmount(effect, baseAmount, source, targets[0]);
+                    if (EffectRules.IsAttackDamage(effect))
+                        await DamageCmd.Attack(amount).FromCard(source, play).TargetingAllOpponents(combat)
+                            .WithHitFx("vfx/vfx_attack_blunt", null, "blunt_attack.mp3").Execute(choice);
+                    else
+                        await CreatureCmd.Damage(choice, targets, amount, ValueProp.Unpowered, owner.Creature);
+                }
                 continue;
             }
             foreach (var target in targets)
@@ -45,10 +51,16 @@ internal static class GeneratedEffectExecutor
                 switch (effect.Kind)
                 {
                     case EffectKind.Damage:
-                        await DamageCmd.Attack(amount).FromCard(source, play).Targeting(target)
-                            .WithHitFx("vfx/vfx_attack_blunt", null, "blunt_attack.mp3").Execute(choice);
+                        if (EffectRules.IsAttackDamage(effect))
+                            await DamageCmd.Attack(amount).FromCard(source, play).Targeting(target)
+                                .WithHitFx("vfx/vfx_attack_blunt", null, "blunt_attack.mp3").Execute(choice);
+                        else
+                            await CreatureCmd.Damage(choice, target, amount, ValueProp.Unpowered, owner.Creature);
                         break;
-                    case EffectKind.Block: await CreatureCmd.GainBlock(owner.Creature, amount, ValueProp.Move, play); break;
+                    case EffectKind.Block:
+                        await CreatureCmd.GainBlock(owner.Creature,
+                            effect.Trigger == EffectTrigger.OnPlay ? GeneratedEffectPreview.EnchantBlock(source, amount) : amount, ValueProp.Move, play);
+                        break;
                     case EffectKind.Draw: await CardPileCmd.Draw(choice, amount, owner); break;
                     case EffectKind.Energy: await PlayerCmd.GainEnergy(amount, owner); break;
                     case EffectKind.Stars: await PlayerCmd.GainStars(amount, owner); break;
@@ -99,7 +111,7 @@ internal static class GeneratedEffectExecutor
             EffectScaling.SelfStars => source.Owner.PlayerCombatState?.Stars ?? 0,
             _ => throw new InvalidOperationException()
         };
-        return baseAmount + (decimal)effect.ScalingAmount * (effect.ScalingCap == 0 ? Math.Max(0, units) : Math.Clamp(units, 0, effect.ScalingCap));
+        return EffectRules.ResolveAmount(effect, baseAmount, units);
     }
 
     private static Task ApplyPower(NeowGeneratedCard source, PlayerChoiceContext choice, EffectKind kind, Creature target, decimal amount) => kind switch

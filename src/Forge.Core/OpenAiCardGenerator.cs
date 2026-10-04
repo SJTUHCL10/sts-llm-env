@@ -50,8 +50,12 @@ public sealed class OpenAiCardGenerator(HttpClient client, ProviderConfig config
             string? finish = choice.TryGetProperty("finish_reason", out var finished) && finished.ValueKind == JsonValueKind.String
                 ? finished.GetString() : null;
             var usage = document.RootElement.TryGetProperty("usage", out var tokenUsage) ? tokenUsage : default;
+            var promptDetails = usage.ValueKind == JsonValueKind.Object && usage.TryGetProperty("prompt_tokens_details", out var details)
+                ? details : default;
             diagnostics?.Invoke(new(prompt.Revision, reasoning, finish is "stop" or "length" or "content_filter" ? finish : null,
-                ReadTokens(usage, "prompt_tokens"), ReadTokens(usage, "completion_tokens"), ReadTokens(usage, "total_tokens")));
+                ReadTokens(usage, "prompt_tokens"), ReadTokens(usage, "completion_tokens"), ReadTokens(usage, "total_tokens"),
+                ReadTokens(usage, "prompt_cache_hit_tokens") ?? ReadTokens(promptDetails, "cached_tokens"),
+                ReadTokens(usage, "prompt_cache_miss_tokens")));
             if (choice.TryGetProperty("finish_reason", out var reason) && reason.GetString() is "length" or "content_filter")
                 throw new GenerationFailureException(reason.GetString() == "length" ? "completion_token_limit" : "content_filtered");
             string content = choice.GetProperty("message").GetProperty("content").GetString()

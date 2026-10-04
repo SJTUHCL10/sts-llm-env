@@ -2,11 +2,14 @@ namespace Forge.Core;
 
 public static class EffectRules
 {
+    public static bool IsAttackDamage(CardEffect effect) => effect.Kind == EffectKind.Damage && effect.Trigger == EffectTrigger.OnPlay;
     public static bool IsEvent(EffectTrigger trigger) => trigger is EffectTrigger.CardPlayed or EffectTrigger.AttackPlayed
         or EffectTrigger.SkillPlayed or EffectTrigger.CardDrawn or EffectTrigger.CardExhausted;
     public static int MaximumAmount(CardEffect effect) => effect.Amount + effect.UpgradeAmount + effect.ScalingAmount * effect.ScalingCap;
     public static int ResolveAmount(CardEffect effect, int baseAmount, int units) =>
-        checked(baseAmount + effect.ScalingAmount * (effect.ScalingCap == 0 ? Math.Max(0, units) : Math.Clamp(units, 0, effect.ScalingCap)));
+        checked((int)ResolveAmount(effect, (decimal)baseAmount, units));
+    public static decimal ResolveAmount(CardEffect effect, decimal baseAmount, int units) =>
+        baseAmount + (decimal)effect.ScalingAmount * (effect.ScalingCap == 0 ? Math.Max(0, units) : Math.Clamp(units, 0, effect.ScalingCap));
     // Combat-long effects are valued over six turns. Conditions do not discount worst-case payoff.
     public static int BudgetActivations(CardEffect effect) => effect.Trigger == EffectTrigger.OnPlay ? 1
         : (effect.Duration == 0 ? 6 : effect.Duration) * (IsEvent(effect.Trigger) ? effect.MaxPerTurn : 1);

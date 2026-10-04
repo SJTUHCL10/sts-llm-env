@@ -1,12 +1,12 @@
-# 卡牌协议 v3
+# 卡牌协议 v4
 
-新牌使用 v3，旧 v1/v2 卡牌及保存的能力状态继续按原规则执行。效果文字由 CardText 生成，不执行模型文本。完整上下文和 HTTP 输出见 [LLM_PROTOCOL.md](LLM_PROTOCOL.md)。
+新牌使用 v4，旧 v1/v2/v3 卡牌及保存的能力状态继续按原规则执行。效果文字由 CardText 生成，不执行模型文本。完整上下文和 HTTP 输出见 [LLM_PROTOCOL.md](LLM_PROTOCOL.md)。
 
 ## 新卡牌字段
 
 | 字段 | 说明 / 缺省 |
 | --- | --- |
-| `schema_version` | 新生成必须为 3 |
+| `schema_version` | 新生成必须为 4 |
 | `name/flavor` | 纯文本名称≤40字符；风味≤160字符，风味可空 |
 | `type` | attack / skill / power |
 | `rarity` | common / uncommon / rare |
@@ -14,15 +14,17 @@
 | `star_cost` | -1（没有星费用）或非负整数星费用 |
 | `upgrade_cost/upgrade_star_cost` | 升级减少的费用，缺省0，不能超过原费用 |
 | `keywords` | exhaust / ethereal / retain / innate；最多3种，不重复 |
-| `effects` | 1～8 条有序效果，推荐通常1～2条 |
+| `effects` | 1～8 条有序效果；围绕一个想法设计，单效果也可以 |
 
 `kind` 支持 damage、block、draw、energy、**stars**、strength、dexterity、weak、vulnerable、poison、discard_random_hand、exhaust_random_hand、return_random_discard。
+
+这是可执行结构的全集，不是每个角色的生成权限。新生成的中毒/星按角色、棱彩宝石和原生跨角色卡池开放，生成结果也检查权限；保存的定义不追溯限制。范围规则见 [LLM_PROTOCOL.md](LLM_PROTOCOL.md)，机制差距见 [MECHANIC_COVERAGE.md](MECHANIC_COVERAGE.md)。
 
 新增 `self_stars` 缩放，读取原生费用支付后、每次执行时的剩余星数；获得星使用 PlayerCmd.GainStars，星费用使用原生 CanonicalStarCost/扣费流程，可升级并通过原生存档、复制和降级恢复。
 
 ## 新效果字段
 
-| 字段 | v3 语义 / 缺省 |
+| 字段 | v4 语义 / 缺省 |
 | --- | --- |
 | `kind/target/amount` | 必填；amount≥1；目标 self / enemy / all_enemies / random_enemy |
 | `upgrade_amount` | 非负整数，缺省0 |
@@ -33,11 +35,18 @@
 | `condition` | none / self_has_block / self_hp_below_half / target_weak / target_vulnerable；缺省none |
 | `scaling` | none / self_block / hand_size / discard_size / exhaust_size / target_poison / self_stars；缺省none |
 | `scaling_amount` | 缩放时≥1，未缩放时0；缺省0，无1～3上限 |
-| `scaling_cap` | 缩放时0表示无限，可选正整数；未缩放时0；缺省0 |
+
+v4 删除 `scaling_cap`，即使填写 0 也会拒绝；缩放始终按实际状态单位计算。旧 v3 的 0 表示无限，正整数上限继续保留；v1/v2 仍使用原来的必填缩放上限。旧定义的序列化形状和候选指纹保持兼容，不会改写已经生成的「残章缀星」。
 
 取消 v3 效果数值和升级增量固定上限、强度预算打分、零费抽牌/回能强制消耗规则。校验仍保留可执行结构、目标关系、未知枚举/字段拒绝、整数及加法范围；1～8效果和关键词限制属于协议结构。原生引擎的显示/数值边界、手牌容量和牌堆规则继续生效。
 
-事件不限次数不会产生“最多X次”的文字，无上限缩放不会显示“最多计X”。duration=1 显示“本回合”；升级增量为0的 slot 不调用原生 UpgradeValueBy，因此不会被误标为升级绿色。
+事件不限次数不会产生“最多X次”的文字，无上限缩放不会显示“最多计X”。duration=1 显示“本回合”；能力牌整场持续省略“本场战斗中”，有限持续期仍显示。出牌触发省略“另一张”。星和能量使用原生图标，小数量（1～3）重复图标，其他数量使用数字＋图标；能量颜色来自所属角色。
+
+即时伤害通过原生攻击命令执行，受力量、虚弱、目标易伤等攻击修正影响；回合及事件触发伤害使用 `ValueProp.Unpowered` 的原生伤害命令，与滚石、黑洞、冰雹风暴一致，不受这些攻击修正影响。
+
+手牌预览先计算星费用和先前即时效果带来的星、格挡及牌堆数量变化，再计算 scale，最后使用原生伤害/格挡钩子计入力量、虚弱、目标易伤、敏捷、脆弱和附魔。基础 DynamicVar 不被预览改写。选择目标后才计入该目标状态；未来触发、随机抽牌引发的事件链和先前效果新增的能力/敌人 debuff 无法完整预测。缩放数值显示已计入的来源，避免把公式误读成额外增量。
+
+升级说明临时恢复变化槽位的原生升级高亮，兼容升级完成后清除标记的查看流程；零升级增量不应标绿。小数量资源的绿色包围图标，较大数量的绿色包围数字。
 
 触发时机、敌方目标、持续期、随机牌堆操作和独立能力实例规则与旧v2一致。内部实例重入和8层跨能力事件深度保护用于避免程序递归卡死，不是对玩家正常打牌次数的限制。
 
@@ -47,7 +56,7 @@
 
 # 旧协议 v1/v2（存档兼容）
 
-旧生成内容的 `schema_version: 2` 保持原有执行语义。以下数值上限和强度预算仅适用于 v1/v2；共同的触发、目标与生命周期规则也适用于 v3。
+旧生成内容的 `schema_version: 2` 保持原有执行语义。以下数值上限和强度预算仅适用于 v1/v2；共同的触发、目标与生命周期规则也适用于 v3/v4。
 
 ## 结构
 
