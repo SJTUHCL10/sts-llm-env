@@ -52,7 +52,7 @@ public sealed class GenerationSession : IDisposable
         try
         {
             var prompt = PromptBuilder.Build(_config, context) with { Revision = revision };
-            _audit("generation_request", new { revision, context.TotalEvents, model = _config.Provider.Model,
+            _audit("generation_request", new { card_protocol = MechanicCatalog.ProtocolVersion, revision, context.TotalEvents, model = _config.Provider.Model,
                 max_tokens = _config.Provider.MaxTokens, reasoning_effort = _config.Provider.ReasoningEffort,
                 prompt_characters = prompt.System.Length + prompt.User.Length,
                 prompt = _config.RecordGenerationPrompts ? prompt : null });
@@ -79,7 +79,7 @@ public sealed class GenerationSession : IDisposable
                 _publish?.Invoke(cards);
                 _ready = _ready.Concat(cards).DistinctBy(CandidatePool.Fingerprint).ToArray();
             }
-            _audit("generation_ready", new { revision, context.TotalEvents, elapsed_ms = timer.ElapsedMilliseconds, cards });
+            _audit("generation_ready", new { card_protocol = MechanicCatalog.ProtocolVersion, revision, context.TotalEvents, elapsed_ms = timer.ElapsedMilliseconds, cards });
         }
         catch (Exception ex)
         {

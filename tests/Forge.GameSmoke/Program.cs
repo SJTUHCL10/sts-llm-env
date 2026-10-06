@@ -4,317 +4,166 @@ using System.Runtime.Loader;
 using Forge.Core;
 using Forge.Mod;
 using HarmonyLib;
-using MegaCrit.Sts2.Core.Entities.Cards;
-using MegaCrit.Sts2.Core.Models;
-using MegaCrit.Sts2.Core.Models.Relics;
-using MegaCrit.Sts2.Core.Models.Powers;
-using MegaCrit.Sts2.Core.Entities.Powers;
+using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Multiplayer.Serialization;
-using MegaCrit.Sts2.Core.Saves.Runs;
 using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Combat.History;
+using MegaCrit.Sts2.Core.Combat.History.Entries;
+using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.GameActions.Multiplayer;
+using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Characters;
+using MegaCrit.Sts2.Core.Models.Powers;
+using MegaCrit.Sts2.Core.Models.Relics;
 using MegaCrit.Sts2.Core.Runs;
-using MegaCrit.Sts2.Core.Unlocks;
 using MegaCrit.Sts2.Core.Saves;
+using MegaCrit.Sts2.Core.Saves.Runs;
+using MegaCrit.Sts2.Core.Unlocks;
 
-string game = args.FirstOrDefault() ?? Environment.GetEnvironmentVariable("STS2_GAME_DIR")
-    ?? throw new ArgumentException("Provide game directory.");
+string game = args.FirstOrDefault() ?? Environment.GetEnvironmentVariable("STS2_GAME_DIR") ?? throw new ArgumentException("Provide game directory.");
 string lib = Path.Combine(game, "data_sts2_windows_x86_64");
-AssemblyLoadContext.Default.Resolving += (context, name) => File.Exists(Path.Combine(lib, name.Name + ".dll"))
-    ? context.LoadFromAssemblyPath(Path.Combine(lib, name.Name + ".dll")) : null;
+AssemblyLoadContext.Default.Resolving += (context, name) => File.Exists(Path.Combine(lib, name.Name + ".dll")) ? context.LoadFromAssemblyPath(Path.Combine(lib, name.Name + ".dll")) : null;
 Smoke.Run();
 
 static class Smoke
 {
-    // Delay JIT until the game's dependency resolver is registered. No game process or save is touched.
     [MethodImpl(MethodImplOptions.NoInlining)]
     public static void Run()
     {
-        // Use the game's generated registry without requiring the Godot mod-loader lifecycle.
         var registry = typeof(CardModel).Assembly.GetTypes().Single(t => t.Name == "AbstractModelSubtypes");
-        var nativeTypes = (IEnumerable<Type>)(AccessTools.Property(registry, "All")?.GetValue(null)
-            ?? AccessTools.Field(registry, "All").GetValue(null))!;
-        var modelTypes = nativeTypes.Concat([typeof(NeowGeneratedCard), typeof(GeneratedEffectPower)]).ToArray();
-        AccessTools.Field(typeof(ModelDb), "_allAbstractModelSubtypes").SetValue(null, modelTypes);
-        ModelDb.Init(modelTypes);
+        var native = (IEnumerable<Type>)(AccessTools.Property(registry, "All")?.GetValue(null) ?? AccessTools.Field(registry, "All").GetValue(null))!;
+        var types = native.Concat([typeof(NeowGeneratedCard), typeof(GeneratedEffectPower)]).ToArray();
+        AccessTools.Field(typeof(ModelDb), "_allAbstractModelSubtypes").SetValue(null, types); ModelDb.Init(types);
         Check(ModelDb.Relic<PrismaticGem>().Id.Entry == "PRISMATIC_GEM");
-        Check(ModelDb.Character<Silent>().CardPool.Id.Entry == "SILENT_CARD_POOL"
-            && ModelDb.Character<Regent>().CardPool.Id.Entry == "REGENT_CARD_POOL");
-        Console.WriteLine("PASS native relic and character pool IDs match mechanic availability");
+        foreach (string id in MechanicCatalog.Cards) Check(NativeMechanics.Card(id).IsCanonical);
+        foreach (string id in MechanicCatalog.Powers) Check(NativeMechanics.Power(id).IsCanonical);
+        foreach (string id in new[] { "strength", "focus" }) foreach (bool negative in new[] { false, true }) Check(NativeMechanics.TemporaryPower(id, negative).IsCanonical);
+        Check(ModelDb.Character<Necrobinder>().CardPool.Id.Entry == "NECROBINDER_CARD_POOL" && ModelDb.Character<Defect>().CardPool.Id.Entry == "DEFECT_CARD_POOL");
+        Console.WriteLine("PASS native card/power aliases and role pools resolve against v0.111.0");
         var definition = new CardDefinition
         {
-            Name = "涅奥的试炼", Type = ForgeCardType.Attack, Rarity = ForgeRarity.Uncommon, Cost = 2,
-            Keywords = [ForgeKeyword.Exhaust],
-            Effects = [new() { Kind = EffectKind.Damage, Target = EffectTarget.Enemy, Amount = 10, UpgradeAmount = 3 },
-                new() { Kind = EffectKind.Block, Target = EffectTarget.Self, Amount = 5, UpgradeAmount = 2 }]
+            Name = "涅奥的试炼", Type = ForgeCardType.Attack, Rarity = ForgeRarity.Uncommon,
+            Forms = [new() { Cost = new() { Energy = 2, Stars = 2 }, Keywords = [ForgeKeyword.Exhaust], Effects = [new() { Kind = EffectKind.Damage, Target = "enemy", Amount = 10 }] },
+                     new() { Cost = new() { Energy = 1, Stars = 1 }, Keywords = [ForgeKeyword.Retain], Effects = [new() { Kind = EffectKind.Damage, Target = "all_enemies", Amount = 13 }, new() { Kind = EffectKind.Block, Amount = 7 }] }]
         };
         var card = (NeowGeneratedCard)ModelDb.Card<NeowGeneratedCard>().ToMutable();
-        _ = card.EnergyCost; _ = card.DynamicVars; _ = card.Keywords; // Force fallback caches before configuring.
+        _ = card.EnergyCost; _ = card.DynamicVars; _ = card.Keywords;
         card.DefinitionPayload = Wire.Encode(definition);
-        Check(card.EnergyCost.Canonical == 2 && card.Type == CardType.Attack && card.TargetType == TargetType.AnyEnemy);
-        Check(card.DynamicVars["E0"].BaseValue == 10 && card.Keywords.Contains(CardKeyword.Exhaust));
-        Console.WriteLine("PASS game mutable card configuration and canonical-cache reset");
-
-        var clone = (NeowGeneratedCard)card.ClonePreservingMutability();
-        clone.DynamicVars["E0"].BaseValue = 19;
+        Check(card.EnergyCost.Canonical == 2 && card.BaseStarCost == 2 && card.TargetType == TargetType.AnyEnemy && card.Keywords.Contains(CardKeyword.Exhaust));
+        var clone = (NeowGeneratedCard)card.ClonePreservingMutability(); clone.DynamicVars["E0"].BaseValue = 19;
         Check(card.DynamicVars["E0"].BaseValue == 10 && clone.DefinitionPayload == card.DefinitionPayload);
-        Console.WriteLine("PASS game native cloning preserves definition and isolates variables");
-
-        // Initialize this model's serialization metadata without booting Godot or the game UI.
+        Check(card.InstanceKey != clone.InstanceKey);
+        card.EnergyCost.SetThisCombat(2);
+        card.UpgradeInternal(); card.FinalizeUpgradeInternal();
+        Check(card.TargetType == TargetType.AllEnemies && card.DynamicVars.Count() == 2 && card.DynamicVars["E0"].BaseValue == 13 && card.DynamicVars["E1"].BaseValue == 7);
+        Check(card.EnergyCost.Canonical == 1 && card.BaseStarCost == 1 && !card.Keywords.Contains(CardKeyword.Exhaust) && card.Keywords.Contains(CardKeyword.Retain));
+        Check(card.EnergyCost.GetWithModifiers(CostModifiers.Local) == 1);
         ModelIdSerializationCache.CacheSavedPropertiesForTypeDebug(typeof(NeowGeneratedCard));
         typeof(ModelIdSerializationCache).GetField("_initialized", BindingFlags.Static | BindingFlags.NonPublic)!.SetValue(null, true);
-        card.UpgradeInternal();
-        card.FinalizeUpgradeInternal();
-        var save = card.ToSerializable();
-        Check(save.Props!.strings!.Single(p => p.name == nameof(NeowGeneratedCard.DefinitionPayload)).value == card.DefinitionPayload);
-        var loaded = (NeowGeneratedCard)CardModel.FromSerializable(save);
-        Check(loaded.DefinitionPayload == card.DefinitionPayload && loaded.DynamicVars["E0"].BaseValue == 13
-            && loaded.DynamicVars["E1"].BaseValue == 7 && loaded.EnergyCost.Canonical == 2 && loaded.IsUpgraded);
-        Console.WriteLine("PASS game ToSerializable / FromSerializable and upgraded definition round trip");
-        loaded.DowngradeInternal();
-        Check(!loaded.IsUpgraded && loaded.DynamicVars["E0"].BaseValue == 10 && loaded.DynamicVars["E1"].BaseValue == 5
-            && loaded.Keywords.Contains(CardKeyword.Exhaust) && loaded.EnergyCost.Canonical == 2);
-        Console.WriteLine("PASS game downgrade preserves per-instance base effects and keywords");
-
-        foreach (var (cost, amount, upgrade) in new[] { (4, 52, 11), (5, 65, 15) })
-        {
-            var heavy = (NeowGeneratedCard)ModelDb.Card<NeowGeneratedCard>().ToMutable();
-            heavy.DefinitionPayload = Wire.Encode(definition with { SchemaVersion = 2, Cost = cost, Rarity = ForgeRarity.Rare,
-                Keywords = [], Effects = [definition.Effects[0] with { Amount = amount, UpgradeAmount = upgrade }] });
-            heavy.UpgradeInternal(); heavy.FinalizeUpgradeInternal();
-            var restoredHeavy = (NeowGeneratedCard)CardModel.FromSerializable(heavy.ToSerializable());
-            Check(restoredHeavy.EnergyCost.Canonical == cost && restoredHeavy.DynamicVars["E0"].BaseValue == amount + upgrade);
-            restoredHeavy.DowngradeInternal();
-            Check(restoredHeavy.EnergyCost.Canonical == cost && restoredHeavy.DynamicVars["E0"].BaseValue == amount);
-        }
-        Console.WriteLine("PASS game four/five-cost cards preserve expanded damage and upgrades through native save/downgrade");
-
-        var complexDefinition = new CardDefinition
-        {
-            SchemaVersion = 2, Name = "余烬之心", Type = ForgeCardType.Power, Rarity = ForgeRarity.Rare, Cost = 2,
-            Effects = [new() { Kind = EffectKind.Block, Target = EffectTarget.Self, Amount = 1, UpgradeAmount = 1,
-                Trigger = EffectTrigger.CardExhausted, Duration = 0, MaxPerTurn = 3 }]
-        };
-        var engineCard = (NeowGeneratedCard)ModelDb.Card<NeowGeneratedCard>().ToMutable();
-        engineCard.DefinitionPayload = Wire.Encode(complexDefinition);
-        engineCard.UpgradeInternal(); engineCard.FinalizeUpgradeInternal();
-        var restoredEngine = (NeowGeneratedCard)CardModel.FromSerializable(engineCard.ToSerializable());
-        Check(restoredEngine.Type == CardType.Power && restoredEngine.Definition.SchemaVersion == 2
-            && restoredEngine.DynamicVars["E0"].BaseValue == 2 && restoredEngine.Definition.Effects[0].Duration == 0);
-        Console.WriteLine("PASS game v2 Power card type, upgrade and native save round trip");
-
-        var complexAttack = definition with { SchemaVersion = 2, Effects =
-        [
-            definition.Effects[0] with { Amount = 3, UpgradeAmount = 1, Repeat = 2,
-                Condition = EffectCondition.TargetVulnerable, Scaling = EffectScaling.ExhaustSize, ScalingAmount = 1, ScalingCap = 3 },
-            definition.Effects[1] with { Trigger = EffectTrigger.NextTurnStart }
-        ] };
-        var programCard = (NeowGeneratedCard)ModelDb.Card<NeowGeneratedCard>().ToMutable();
-        programCard.DefinitionPayload = Wire.Encode(complexAttack);
-        programCard.UpgradeInternal(); programCard.FinalizeUpgradeInternal();
-        var restoredProgram = (NeowGeneratedCard)CardModel.FromSerializable(programCard.ToSerializable());
-        Check(restoredProgram.DynamicVars["E0"].BaseValue == 4 && restoredProgram.DynamicVars["E1"].BaseValue == 7
-            && restoredProgram.Definition.Effects[0].Repeat == 2 && restoredProgram.Definition.Effects[0].ScalingCap == 3
-            && restoredProgram.Definition.Effects[1].Trigger == EffectTrigger.NextTurnStart);
-        Console.WriteLine("PASS game v2 repeat/condition/scaling/delay card native save round trip");
-
-        ModelIdSerializationCache.CacheSavedPropertiesForTypeDebug(typeof(GeneratedEffectPower));
-        var power = (GeneratedEffectPower)ModelDb.Power<GeneratedEffectPower>().ToMutable();
-        typeof(GeneratedEffectPower).GetMethod("Configure", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(power, [restoredEngine]);
-        var powerSnapshot = Wire.Decode<GeneratedPowerSnapshot>(power.RuntimePayload);
-        Check(powerSnapshot.SourceUpgraded && powerSnapshot.Amounts[0] == 2 && powerSnapshot.IgnoreArmingPlay
-            && powerSnapshot.State.Remaining[0] == -1 && power.InstanceType == PowerInstanceType.Instanced);
-        EffectTriggerRuntime.TryConsume(complexDefinition, powerSnapshot.State, 0, EffectTrigger.CardExhausted);
-        power.RuntimePayload = Wire.Encode(powerSnapshot with { IgnoreArmingPlay = false });
-        var savedPower = SavedProperties.From(power)!;
-        var restoredPower = (GeneratedEffectPower)ModelDb.Power<GeneratedEffectPower>().ToMutable();
-        savedPower.Fill(restoredPower);
-        var restoredSnapshot = Wire.Decode<GeneratedPowerSnapshot>(restoredPower.RuntimePayload);
-        Check(restoredPower.RuntimePayload == power.RuntimePayload && restoredSnapshot.State.Activations[0] == 1
-            && !restoredSnapshot.IgnoreArmingPlay);
-        var powerClone = (GeneratedEffectPower)power.ClonePreservingMutability();
-        var snapshotField = typeof(GeneratedEffectPower).GetField("_snapshot", BindingFlags.Instance | BindingFlags.NonPublic)!;
-        var clonedSnapshot = (GeneratedPowerSnapshot)snapshotField.GetValue(powerClone)!;
-        EffectTriggerRuntime.TryConsume(complexDefinition, clonedSnapshot.State, 0, EffectTrigger.CardExhausted);
-        Check(Wire.Decode<GeneratedPowerSnapshot>(power.RuntimePayload).State.Activations[0] == 1
-            && Wire.Decode<GeneratedPowerSnapshot>(powerClone.RuntimePayload).State.Activations[0] == 2);
-        foreach (var invalidSnapshot in new[]
-        {
-            restoredSnapshot with { SchemaVersion = 2 },
-            restoredSnapshot with { Amounts = [] },
-            restoredSnapshot with { State = restoredSnapshot.State with { Remaining = [2] } },
-            restoredSnapshot with { State = restoredSnapshot.State with { Activations = [4] } }
-        })
-        {
-            string before = restoredPower.RuntimePayload;
-            try { restoredPower.RuntimePayload = Wire.Encode(invalidSnapshot); throw new Exception("Expected invalid power rejection."); }
-            catch (FormatException) { Check(restoredPower.RuntimePayload == before); }
-        }
-        Console.WriteLine("PASS game instanced Power captured values, native SavedProperties and clone isolation");
-
-        var applyModifiers = typeof(Bootstrap).Assembly.GetType("Forge.Mod.GeneratedRewardModifiers")!
-            .GetMethod("Apply", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var restored = (NeowGeneratedCard)CardModel.FromSerializable(card.ToSerializable());
+        Check(restored.IsUpgraded && restored.ActiveForm.Immediate.Length == 2 && restored.DynamicVars["E1"].BaseValue == 7 && restored.BaseStarCost == 1);
+        Check(restored.InstanceKey == card.InstanceKey);
+        restored.DowngradeInternal();
+        Check(restored.TargetType == TargetType.AnyEnemy && restored.DynamicVars.Count() == 1 && restored.EnergyCost.Canonical == 2 && restored.BaseStarCost == 2 && restored.Keywords.Contains(CardKeyword.Exhaust));
+        Console.WriteLine("PASS native upgrade/save/load/downgrade changes effect shape, target, costs and keywords");
         var crucible = (SilverCrucible)ModelDb.Relic<SilverCrucible>().ToMutable();
-        crucible.TimesUsed = 3; // The native factory has already consumed its final charge.
-        var nativeReward = new CardCreationResult(loaded);
+        crucible.TimesUsed = 3;
+        var nativeReward = new CardCreationResult(restored);
         nativeReward.ModifyCard(card, crucible);
-        var generatedReward = new CardCreationResult(loaded);
-        Func<CardModel, CardModel> cloneCard = model => (CardModel)model.ClonePreservingMutability();
-        applyModifiers.Invoke(null, [generatedReward, new[] { nativeReward }, cloneCard]);
+        var generatedReward = new CardCreationResult(restored);
+        GeneratedRewardModifiers.Apply(generatedReward, [nativeReward], model => (CardModel)model.ClonePreservingMutability());
         Check(generatedReward.Card.IsUpgraded && generatedReward.Card.DynamicVars["E0"].BaseValue == 13
-            && !generatedReward.originalCard.IsUpgraded && generatedReward.ModifyingRelics.Single() == crucible
-            && crucible.TimesUsed == 3);
-        applyModifiers.Invoke(null, [generatedReward, new[] { nativeReward }, cloneCard]);
+            && generatedReward.Card.TargetType == TargetType.AllEnemies && !generatedReward.originalCard.IsUpgraded
+            && generatedReward.ModifyingRelics.Single() == crucible && crucible.TimesUsed == 3);
+        GeneratedRewardModifiers.Apply(generatedReward, [nativeReward], model => (CardModel)model.ClonePreservingMutability());
         Check(generatedReward.Card.CurrentUpgradeLevel == 1 && crucible.TimesUsed == 3);
-        var unmodifiedReward = new CardCreationResult(loaded);
-        applyModifiers.Invoke(null, [unmodifiedReward, new[] { new CardCreationResult(card) }, cloneCard]);
-        Check(!unmodifiedReward.Card.IsUpgraded); // Randomly upgraded vanilla cards do not imply a relic upgrade.
-        Console.WriteLine("PASS generated reward inherits Silver Crucible's third charge without consuming or upgrading twice");
-
-        var starDefinition = new CardDefinition
+        var unmodifiedReward = new CardCreationResult(restored);
+        GeneratedRewardModifiers.Apply(unmodifiedReward, [new CardCreationResult(card)], model => (CardModel)model.ClonePreservingMutability());
+        Check(!unmodifiedReward.Card.IsUpgraded);
+        Console.WriteLine("PASS Silver Crucible reward upgrade changes the complete form without consuming another charge");
+        var x = (NeowGeneratedCard)ModelDb.Card<NeowGeneratedCard>().ToMutable();
+        x.DefinitionPayload = Wire.Encode(definition with { Forms = definition.Forms.Select(f => f with { Cost = new() { Energy = 0, EnergyX = true, Stars = 0, StarsX = true } }).ToArray() });
+        x.UpgradeInternal(); x.FinalizeUpgradeInternal();
+        Check(x.EnergyCost.CostsX && x.HasStarCostX && ((NeowGeneratedCard)CardModel.FromSerializable(x.ToSerializable())).HasStarCostX);
+        Console.WriteLine("PASS native X energy/star cost properties and upgraded serialization");
+        var engine = (NeowGeneratedCard)ModelDb.Card<NeowGeneratedCard>().ToMutable();
+        engine.DefinitionPayload = Wire.Encode(new CardDefinition
         {
-            SchemaVersion = 3, Name = "星潮", Type = ForgeCardType.Attack, Rarity = ForgeRarity.Uncommon,
-            Cost = 1, StarCost = 2, UpgradeStarCost = 1, UpgradeCost = 1,
-            Effects = [new() { Kind = EffectKind.Damage, Target = EffectTarget.Enemy, Amount = 8, UpgradeAmount = 3,
-                Scaling = EffectScaling.SelfStars, ScalingAmount = 2 },
-                new() { Kind = EffectKind.Stars, Target = EffectTarget.Self, Amount = 1 }]
-        };
-        var starCard = (NeowGeneratedCard)ModelDb.Card<NeowGeneratedCard>().ToMutable();
-        _ = starCard.BaseStarCost; // Initialize fallback star cache before changing the definition.
-        starCard.DefinitionPayload = Wire.Encode(starDefinition);
-        Check(starCard.CanonicalStarCost == 2 && starCard.BaseStarCost == 2 && starCard.EnergyCost.Canonical == 1);
-        starCard.UpgradeInternal();
-        Check(starCard.DynamicVars["E0"].WasJustUpgraded && !starCard.DynamicVars["E1"].WasJustUpgraded
-            && starCard.DynamicVars["E1"].ToHighlightedString(false) == "1"
-            && starCard.BaseStarCost == 1 && starCard.EnergyCost.GetWithModifiers(CostModifiers.Local) == 0);
-        starCard.FinalizeUpgradeInternal();
-        var starLoaded = (NeowGeneratedCard)CardModel.FromSerializable(starCard.ToSerializable());
-        Check(starLoaded.BaseStarCost == 1 && starLoaded.EnergyCost.GetWithModifiers(CostModifiers.Local) == 0
-            && starLoaded.DynamicVars["E0"].BaseValue == 11 && starLoaded.Definition.Effects[1].Kind == EffectKind.Stars);
-        starLoaded.DowngradeInternal();
-        Check(starLoaded.BaseStarCost == 2 && starLoaded.EnergyCost.GetWithModifiers(CostModifiers.Local) == 1
-            && starLoaded.DynamicVars["E0"].BaseValue == 8);
-        Console.WriteLine("PASS native v3 star/energy costs, save/downgrade and unchanged upgrade slot highlighting");
-
-        CheckCombatPreviews();
-
+            Name = "余烬之心", Type = ForgeCardType.Power, Rarity = ForgeRarity.Rare,
+            Forms = new[] { 1, 2 }.Select(n => new CardForm { Cost = new() { Energy = 1 }, Rules = [new() { Trigger = new() { Event = RuleEvent.CardDiscarded, Limit = new() { Count = 1 } }, Effects = [new() { Kind = EffectKind.Draw, Amount = n }, new() { Kind = EffectKind.Block, Amount = n * 2 }] }] }).ToArray()
+        });
+        engine.UpgradeInternal(); engine.FinalizeUpgradeInternal();
+        var power = (GeneratedEffectPower)ModelDb.Power<GeneratedEffectPower>().ToMutable(); power.Configure(engine);
+        var snapshot = Wire.Decode<GeneratedPowerSnapshot>(power.RuntimePayload);
+        Check(snapshot.SourceUpgraded && snapshot.Amounts.SequenceEqual(new decimal[] { 2, 4 }));
+        Check(snapshot.SourceInstanceKey == engine.InstanceKey);
+        EffectTriggerRuntime.TryConsume(engine.ActiveForm, snapshot.State, 0, RuleEvent.CardDiscarded);
+        power.RuntimePayload = Wire.Encode(snapshot);
+        ModelIdSerializationCache.CacheSavedPropertiesForTypeDebug(typeof(GeneratedEffectPower));
+        var loadedPower = (GeneratedEffectPower)ModelDb.Power<GeneratedEffectPower>().ToMutable(); SavedProperties.From(power)!.Fill(loadedPower);
+        Check(Wire.Decode<GeneratedPowerSnapshot>(loadedPower.RuntimePayload).State.Activations[0] == 1);
+        var copiedPower = (GeneratedEffectPower)power.ClonePreservingMutability();
+        var copiedSnapshot = (GeneratedPowerSnapshot)AccessTools.Field(typeof(GeneratedEffectPower), "_snapshot").GetValue(copiedPower)!;
+        EffectTriggerRuntime.BeginTurn(engine.ActiveForm, copiedSnapshot.State);
+        Check(Wire.Decode<GeneratedPowerSnapshot>(power.RuntimePayload).State.Activations[0] == 1);
+        engine.DowngradeInternal(); Check(Wire.Decode<GeneratedPowerSnapshot>(power.RuntimePayload).Amounts[0] == 2);
+        Console.WriteLine("PASS rule instances preserve captured form, grouped counters and clone isolation through native properties");
+        CheckCombatContracts();
         var harmony = new Harmony("neowscompany.tests");
         typeof(Bootstrap).GetMethod("VerifyCompatibility", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, null);
         harmony.PatchAll(typeof(Bootstrap).Assembly);
         var original = typeof(MegaCrit.Sts2.Core.Rewards.CardReward).GetMethod("OnSelect", BindingFlags.Instance | BindingFlags.NonPublic)!;
         Check(Harmony.GetPatchInfo(original)!.Prefixes.Any(p => p.owner == harmony.Id));
+        Check(Harmony.GetPatchInfo(AccessTools.Method(typeof(CombatHistory), "Add"))!.Prefixes.Any(p => p.owner == harmony.Id));
         Check(power.PackedIconPath == ModelDb.Power<DexterityPower>().PackedIconPath);
         harmony.UnpatchAll(harmony.Id);
-        Console.WriteLine("PASS Harmony targets and reverse-patch installation against real game DLL");
+        Console.WriteLine("PASS native Harmony reward/history/description hooks and placeholder power icons");
         Console.WriteLine("PASS game API smoke checks (rendered UI/live combat not exercised)");
     }
-
-    private static void CheckCombatPreviews()
+    private static void CheckCombatContracts()
     {
-        // Player creation only reads optional progress here; do not construct disk-backed saves outside Godot.
-        var saveGuard = new Harmony("neowscompany.tests.preview-saves");
-        saveGuard.Patch(AccessTools.PropertyGetter(typeof(SaveManager), nameof(SaveManager.Instance)),
-            prefix: new HarmonyMethod(typeof(Smoke), nameof(SkipSaveManager)));
-        saveGuard.Patch(AccessTools.Method(typeof(Player), "PopulateStartingInventory"),
-            prefix: new HarmonyMethod(typeof(Smoke), nameof(SkipStartingInventory)));
-        var owner = Player.CreateForNewRun<Regent>(UnlockState.all, 1);
-        var other = Player.CreateForNewRun<Regent>(UnlockState.all, 2);
-        var run = RunState.CreateForTest([owner, other], acts: [], seed: "PREVIEWTEST");
-        var combat = new CombatState(runState: run);
-        combat.AddPlayer(owner); combat.AddPlayer(other);
-        owner.ResetCombatState(); other.ResetCombatState();
+        var guard = new Harmony("neowscompany.tests.saves");
+        guard.Patch(AccessTools.PropertyGetter(typeof(SaveManager), nameof(SaveManager.Instance)), prefix: new HarmonyMethod(typeof(Smoke), nameof(SkipSaveManager)));
+        guard.Patch(AccessTools.Method(typeof(Player), "PopulateStartingInventory"), prefix: new HarmonyMethod(typeof(Smoke), nameof(SkipStartingInventory)));
+        var owner = Player.CreateForNewRun<Regent>(UnlockState.all, 1); var other = Player.CreateForNewRun<Regent>(UnlockState.all, 2);
+        var run = RunState.CreateForTest([owner, other], acts: [], seed: "PROTOCOL5");
+        var combat = new CombatState(runState: run); combat.AddPlayer(owner); combat.AddPlayer(other); owner.ResetCombatState(); other.ResetCombatState();
         owner.PlayerCombatState!.Stars = 5;
         ((StrengthPower)ModelDb.Power<StrengthPower>().ToMutable()).ApplyInternal(owner.Creature, 2, silent: true);
         ((WeakPower)ModelDb.Power<WeakPower>().ToMutable()).ApplyInternal(owner.Creature, 1, silent: true);
         ((VulnerablePower)ModelDb.Power<VulnerablePower>().ToMutable()).ApplyInternal(other.Creature, 1, silent: true);
-        ((DexterityPower)ModelDb.Power<DexterityPower>().ToMutable()).ApplyInternal(owner.Creature, 2, silent: true);
-        ((FrailPower)ModelDb.Power<FrailPower>().ToMutable()).ApplyInternal(owner.Creature, 1, silent: true);
-        var turnField = AccessTools.Field(typeof(CombatManager), "_turnState");
-        object? oldTurn = turnField.GetValue(CombatManager.Instance);
-        object turn = Activator.CreateInstance(turnField.FieldType, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
-            null, [combat], null)!;
-        AccessTools.Property(turn.GetType(), "IsInProgress").SetValue(turn, true);
-        turnField.SetValue(CombatManager.Instance, turn);
+        var turnField = AccessTools.Field(typeof(CombatManager), "_turnState"); object? previous = turnField.GetValue(CombatManager.Instance);
+        object turn = Activator.CreateInstance(turnField.FieldType, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, [combat], null)!;
+        AccessTools.Property(turn.GetType(), "IsInProgress").SetValue(turn, true); turnField.SetValue(CombatManager.Instance, turn);
         try
         {
-            NeowGeneratedCard Create(CardDefinition definition)
-            {
-                var card = combat.CreateCard<NeowGeneratedCard>(owner);
-                card.DefinitionPayload = Wire.Encode(definition);
-                owner.PlayerCombatState.Hand.AddInternal(card);
-                return card;
-            }
-            var attack = Create(new CardDefinition
-            {
-                SchemaVersion = 4, Name = "预览攻击", Type = ForgeCardType.Attack, Rarity = ForgeRarity.Common, Cost = 1, StarCost = 2,
-                Effects = [new() { Kind = EffectKind.Damage, Target = EffectTarget.Enemy, Amount = 8,
-                    Scaling = EffectScaling.SelfStars, ScalingAmount = 2 }]
-            });
-            attack.UpdateDynamicVarPreview(CardPreviewMode.Normal, other.Creature, attack.DynamicVars);
-            Check(attack.DynamicVars["E0"].PreviewValue == 18 && attack.DynamicVars["E0"].BaseValue == 8
-                && owner.PlayerCombatState.Stars == 5);
-            attack.UpdateDynamicVarPreview(CardPreviewMode.Normal, null, attack.DynamicVars);
-            Check(attack.DynamicVars["E0"].PreviewValue == 12);
-            Console.WriteLine("PASS native preview includes star payment, scaling, Strength, Weak and target Vulnerable without mutation");
-
-            var power = Create(new CardDefinition
-            {
-                SchemaVersion = 4, Name = "预览能力", Type = ForgeCardType.Power, Rarity = ForgeRarity.Rare, Cost = 1,
-                Effects = [new() { Kind = EffectKind.Damage, Target = EffectTarget.AllEnemies, Amount = 2,
-                    Trigger = EffectTrigger.TurnEnd, Duration = 0, Scaling = EffectScaling.SelfStars, ScalingAmount = 1 }]
-            });
-            power.UpdateDynamicVarPreview(CardPreviewMode.Normal, other.Creature, power.DynamicVars);
-            Check(power.DynamicVars["E0"].PreviewValue == 7);
-            Console.WriteLine("PASS generated power damage ignores native Strength, Weak and Vulnerable");
-
-            var block = Create(new CardDefinition
-            {
-                SchemaVersion = 4, Name = "预览格挡", Type = ForgeCardType.Skill, Rarity = ForgeRarity.Uncommon, Cost = 1,
-                Effects = [new() { Kind = EffectKind.Stars, Target = EffectTarget.Self, Amount = 1, UpgradeAmount = 1 },
-                    new() { Kind = EffectKind.Block, Target = EffectTarget.Self, Amount = 4, UpgradeAmount = 2,
-                        Scaling = EffectScaling.SelfStars, ScalingAmount = 2 }]
-            });
-            block.UpdateDynamicVarPreview(CardPreviewMode.Normal, null, block.DynamicVars);
-            Check(block.DynamicVars["E1"].PreviewValue == 13.5m && block.DynamicVars["E1"].BaseValue == 4
-                && owner.PlayerCombatState.Stars == 5 && owner.Creature.Block == 0);
-            Console.WriteLine("PASS native block preview includes earlier star gain, Dexterity and Frail without mutation");
-
-            block.UpgradeInternal(); block.FinalizeUpgradeInternal();
-            block.UpdateDynamicVarPreview(CardPreviewMode.Upgrade, null, block.DynamicVars);
-            Check(block.DynamicVars["E1"].PreviewValue == 16.5m);
-            var begin = AccessTools.Method(typeof(NeowGeneratedCard), "BeginUpgradePreview");
-            var end = AccessTools.Method(typeof(NeowGeneratedCard), "EndUpgradePreview");
-            var previous = (bool[])begin.Invoke(block, null)!;
-            Check(block.DynamicVars["E0"].ToHighlightedString(false).Contains("[green]")
-                && block.DynamicVars["E1"].ToHighlightedString(false).Contains("[green]"));
-            var description = new MegaCrit.Sts2.Core.Localization.LocString("cards", "preview-test");
-            AccessTools.Method(typeof(NeowGeneratedCard), "AddExtraArgsToDescription").Invoke(block, [description]);
-            Check(description.Variables["R0"].ToString() == "[green][img]res://images/packed/sprite_fonts/star_icon.png[/img][img]res://images/packed/sprite_fonts/star_icon.png[/img][/green]");
-            end.Invoke(block, [previous]);
-            Check(!block.DynamicVars["E0"].WasJustUpgraded && !block.DynamicVars["E1"].WasJustUpgraded);
-            Console.WriteLine("PASS upgrade inspection restores highlighting for finalized cards and then restores native flags");
-
-            var energy = Create(block.Definition with { Name = "预览能量", Effects = [new()
-                { Kind = EffectKind.Energy, Target = EffectTarget.Self, Amount = 2 }] });
-            var energyDescription = new MegaCrit.Sts2.Core.Localization.LocString("cards", "preview-test");
-            AccessTools.Method(typeof(NeowGeneratedCard), "AddExtraArgsToDescription").Invoke(energy, [energyDescription]);
-            Check(energyDescription.Variables["R0"].ToString()!.Contains("regent_energy_icon.png"));
-            Console.WriteLine("PASS resource descriptions retain upgraded icon coloring and the owner's energy color");
-
-            var repeated = Create(block.Definition with { Name = "重复预览", Effects =
-                [new() { Kind = EffectKind.Block, Target = EffectTarget.Self, Amount = 1, Repeat = int.MaxValue },
-                    new() { Kind = EffectKind.Stars, Target = EffectTarget.Self, Amount = 1,
-                        Scaling = EffectScaling.SelfBlock, ScalingAmount = 1 }] });
-            repeated.UpdateDynamicVarPreview(CardPreviewMode.Normal, null, repeated.DynamicVars);
-            Check(repeated.DynamicVars["E1"].PreviewValue == 999999999m && owner.Creature.Block == 0);
-            Console.WriteLine("PASS large repeated resource forecasts respect native block limits without linear preview work");
+            var card = combat.CreateCard<NeowGeneratedCard>(owner);
+            var amount = new NumberExpression { Add = [8, new() { Mul = [2, new() { Stat = "stars" }] }] };
+            var form = new CardForm { Cost = new() { Energy = 1, Stars = 2 }, Effects = [new() { Kind = EffectKind.Damage, Target = "enemy", Amount = amount }] };
+            card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "星潮", Type = ForgeCardType.Attack, Rarity = ForgeRarity.Common, Forms = [form, form] });
+            owner.PlayerCombatState.Hand.AddInternal(card);
+            card.UpdateDynamicVarPreview(CardPreviewMode.Normal, other.Creature, card.DynamicVars);
+            Check(card.DynamicVars["E0"].PreviewValue == 18 && card.DynamicVars["E0"].BaseValue == 0 && owner.PlayerCombatState.Stars == 5);
+            Console.WriteLine("PASS expression preview includes payment/Strength/Weak/Vulnerable without mutating state or base values");
+            var effect = new CardEffect { Kind = EffectKind.Damage, Target = "all_enemies", Amount = 7 };
+            var ruleForm = new CardForm { Cost = new() { Energy = 1 }, Rules = [new() { Trigger = new() { Event = RuleEvent.TurnEnd }, Effects = [effect] }] };
+            card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "星幕", Type = ForgeCardType.Power, Rarity = ForgeRarity.Rare, Forms = [ruleForm, ruleForm] });
+            card.UpdateDynamicVarPreview(CardPreviewMode.Normal, other.Creature, card.DynamicVars); Check(card.DynamicVars["E0"].PreviewValue == 7);
+            var baseForm = ruleForm with { Rules = [new() { Trigger = new() { Event = RuleEvent.CardPlayed, Filter = new() { Type = "skill" }, Occurrence = new() { First = 1 } }, Effects = [new() { Kind = EffectKind.Block, Amount = 1 }] }] };
+            var play = new CardPlay { Card = card, Player = owner, Target = null, Resources = new() { EnergySpent = 1, EnergyValue = 1, StarsSpent = 0, StarValue = 0 }, ResultPile = PileType.Discard, IsAutoPlay = false, PlayIndex = 0, PlayCount = 1 };
+            var entry = new CardPlayFinishedEntry(play, combat.RoundNumber, combat.CurrentSide, CombatManager.Instance.History, combat.Players);
+            card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "技能", Type = ForgeCardType.Skill, Rarity = ForgeRarity.Common, Forms = [form with { Effects = [new() { Kind = EffectKind.Block, Amount = 1 }] }, form with { Effects = [new() { Kind = EffectKind.Block, Amount = 2 }] }] });
+            GeneratedEventFacts.Capture(entry); AccessTools.Method(typeof(CombatHistory), "Add").Invoke(CombatManager.Instance.History, [combat, entry]);
+            var trigger = baseForm.Listeners[0].Trigger with { Filter = new() { Type = "skill", Upgraded = false, Cost = 1 } };
+            Check(GeneratedEventFacts.Ordinal(trigger, owner.Creature, combat) == 1);
+            card.UpgradeInternal(); card.FinalizeUpgradeInternal();
+            Check(GeneratedEventFacts.Ordinal(trigger, owner.Creature, combat) == 1);
+            Check(GeneratedEventFacts.MatchesCurrent(trigger, card, owner.Creature, combat));
+            Check(NativeMechanics.Matches(NativeMechanics.Card("soul"), new() { Id = "soul", Type = "skill" }));
+            Console.WriteLine("PASS native event ordinals include earlier events and snapshot filter properties before later upgrades");
         }
-        finally
-        {
-            turnField.SetValue(CombatManager.Instance, oldTurn);
-            saveGuard.UnpatchAll(saveGuard.Id);
-        }
+        finally { CombatManager.Instance.History.Clear(); turnField.SetValue(CombatManager.Instance, previous); guard.UnpatchAll(guard.Id); }
     }
     private static bool SkipSaveManager(ref SaveManager? __result) { __result = null; return false; }
     private static bool SkipStartingInventory() => false;

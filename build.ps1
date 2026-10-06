@@ -29,8 +29,12 @@ try {
     Copy-Item -LiteralPath 'README.md' -Destination $package
     $packagedDocs = Join-Path $package 'docs'
     if (Test-Path -LiteralPath $packagedDocs) {
+        $resolvedDocs = (Resolve-Path -LiteralPath $packagedDocs).Path
+        $expectedDocs = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'build\NeowsCompany\docs'))
+        if ($resolvedDocs -ne $expectedDocs) { throw 'Packaged docs resolved outside the expected workspace path.' }
         Remove-Item -LiteralPath $packagedDocs -Recurse -Force
     }
+    Copy-Item -LiteralPath 'docs' -Destination $package -Recurse
     New-Item -ItemType Directory -Force -Path (Join-Path $package 'examples') | Out-Null
     Get-ChildItem -LiteralPath 'examples' -Filter '*.json' | Copy-Item -Destination (Join-Path $package 'examples')
     Compress-Archive -LiteralPath $package -DestinationPath (Join-Path $PSScriptRoot 'build\NeowsCompany-0.1.0.zip') -Force

@@ -1,152 +1,125 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
-
 namespace Forge.Core;
 
-// Logs retain full snapshots. Only this projection is sent to the provider (also for CLI replays).
 public static class ObservationProjector
 {
     private static JsonObject Pick(JsonObject value, params string[] keys)
     {
         var result = new JsonObject();
-        foreach (string key in keys) if (value.TryGetPropertyValue(key, out var item)) result[key] = item?.DeepClone();
+        foreach (string key in keys) if (value[key] is { } item) result[key] = item.DeepClone();
         return result;
-    }
-    private static JsonObject Card(JsonObject card, bool full)
-    {
-        var result = Pick(card, "id", "pool", "title", "type", "rarity", "cost", "star_cost", "current_cost", "current_star_cost",
-            "x_cost", "star_x_cost", "upgraded", "target", "keywords", "enchantment", "affliction", "count");
-        result["origin"] = card["origin"]?.ToString() ?? (card["generated_definition"] is null ? "native" : "generated");
-        if (full)
-        {
-            if (card["generated_definition"] is JsonObject definition)
-            {
-                // The program already expresses generated mechanics. Avoid sending its expanded prose and flavor twice.
-                result["generated_definition"] = CompactDefinition(definition);
-            }
-            else
-            {
-                result["description"] = Clean(card["description"]?.ToString() ?? "");
-                result["generated_definition"] = null;
-            }
-        }
-        else
-        {
-            result = Pick(result, "id", "title", "type", "current_cost", "current_star_cost", "upgraded", "origin");
-            result["instance"] = card["instance"]?.DeepClone();
-        }
-        return result;
-    }
-    private static JsonObject CompactDefinition(JsonObject definition)
-    {
-        var result = definition.DeepClone().AsObject();
-        result.Remove("flavor"); result.Remove("name");
-        RemoveDefaults(result, ("star_cost", "-1"), ("upgrade_cost", "0"), ("upgrade_star_cost", "0"));
-        if (result["effects"] is JsonArray effects) result["effects"] = CompactEffects(effects);
-        return result;
-    }
-    private static JsonArray CompactEffects(JsonArray effects) => new(effects.Select(effect =>
-    {
-        var copy = effect?.DeepClone();
-        if (copy is JsonObject slots)
-            RemoveDefaults(slots, ("upgrade_amount", "0"), ("trigger", "on_play"), ("duration", "1"), ("max_per_turn", "1"),
-                ("repeat", "1"), ("condition", "none"), ("scaling", "none"), ("scaling_amount", "0"), ("scaling_cap", "0"));
-        return copy;
-    }).ToArray());
-    private static void RemoveDefaults(JsonObject value, params (string Key, string Default)[] defaults)
-    {
-        foreach (var (key, expected) in defaults)
-            if (value[key]?.ToString() == expected) value.Remove(key);
-    }
-    private static JsonElement CompactHistory(JsonElement entry)
-    {
-        if (JsonNode.Parse(entry.GetRawText()) is not JsonObject obj) return entry;
-        var result = Pick(obj, "name", "type", "cost", "star_cost", "effects", "keywords", "status", "combat_key");
-        if (result["effects"] is JsonArray effects) result["effects"] = CompactEffects(effects);
-        return JsonSerializer.SerializeToElement(result, Wire.Json);
     }
     private static string Clean(string text)
     {
         text = Regex.Replace(text, @"\[img\][^\[]*star_icon[^\[]*\[/img\]", "★");
         text = Regex.Replace(text, @"\[img\][^\[]*energy_icon[^\[]*\[/img\]", "⚡");
-        return Regex.Replace(text, @"\[img\].*?\[/img\]", "").Replace("\\n", "\n");
+        return Regex.Replace(Regex.Replace(text, @"\[img\].*?\[/img\]", ""), @"\[/?[a-zA-Z_]+\]", "").Replace("\\n", "\n");
+    }
+    private static JsonObject Card(JsonObject card)
+    {
+        var result = Pick(card, "title", "type", "cost", "upgraded", "enchantment", "affliction");
+        if (card["star_cost"] is JsonValue stars && stars.TryGetValue<int>(out int number) && number >= 0) result["star_cost"] = number;
+        if (card["x_cost"]?.ToString() == "true") result["x_cost"] = true;
+        if (card["star_x_cost"]?.ToString() == "true") result["star_x_cost"] = true;
+        if (card["description"] is { } description) result["text"] = Clean(description.ToString());
+        else if (card["generated_definition"] is { } definition)
+        {
+            var parsed = Wire.Decode<CardDefinition>(definition.ToJsonString());
+            result["text"] = Clean(CardText.Render(parsed, true, upgraded: card["upgraded"]?.ToString() == "true"));
+        }
+        if (!result.ContainsKey("title") && card["id"] is { } id) result["title"] = id.DeepClone();
+        return result;
     }
     private static JsonObject Creature(JsonObject value)
     {
-        var result = Pick(value, "instance", "id", "side", "hp", "max_hp", "block", "alive");
-        result["powers"] = value["powers"] is JsonArray powers
-            ? new JsonArray(powers.OfType<JsonObject>().Select(p => (JsonNode)Pick(p, "id", "amount")).ToArray()) : new JsonArray();
+        var result = Pick(value, "id", "hp", "max_hp", "block");
+        if (value["powers"] is JsonArray powers && powers.Count > 0)
+            result["powers"] = new JsonArray(powers.OfType<JsonObject>().Select(p => (JsonNode)Pick(p, "id", "amount")).ToArray());
         return result;
     }
-    private static JsonNode? EventNode(JsonNode? node)
+    // A design view, not a combat/session serialization. Unknown fields are omitted, never replaced with zero.
+    public static JsonElement Project(GenerationContext context, int historyLimit = 12)
     {
-        if (node is JsonArray array) return new JsonArray(array.Select(EventNode).ToArray());
-        if (node is not JsonObject obj) return node?.DeepClone();
-        if (obj.ContainsKey("hp") && obj.ContainsKey("side")) return Pick(obj, "instance", "id", "side", "hp", "block", "alive");
-        if (obj.ContainsKey("rarity") && obj.ContainsKey("cost"))
-            return Pick(Card(obj, false), "instance", "id", "title", "type", "origin");
-        var result = new JsonObject();
-        foreach (var pair in obj)
-        {
-            if (pair.Key is "state" or "powers" or "description" or "generated_definition" or "FollowUpState" or "FollowUpStateId") continue;
-            result[pair.Key] = EventNode(pair.Value);
-        }
-        return result;
-    }
-    public static JsonElement CompactEvent(JsonElement entry) => JsonSerializer.SerializeToElement(EventNode(JsonNode.Parse(entry.GetRawText())), Wire.Json);
-    public static GenerationContext Compact(GenerationContext context)
-    {
-        var run = JsonNode.Parse(context.Run.GetRawText()) as JsonObject;
-        var state = JsonNode.Parse(context.State.GetRawText()) as JsonObject;
-        if (run is not null && run["deck"] is JsonArray deck)
-        {
-            var compact = Pick(run, "character", "ascension");
-            compact["deck"] = new JsonArray(deck.OfType<JsonObject>().Select(c => Card(c, true))
-                .Concat(deck.Where(c => c is not JsonObject).Select(c => new JsonObject { ["id"] = c?.DeepClone() }))
-                .GroupBy(c => c.ToJsonString()).Select(group =>
-                {
-                    var card = group.First(); card["count"] = group.Sum(c => c["count"]?.GetValue<int>() ?? 1); return (JsonNode)card;
-                }).OrderBy(c => c.ToJsonString(), StringComparer.Ordinal).ToArray());
-            foreach (string kind in new[] { "relics", "potions" })
-                compact[kind] = new JsonArray((run[kind] as JsonArray ?? new()).OfType<JsonObject>().Select(entity =>
-                {
-                    var item = Pick(entity, "id", "title");
-                    if (entity["description"] is not null) item["description"] = Clean(entity["description"]!.ToString());
-                    if (entity["state"] is JsonObject counters)
-                        item["counters"] = Pick(counters, "Amount", "TimesUsed", "Charges", "Counter", "Stacks");
-                    return (JsonNode)item;
-                }).ToArray());
-            foreach (string key in new[] { "act", "floor", "room_type", "gold" })
-                if (run.TryGetPropertyValue(key, out var value)) compact[key] = value?.DeepClone();
-            run = compact;
-        }
-        if (state is not null && state["player"] is JsonObject player)
-        {
-            var compact = Pick(state, "round", "side"); compact["player"] = Creature(player);
-            if (state["player_combat"] is JsonObject pcs)
+        var run = JsonNode.Parse(context.Run.GetRawText()) as JsonObject ?? new();
+        var state = JsonNode.Parse(context.State.GetRawText()) as JsonObject ?? new();
+        var result = Pick(run, "character", "ascension", "act", "floor");
+        if (run["deck"] is JsonArray deck)
+            result["deck"] = new JsonArray(deck.Select(node => node is JsonObject card ? Card(card) : new JsonObject { ["title"] = node?.DeepClone() })
+                .Select((card, i) => (card, count: deck[i] is JsonObject original ? original["count"]?.GetValue<int>() ?? 1 : 1))
+                .GroupBy(item => item.card.ToJsonString()).OrderBy(group => group.Key, StringComparer.Ordinal)
+                .Select(group => { var card = group.First().card; card["count"] = group.Sum(item => item.count); return (JsonNode)card; }).ToArray());
+        if (run["relics"] is JsonArray relics && relics.Count > 0)
+            result["relics"] = new JsonArray(relics.OfType<JsonObject>().Select(relic =>
             {
-                var combat = Pick(pcs, "turn", "phase", "energy", "max_energy", "stars", "orb_capacity");
-                combat["orbs"] = new JsonArray((pcs["orbs"] as JsonArray ?? new()).OfType<JsonObject>().Select(o => (JsonNode)Pick(o, "id")).ToArray());
-                combat["piles"] = new JsonArray((pcs["piles"] as JsonArray ?? new()).OfType<JsonObject>().Select(pile =>
-                    (JsonNode)new JsonObject { ["pile"] = pile["pile"]?.DeepClone(), ["cards"] = new JsonArray(
-                        (pile["cards"] as JsonArray ?? new()).OfType<JsonObject>().Select(c => (JsonNode)Card(c, false)).ToArray()) }).ToArray());
-                compact["player_combat"] = combat;
-            }
-            compact["allies"] = new JsonArray((state["allies"] as JsonArray ?? new()).OfType<JsonObject>().Select(c => (JsonNode)Creature(c)).ToArray());
-            compact["enemies"] = new JsonArray((state["enemies"] as JsonArray ?? new()).OfType<JsonObject>().Select(enemy =>
-            {
-                var value = Pick(enemy, "move", "intents");
-                value["creature"] = enemy["creature"] is JsonObject creature ? Creature(creature) : null;
-                return (JsonNode)value;
+                var item = Pick(relic, "title");
+                if (relic["description"] is { } description) item["text"] = Clean(description.ToString());
+                if (relic["state"] is JsonObject counters)
+                {
+                    var meaningful = Pick(counters, "Amount", "TimesUsed", "Charges", "Counter", "Stacks");
+                    if (meaningful.Count > 0) item["counters"] = meaningful;
+                }
+                return (JsonNode)item;
             }).ToArray());
-            state = compact;
+        if (historyLimit > 0 && context.GenerationHistory.Length > 0)
+            result["history"] = new JsonArray(context.GenerationHistory.TakeLast(historyLimit).Select(entry =>
+            {
+                var history = JsonNode.Parse(entry.GetRawText()) as JsonObject ?? new();
+                var item = Pick(history, "name", "status");
+                if (history["card"] is JsonObject definition && definition["forms"] is JsonArray)
+                {
+                    var card = Wire.Decode<CardDefinition>(definition.ToJsonString());
+                    item["name"] = card.Name; item["cost"] = JsonSerializer.SerializeToNode(card.Forms[0].Cost, Wire.Json);
+                    item["text"] = Clean(CardText.Render(card, true));
+                }
+                return (JsonNode)item;
+            }).ToArray());
+        var combat = Pick(state, "round");
+        if (state["player"] is JsonObject player) combat["player"] = Creature(player);
+        else foreach (string key in new[] { "hp", "max_hp" }) if (state[key] is { } field) combat[key] = field.DeepClone();
+        if (state["player_combat"] is JsonObject pcs)
+        {
+            foreach (string key in new[] { "energy", "max_energy", "stars", "orb_capacity" }) if (pcs[key] is { } field) combat[key] = field.DeepClone();
+            if (pcs["orbs"] is JsonArray orbs && orbs.Count > 0) combat["orbs"] = new JsonArray(orbs.OfType<JsonObject>().Select(o => (JsonNode)Pick(o, "id")).ToArray());
         }
-        return context with { SchemaVersion = 2,
-            Run = run is null ? context.Run : JsonSerializer.SerializeToElement(run, Wire.Json),
-            State = state is null ? context.State : JsonSerializer.SerializeToElement(state, Wire.Json),
-            RecentEvents = context.RecentEvents.Select(CompactEvent).ToArray(),
-            GenerationHistory = context.GenerationHistory.Select(CompactHistory).ToArray() };
+        if (state["allies"] is JsonArray allies && allies.Count > 0) combat["allies"] = new JsonArray(allies.OfType<JsonObject>().Select(c => (JsonNode)Creature(c)).ToArray());
+        if (state["enemies"] is JsonArray enemies)
+            combat["enemies"] = new JsonArray(enemies.OfType<JsonObject>().Select(e =>
+            {
+                var creature = Creature(e["creature"] as JsonObject ?? e);
+                if (e["intents"] is { } intents) creature["intents"] = intents.DeepClone();
+                return (JsonNode)creature;
+            }).ToArray());
+        if (context.CombatSummary is { ValueKind: JsonValueKind.Object } summary)
+        {
+            var stats = JsonNode.Parse(summary.GetRawText())!.AsObject();
+            combat["summary"] = Pick(stats, "complete", "won", "cards_played", "damage_dealt", "damage_taken", "damage_blocked", "block_gained", "stars_gained", "stars_spent", "energy_spent", "event_counts");
+        }
+        else if (context.RecentEvents.Length > 0)
+        {
+            // Offline/older observations without summaries still provide a bounded, typed event tally.
+            var counts = context.RecentEvents.Select(e => e.TryGetProperty("detail", out var d) ? d : e)
+                .Where(e => e.ValueKind == JsonValueKind.Object && e.TryGetProperty("type", out _))
+                .GroupBy(e => e.GetProperty("type").GetString()!).ToDictionary(g => g.Key, g => g.Count());
+            combat["observed_events"] = JsonSerializer.SerializeToNode(counts);
+        }
+        result["combat"] = combat;
+        return JsonSerializer.SerializeToElement(result, Wire.Json);
+    }
+    public static JsonElement CompactEvent(JsonElement entry)
+    {
+        JsonNode? Compact(JsonNode? node)
+        {
+            if (node is JsonArray array) return new JsonArray(array.Select(Compact).ToArray());
+            if (node is not JsonObject obj) return node?.DeepClone();
+            if (obj.ContainsKey("hp") && obj.ContainsKey("side")) return Pick(obj, "id", "hp", "block", "alive");
+            if (obj.ContainsKey("rarity") && obj.ContainsKey("cost")) return Pick(obj, "id", "title", "type");
+            var result = new JsonObject();
+            foreach (var p in obj) if (p.Key is not ("state" or "powers" or "description" or "generated_definition" or "FollowUpState" or "FollowUpStateId")) result[p.Key] = Compact(p.Value);
+            return result;
+        }
+        return JsonSerializer.SerializeToElement(Compact(JsonNode.Parse(entry.GetRawText())), Wire.Json);
     }
 }
 

@@ -153,8 +153,7 @@ internal sealed class ForgeRuntime(string root, ForgeConfig config)
         TotalEvents = _totalEvents, OmittedEvents = _totalEvents - _events.Count,
         CombatSummary = _summary.Snapshot(), FirstRoundSummary = _firstRoundSummary,
         GenerationHistory = _pool?.History().Select(item => _capture.Detach(new
-        { item.CombatKey, item.Status, name = item.Card.Name, type = item.Card.Type, cost = item.Card.Cost,
-            star_cost = item.Card.StarCost, effects = item.Card.Effects, keywords = item.Card.Keywords })).ToArray() ?? []
+        { item.CombatKey, item.Status, card = item.Card })).ToArray() ?? []
     };
 
     internal async Task PrepareReward(Player player)

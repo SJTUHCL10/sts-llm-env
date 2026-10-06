@@ -19,3 +19,4 @@ notes/
 *.key
 *.pem
 .vs/
+__pycache__/

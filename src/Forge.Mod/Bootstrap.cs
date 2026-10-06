@@ -53,6 +53,9 @@ public static class Bootstrap
 
     internal static void VerifyCompatibility()
     {
+        if (AccessTools.Method(typeof(MegaCrit.Sts2.Core.Commands.OrbCmd), "Evoke",
+            [typeof(MegaCrit.Sts2.Core.GameActions.Multiplayer.PlayerChoiceContext), typeof(MegaCrit.Sts2.Core.Entities.Players.Player), typeof(MegaCrit.Sts2.Core.Models.OrbModel), typeof(bool)]) is null)
+            throw new MissingMethodException("OrbCmd.Evoke");
         if (AccessTools.PropertySetter(typeof(MegaCrit.Sts2.Core.Models.CardModel), "BaseStarCost") is null)
             throw new MissingMethodException("CardModel.BaseStarCost setter");
         foreach (var (type, name) in new[]

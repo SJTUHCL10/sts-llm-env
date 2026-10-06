@@ -5,240 +5,176 @@ using Forge.Core;
 int passed = 0;
 var valid = new CardDefinition
 {
-    Name = "涅奥的低语", Type = ForgeCardType.Attack, Rarity = ForgeRarity.Common, Cost = 1,
-    Effects = [new() { Kind = EffectKind.Damage, Target = EffectTarget.Enemy, Amount = 8, UpgradeAmount = 3 }]
+    Name = "涅奥的低语", Type = ForgeCardType.Attack, Rarity = ForgeRarity.Common,
+    Forms = [new() { Cost = new() { Energy = 1 }, Keywords = [ForgeKeyword.Exhaust], Effects = [new() { Kind = EffectKind.Damage, Target = "enemy", Amount = 8 }] },
+             new() { Cost = new() { Energy = 0 }, Effects = [new() { Kind = EffectKind.Damage, Target = "all_enemies", Amount = 11 }, new() { Kind = EffectKind.Block, Amount = 3 }] }]
+};
+var complex = valid with { Name = "余烬之歌", Forms = valid.Forms.Select(f => f with { Rules = [new() { Trigger = new() { Event = RuleEvent.CardDiscarded }, Lifetime = LifetimeKind.Turn, Effects = [new() { Kind = EffectKind.Block, Amount = 2 }] }] }).ToArray() };
+var engine = new CardDefinition
+{
+    Name = "余烬之心", Type = ForgeCardType.Power, Rarity = ForgeRarity.Rare,
+    Forms = new[] { 1, 2 }.Select(n => new CardForm { Cost = new() { Energy = 2 }, Rules = [new() { Trigger = new() { Event = RuleEvent.CardExhausted }, Effects = [new() { Kind = EffectKind.Block, Amount = n }] }] }).ToArray()
 };
 var context = new GenerationContext
 {
-    CombatKey = "combat-a", Run = JsonSerializer.SerializeToElement(new { deck = new[] { "Strike" } }),
+    CombatKey = "combat-a", Run = JsonSerializer.SerializeToElement(new { character = "IRONCLAD", deck = new[] { "Strike" } }),
     State = JsonSerializer.SerializeToElement(new { hp = 50 }), RecentEvents = [], TotalEvents = 100, OmittedEvents = 100
 };
 var config = new ForgeConfig { PrefetchMinimumIntervalSeconds = 1, PrefetchInitialCardPlays = 0, MaxRequestsPerCombat = 2, GenerationTiming = GenerationTiming.WaitOnReward };
 
-await Test("valid definition and round trip", () =>
+await Test("two complete forms round trip and upgrade changes mechanics", () =>
 {
-    var card = CardValidator.Validate(Wire.Decode<CardDefinition>(Wire.Encode(valid)));
-    Check(card.Effects[0].Amount == 8 && card.Name == valid.Name);
+    var loaded = CardValidator.Validate(Wire.Decode<CardDefinition>(Wire.Encode(valid)));
+    Check(loaded.Form(false).Tags.Contains(ForgeKeyword.Exhaust) && loaded.Form(true).Tags.Length == 0);
+    Check(loaded.Form(true).Cost.Energy == 0 && loaded.Form(true).Immediate.Length == 2 && loaded.Form(true).Immediate[0].Target!.Ref == "all_enemies");
+    string json = Wire.Encode(loaded);
+    Check(!json.Contains("upgrade_") && !json.Contains("schema_version") && !json.Contains("null") && !json.Contains("repeat"));
     return Task.CompletedTask;
 });
-foreach (var (name, invalid) in new (string, CardDefinition)[]
+await Test("reject missing forms, old fields, mixed targets, irrelevant slots and invalid expressions", async () =>
 {
-    ("markup", valid with { Name = "[img]bad[/img]" }),
-    ("negative cost", valid with { Cost = -1 }),
-    ("future schema", valid with { SchemaVersion = 5 }),
-    ("attack without damage", valid with { Effects = [new() { Kind = EffectKind.Block, Target = EffectTarget.Self, Amount = 3 }] }),
-    ("skill with damage", valid with { Type = ForgeCardType.Skill }),
-    ("self damage", valid with { Effects = [valid.Effects[0] with { Target = EffectTarget.Self }] }),
-    ("excessive upgrade", valid with { Effects = [valid.Effects[0] with { UpgradeAmount = 16 }] }),
-    ("overpowered", valid with { Cost = 0, Effects = [valid.Effects[0] with { Amount = 30, UpgradeAmount = 0 }] }),
-    ("duplicate keywords", valid with { Keywords = [ForgeKeyword.Exhaust, ForgeKeyword.Exhaust] }),
-    ("zero cost draw loop", valid with { Type = ForgeCardType.Skill, Cost = 0,
-        Effects = [new() { Kind = EffectKind.Draw, Target = EffectTarget.Self, Amount = 1 }] })
-}) await Test("reject " + name, () => Reject(() => CardValidator.Validate(invalid)));
-
-await Test("reject unknown JSON fields / numeric enums / missing required fields", async () =>
-{
-    await Reject(() => Wire.Decode<CardDefinition>(Wire.Encode(valid).Replace("\"cost\":1", "\"script\":\"bad\",\"cost\":1")));
-    await Reject(() => Wire.Decode<CardDefinition>(Wire.Encode(valid).Replace("\"attack\"", "42")));
     await Reject(() => Wire.Decode<CardDefinition>("{}"));
+    await Reject(() => Wire.Decode<CardDefinition>(Wire.Encode(valid).Replace("\"name\":", "\"schema_version\":4,\"name\":")));
+    await Reject(() => CardValidator.Validate(valid with { Forms = [valid.Forms[0]] }));
+    await Reject(() => CardValidator.Validate(valid with { Name = "[bad]" }));
+    foreach (var bad in new CardEffect[]
+    {
+        new() { Kind = EffectKind.Damage, Amount = 8 },
+        new() { Kind = EffectKind.Draw, Target = "enemy", Amount = 1 },
+        new() { Kind = EffectKind.Block, Amount = 1, Power = "doom" },
+        new() { Kind = EffectKind.Discard, Target = new() { Pile = CardPileName.Hand, Pick = SelectionMode.All, Count = 1 } },
+        new() { Kind = EffectKind.Move, Target = "selected:missing", To = CardPileName.Hand },
+        new() { Kind = EffectKind.CreateCard, Card = new() { Id = "script" }, To = CardPileName.Hand },
+        new() { Kind = EffectKind.ApplyPower, Power = "arbitrary_type", Amount = 1 },
+        new() { Kind = EffectKind.Block, Amount = new() { Add = [1, 2], Mul = [2, 3] } },
+        new() { Kind = EffectKind.Block, Amount = new() { Div = [4, 0] } }
+    }) await Reject(() => CardValidator.Validate(valid with { Type = ForgeCardType.Skill, Forms = valid.Forms.Select(f => f with { Effects = [bad] }).ToArray() }));
+    await Reject(() => Wire.Decode<EffectTarget>("{\"pile\":\"hand\",\"pick\":\"random\",\"script\":true}"));
+    await Reject(() => Wire.Decode<NumberExpression>("{\"stat\":\"hp\",\"stat\":\"block\"}"));
 });
-var complex = new CardDefinition
+await Test("selector bindings, filtering, creation and transformation share reusable structures", () =>
 {
-    SchemaVersion = 2, Name = "余烬编织", Type = ForgeCardType.Attack, Rarity = ForgeRarity.Uncommon, Cost = 2,
-    Effects =
-    [
-        new() { Kind = EffectKind.Damage, Target = EffectTarget.Enemy, Amount = 3, UpgradeAmount = 1, Repeat = 2,
-            Condition = EffectCondition.TargetVulnerable, Scaling = EffectScaling.ExhaustSize, ScalingAmount = 1, ScalingCap = 3 },
-        new() { Kind = EffectKind.Block, Target = EffectTarget.Self, Amount = 3, UpgradeAmount = 1,
-            Trigger = EffectTrigger.NextTurnStart }
-    ]
-};
-var engine = new CardDefinition
-{
-    SchemaVersion = 2, Name = "余烬之心", Type = ForgeCardType.Power, Rarity = ForgeRarity.Rare, Cost = 2,
-    Effects = [new() { Kind = EffectKind.Block, Target = EffectTarget.Self, Amount = 1, UpgradeAmount = 1,
-        Trigger = EffectTrigger.CardExhausted, Duration = 0, MaxPerTurn = 3 }]
-};
-await Test("v1 old JSON keeps immediate semantics and v2 complex programs round trip", () =>
-{
-    var old = Wire.Decode<CardDefinition>("""
-        {"schema_version":1,"name":"Old","type":"skill","rarity":"common","cost":1,
-        "effects":[{"kind":"block","target":"self","amount":5,"upgrade_amount":3}]}
-        """);
-    CardValidator.Validate(old);
-    Check(old.Effects[0].Trigger == EffectTrigger.OnPlay && old.Effects[0].Repeat == 1 && old.Effects[0].Scaling == EffectScaling.None);
-    foreach (var card in new[] { complex, engine })
-        Check(Wire.Encode(CardValidator.Validate(Wire.Decode<CardDefinition>(Wire.Encode(card)))) == Wire.Encode(card));
+    var actions = new CardEffect[]
+    {
+        new() { Kind = EffectKind.Select, Target = new() { Pile = CardPileName.Discard, Pick = SelectionMode.Choose, Count = 2, Filter = new() { Type = "skill" } }, As = "chosen" },
+        new() { Kind = EffectKind.Upgrade, Target = "selected:chosen" },
+        new() { Kind = EffectKind.Move, Target = "selected:chosen", To = CardPileName.Draw, Position = "top" },
+        new() { Kind = EffectKind.CreateCard, Card = new() { Id = "soul", Upgraded = true }, Count = 2, To = CardPileName.Hand },
+        new() { Kind = EffectKind.Transform, Target = new() { Pile = CardPileName.Hand, Pick = SelectionMode.Random }, Card = new() { Pool = "colorless", Pick = SelectionMode.Random, Filter = new() { Type = "attack" } } }
+    };
+    var card = valid with { Type = ForgeCardType.Skill, Forms = valid.Forms.Select(f => f with { Effects = actions }).ToArray() };
+    CardValidator.Validate(Wire.Decode<CardDefinition>(Wire.Encode(card)));
+    Check(CardText.Render(card, true).Contains("变化") && CardText.Render(card, false).Contains("Transform"));
     return Task.CompletedTask;
 });
-await Test("high-cost cards accept 52 to 63 damage upgrades and five-cost payloads", () =>
+await Test("reject null nested nodes and ignored subjects; temporary powers use supported native lifetimes", () =>
 {
-    foreach (int schema in new[] { 1, 2 })
+    CardDefinition With(CardEffect e) => valid with { Forms = valid.Forms.Select(f => f with { Effects = [new() { Kind = EffectKind.Damage, Target = "enemy", Amount = 1 }, e] }).ToArray() };
+    foreach (var effect in new CardEffect[]
     {
-        var heavy = valid with { SchemaVersion = schema, Cost = 4, Rarity = ForgeRarity.Rare,
-            Effects = [valid.Effects[0] with { Amount = 52, UpgradeAmount = 11 }] };
-        CardValidator.Validate(Wire.Decode<CardDefinition>(Wire.Encode(heavy)));
-        CardValidator.Validate(heavy with { Cost = 5, Effects = [heavy.Effects[0] with { Amount = 65, UpgradeAmount = 15 }] });
-    }
-    Check(PromptBuilder.Contract.Contains("schema_version\":4") && !PromptBuilder.Contract.Contains("Score="));
+        new() { Kind = EffectKind.Block, Amount = new() { Stat = "energy", Of = "target" } },
+        new() { Kind = EffectKind.Block, Amount = 1, Condition = new() { All = [null!] } },
+        new() { Kind = EffectKind.Block, Amount = 1, Target = new() { Ref = "self", Pick = SelectionMode.All } },
+        new() { Kind = EffectKind.ApplyPower, Power = "poison", Amount = 2, Until = LifetimeKind.Turn }
+    }) Throws<FormatException>(() => CardValidator.Validate(With(effect)));
+    Throws<FormatException>(() => CardValidator.Validate(valid with { Forms = valid.Forms.Select(f => f with { Rules = [null!] }).ToArray() }));
+    CardValidator.Validate(With(new() { Kind = EffectKind.ApplyPower, Power = "focus", Amount = -2, Until = LifetimeKind.Turn }));
+    Check(CardText.Render(With(new() { Kind = EffectKind.ApplyPower, Power = "strength", Amount = 3, Until = LifetimeKind.Turn }), false).Contains("Until the end"));
+    Throws<InvalidOperationException>(() => EffectRules.Evaluate(new() { Div = [1, new() { Stat = "energy" }] }, _ => 0));
+    Throws<OverflowException>(() => EffectRules.Evaluate(new() { Add = [int.MaxValue, 1] }, _ => 0));
     return Task.CompletedTask;
 });
-await Test("relaxed effect bounds still reject excess values, scaled totals and cheap oversized payoffs", async () =>
-{
-    foreach (var kind in Enum.GetValues<EffectKind>().Where(k => k != EffectKind.Stars))
-    {
-        var (maximum, upgrade) = CardValidator.Limits(kind);
-        var effect = new CardEffect { Kind = kind,
-            Target = kind is EffectKind.Damage or EffectKind.Weak or EffectKind.Vulnerable or EffectKind.Poison
-                ? EffectTarget.Enemy : EffectTarget.Self, Amount = maximum - upgrade, UpgradeAmount = upgrade };
-        var card = valid with { SchemaVersion = 2, Cost = 5, Rarity = ForgeRarity.Rare,
-            Type = kind == EffectKind.Damage ? ForgeCardType.Attack : ForgeCardType.Skill, Effects = [effect] };
-        CardValidator.Validate(card);
-        await Reject(() => CardValidator.Validate(card with { Effects = [effect with { Amount = maximum + 1 }] }));
-        await Reject(() => CardValidator.Validate(card with { Effects = [effect with { UpgradeAmount = upgrade + 1 }] }));
-        await Reject(() => CardValidator.Validate(card with { Effects = [effect with
-            { Scaling = EffectScaling.HandSize, ScalingAmount = 1, ScalingCap = 1 }] }));
-    }
-    await Reject(() => CardValidator.Validate(valid with { SchemaVersion = 2, Cost = 6 }));
-    await Reject(() => CardValidator.Validate(valid with { SchemaVersion = 2, Cost = 1,
-        Effects = [valid.Effects[0] with { Amount = 52, UpgradeAmount = 11 }] }));
-    await Reject(() => CardValidator.Validate(valid with { SchemaVersion = 2, Cost = 5,
-        Effects = [valid.Effects[0] with { Amount = 52, UpgradeAmount = 11, Repeat = 2 }] }));
-});
-foreach (var (name, invalid) in new (string, CardDefinition)[]
-{
-    ("v1 complex semantics", complex with { SchemaVersion = 1 }),
-    ("unknown trigger", complex with { Effects = [complex.Effects[0] with { Trigger = (EffectTrigger)999 }] }),
-    ("too many repeats", complex with { Effects = [complex.Effects[0] with { Repeat = 4 }] }),
-    ("negative duration", engine with { Effects = [engine.Effects[0] with { Duration = -1 }] }),
-    ("permanent skill", engine with { Type = ForgeCardType.Skill }),
-    ("immediate permanent", engine with { Effects = [engine.Effects[0] with { Trigger = EffectTrigger.OnPlay }] }),
-    ("power with immediate damage", complex with { Type = ForgeCardType.Power }),
-    ("power without persistent effects", valid with { SchemaVersion = 2, Type = ForgeCardType.Power,
-        Effects = [new() { Kind = EffectKind.Block, Target = EffectTarget.Self, Amount = 5 }] }),
-    ("exhaust power", engine with { Keywords = [ForgeKeyword.Exhaust] }),
-    ("retain power", engine with { Keywords = [ForgeKeyword.Retain] }),
-    ("delayed selected target", complex with { Effects = [complex.Effects[0] with { Trigger = EffectTrigger.NextTurnStart }] }),
-    ("next turn duration", complex with { Effects = [complex.Effects[1] with { Duration = 2 }] }),
-    ("turn trigger activation quota", complex with { Effects = [complex.Effects[1] with { Trigger = EffectTrigger.TurnStart, MaxPerTurn = 2 }], Type = ForgeCardType.Skill }),
-    ("missing scaling slots", complex with { Effects = [complex.Effects[0] with { ScalingCap = 0 }] }),
-    ("unused scaling slots", complex with { Effects = [complex.Effects[0] with { Scaling = EffectScaling.None }] }),
-    ("scaled amount bound", complex with { Effects = [complex.Effects[0] with { Amount = 78 }] }),
-    ("target condition on self", engine with { Effects = [engine.Effects[0] with { Condition = EffectCondition.TargetWeak }] }),
-    ("target scaling on self", engine with { Effects = [engine.Effects[0] with { Scaling = EffectScaling.TargetPoison, ScalingAmount = 1, ScalingCap = 1 }] }),
-    ("repeat budget", complex with { Cost = 0, Effects = [valid.Effects[0] with { Amount = 5, UpgradeAmount = 0, Repeat = 3 }] }),
-    ("persistent event budget", engine with { Effects = [engine.Effects[0] with { Kind = EffectKind.Strength }] }),
-    ("zero cost return loop", engine with { Type = ForgeCardType.Skill, Cost = 0,
-        Effects = [new() { Kind = EffectKind.ReturnRandomDiscard, Target = EffectTarget.Self, Amount = 1 }] })
-}) await Test("reject complex " + name, () => Reject(() => CardValidator.Validate(invalid)));
 
-await Test("all advertised triggers and card movement routes are valid within budgets", () =>
+await Test("numeric expressions and conditions use current state and floor division", () =>
 {
-    foreach (var trigger in Enum.GetValues<EffectTrigger>())
-        CardValidator.Validate(new CardDefinition
-        {
-            SchemaVersion = 2, Name = "触发", Type = ForgeCardType.Skill, Rarity = ForgeRarity.Rare, Cost = 3,
-            Effects = [new() { Kind = EffectKind.Block, Target = EffectTarget.Self, Amount = 1, Trigger = trigger,
-                Duration = trigger == EffectTrigger.OnPlay || trigger == EffectTrigger.NextTurnStart ? 1 : 3,
-                MaxPerTurn = EffectRules.IsEvent(trigger) ? 3 : 1 }]
-        });
-    foreach (var kind in new[] { EffectKind.DiscardRandomHand, EffectKind.ExhaustRandomHand, EffectKind.ReturnRandomDiscard })
-        CardValidator.Validate(complex with { Type = ForgeCardType.Skill,
-            Effects = [new() { Kind = kind, Target = EffectTarget.Self, Amount = 2, UpgradeAmount = 1 }] });
-    CardValidator.Validate(complex with { Type = ForgeCardType.Skill,
-        Effects = [new() { Kind = EffectKind.Damage, Target = EffectTarget.RandomEnemy, Amount = 4,
-            Trigger = EffectTrigger.TurnEnd, Duration = 3 }] });
+    var number = Wire.Decode<NumberExpression>("{\"add\":[4,{\"mul\":[2,{\"stat\":\"power\",\"of\":\"target\",\"id\":\"poison\"}]}]}");
+    CardValidator.ValidateNumber(number);
+    Check(EffectRules.Evaluate(number, _ => 3) == 10 && EffectRules.Evaluate(number, _ => 5) == 14);
+    Check(EffectRules.Evaluate(new NumberExpression { Div = [-5, 2] }, _ => 0) == -3);
+    Check(EffectRules.Matches(new() { Op = Comparison.Gt, Left = number, Right = 9 }, _ => 3));
+    var deep = (NumberExpression)1;
+    for (int i = 0; i < 8; i++) deep = new() { Add = [deep, 1] };
+    return Reject(() => CardValidator.ValidateNumber(deep));
+});
+await Test("rule group quotas count successful conditions once and reset only their scope", () =>
+{
+    var rule = new CardRule { Trigger = new() { Event = RuleEvent.CardDiscarded, Limit = new() { Count = 1 } }, Effects = [new() { Kind = EffectKind.Draw, Amount = 1 }, new() { Kind = EffectKind.Block, Amount = 2 }] };
+    var form = valid.Forms[0] with { Rules = [rule] };
+    var state = EffectTriggerRuntime.Create(form);
+    Check(!EffectTriggerRuntime.TryConsume(form, state, 0, RuleEvent.CardDiscarded, conditionMatches: false));
+    Check(state.Activations[0] == 0 && EffectTriggerRuntime.TryConsume(form, state, 0, RuleEvent.CardDiscarded));
+    Check(!EffectTriggerRuntime.TryConsume(form, state, 0, RuleEvent.CardDiscarded));
+    state = Wire.Decode<EffectTriggerState>(Wire.Encode(state)); EffectTriggerRuntime.Validate(form, state);
+    EffectTriggerRuntime.BeginTurn(form, state); Check(EffectTriggerRuntime.TryConsume(form, state, 0, RuleEvent.CardDiscarded));
+    form = form with { Rules = [rule with { Trigger = rule.Trigger with { Limit = new() { Count = 1, Within = CounterScope.Combat } } }] };
+    EffectTriggerRuntime.BeginTurn(form, state); Check(!EffectTriggerRuntime.TryConsume(form, state, 0, RuleEvent.CardDiscarded));
     return Task.CompletedTask;
 });
-await Test("scaling clamps state and budget prices upgrade, repeats, AoE and full lifetime", () =>
+await Test("first nth and every use filtered event ordinals independently of quotas", () =>
 {
-    var effect = complex.Effects[0];
-    Check(EffectRules.ResolveAmount(effect, 4, -3) == 4 && EffectRules.ResolveAmount(effect, 4, 2) == 6
-        && EffectRules.ResolveAmount(effect, 4, 1000) == 7 && EffectRules.MaximumAmount(effect) == 7);
-    Check(EffectRules.BudgetActivations(engine.Effects[0]) == 18);
+    Check(EffectRules.MatchesOccurrence(new() { First = 2 }, 1) && !EffectRules.MatchesOccurrence(new() { First = 2 }, 3));
+    Check(EffectRules.MatchesOccurrence(new() { Nth = 3 }, 3) && !EffectRules.MatchesOccurrence(new() { Nth = 3 }, 4));
+    Check(EffectRules.MatchesOccurrence(new() { Every = 3 }, 6) && !EffectRules.MatchesOccurrence(new() { Every = 3 }, 5));
+    var form = valid.Forms[0] with { Rules = [new() { Trigger = new() { Event = RuleEvent.CardPlayed, Filter = new() { Type = "attack" }, Occurrence = new() { First = 1 } }, Effects = [new() { Kind = EffectKind.Block, Amount = 1 }] }] };
+    Check(!EffectTriggerRuntime.TryConsume(form, EffectTriggerRuntime.Create(form), 0, RuleEvent.CardPlayed, ordinal: 2));
     return Task.CompletedTask;
 });
-await Test("next turn triggers survive arming turn and fire exactly once even after persistence", () =>
+await Test("next-turn and finite lifetimes expire even when conditions fail", () =>
 {
-    var state = EffectTriggerRuntime.Create(complex);
-    EffectTriggerRuntime.EndTurn(complex, state);
-    Check(state.Remaining[0] == 0 && state.Remaining[1] == 1);
-    state = Wire.Decode<EffectTriggerState>(Wire.Encode(state));
-    EffectTriggerRuntime.Validate(complex, state);
-    EffectTriggerRuntime.BeginTurn(state);
-    Check(EffectTriggerRuntime.TryConsume(complex, state, 1, EffectTrigger.NextTurnStart));
-    Check(!EffectTriggerRuntime.TryConsume(complex, state, 1, EffectTrigger.NextTurnStart) && EffectTriggerRuntime.IsExpired(state));
+    var next = new CardRule { Trigger = new() { Event = RuleEvent.TurnStart }, Lifetime = LifetimeKind.NextTurn, Effects = [new() { Kind = EffectKind.Draw, Amount = 1 }] };
+    var form = valid.Forms[0] with { Rules = [next] };
+    var state = EffectTriggerRuntime.Create(form);
+    EffectTriggerRuntime.EndTurn(form, state); Check(state.Remaining[0] == 1);
+    Check(!EffectTriggerRuntime.TryConsume(form, state, 0, RuleEvent.TurnStart, conditionMatches: false) && EffectTriggerRuntime.IsExpired(state));
+    form = form with { Rules = [next with { Lifetime = LifetimeKind.Turn, Turns = 2 }] };
+    state = EffectTriggerRuntime.Create(form);
+    EffectTriggerRuntime.EndTurn(form, state); Check(state.Remaining[0] == 2);
+    EffectTriggerRuntime.TryConsume(form, state, 0, RuleEvent.TurnStart, conditionMatches: false);
+    EffectTriggerRuntime.TryConsume(form, state, 0, RuleEvent.TurnStart, conditionMatches: false);
+    Check(EffectTriggerRuntime.IsExpired(state));
+    state.Activations[0] = -1; return Reject(() => EffectTriggerRuntime.Validate(form, state));
+});
+await Test("all four role extensions gate both forms, filters, rules and nested expressions", async () =>
+{
+    foreach (var (role, action) in new (string, CardEffect)[]
+    {
+        ("NECROBINDER", new() { Kind = EffectKind.Summon, Amount = 4 }),
+        ("DEFECT", new() { Kind = EffectKind.Channel, Orb = "frost", Amount = 1 }),
+        ("REGENT", new() { Kind = EffectKind.Forge, Amount = 5 }),
+        ("SILENT", new() { Kind = EffectKind.CreateCard, Card = new() { Id = "shiv" }, To = CardPileName.Hand })
+    })
+    {
+        var card = valid with { Type = ForgeCardType.Skill, Forms = valid.Forms.Select(f => f with { Effects = [action] }).ToArray() };
+        await Reject(() => CharacterMechanics.FromRun(context.Run).Validate(card));
+        CharacterMechanics.FromRun(JsonSerializer.SerializeToElement(new { character = role })).Validate(card);
+        CharacterMechanics.FromRun(JsonSerializer.SerializeToElement(new { character = "IRONCLAD", relics = new[] { new { id = "PRISMATIC_GEM" } } })).Validate(card);
+    }
+    Check(!CharacterMechanics.FromRun(JsonSerializer.SerializeToElement(new { character = "IRONCLAD", deck = new[] { new { pool = "DEFECT_CARD_POOL", origin = "generated" } } })).Defect);
+    Check(CharacterMechanics.FromRun(JsonSerializer.SerializeToElement(new { character = "IRONCLAD", deck = new[] { new { pool = "NECROBINDER_CARD_POOL" } } })).Necrobinder);
+});
+await Test("design projection groups cards, preserves useful mechanics and omits session/state trees", () =>
+{
+    var observed = context with
+    {
+        Run = JsonSerializer.SerializeToElement(new { character = "REGENT", seed = "hidden", deck = new[] { new { id = "VENERATE", title = "崇拜", type = "Skill", cost = 0, star_cost = 2, description = "Gain [gold]Stars[/gold]." }, new { id = "VENERATE", title = "崇拜", type = "Skill", cost = 0, star_cost = 2, description = "Gain [gold]Stars[/gold]." } } }),
+        State = JsonSerializer.SerializeToElement(new { player = new { hp = 40, max_hp = 60, instance = 123 }, player_combat = new { stars = 5, piles = new[] { new { pile = "Hand", cards = new[] { "unused" } } } } }),
+        GenerationHistory = [JsonSerializer.SerializeToElement(new { card = valid, status = "selected", combat_key = "hidden" }, Wire.Json)]
+    };
+    var projected = ObservationProjector.Project(observed);
+    Check(projected.GetProperty("deck")[0].GetProperty("count").GetInt32() == 2 && projected.GetProperty("deck")[0].GetProperty("star_cost").GetInt32() == 2);
+    string text = projected.GetRawText();
+    foreach (string removed in new[] { "combat_key", "schema_version", "instance", "piles", "generated_definition", "seed", "[gold]" }) Check(!text.Contains(removed));
+    Check(projected.GetProperty("history")[0].GetProperty("text").GetString()!.Contains("伤害"));
+    Check(PromptBuilder.Build(config, observed).System.StartsWith(PromptBuilder.Contract));
     return Task.CompletedTask;
 });
-await Test("finite turn and event triggers expire independently and combat-long triggers remain", () =>
+await Test("prompt trims only optional history and rejects an insufficient budget", async () =>
 {
-    var definition = engine with { Effects =
-    [
-        engine.Effects[0] with { Trigger = EffectTrigger.CardPlayed, Duration = 2 },
-        engine.Effects[0] with { Trigger = EffectTrigger.TurnStart, Duration = 2, MaxPerTurn = 1 },
-        engine.Effects[0] with { Trigger = EffectTrigger.TurnEnd, Duration = 1, MaxPerTurn = 1 },
-        engine.Effects[0]
-    ] };
-    var state = EffectTriggerRuntime.Create(definition);
-    Check(EffectTriggerRuntime.TryConsume(definition, state, 2, EffectTrigger.TurnEnd));
-    EffectTriggerRuntime.EndTurn(definition, state);
-    Check(state.Remaining.SequenceEqual(new[] { 1, 2, 0, -1 }));
-    EffectTriggerRuntime.BeginTurn(state);
-    Check(EffectTriggerRuntime.TryConsume(definition, state, 1, EffectTrigger.TurnStart));
-    Check(!EffectTriggerRuntime.TryConsume(definition, state, 1, EffectTrigger.TurnStart));
-    EffectTriggerRuntime.EndTurn(definition, state);
-    Check(state.Remaining.SequenceEqual(new[] { 0, 1, 0, -1 }));
-    EffectTriggerRuntime.BeginTurn(state);
-    Check(EffectTriggerRuntime.TryConsume(definition, state, 1, EffectTrigger.TurnStart));
-    Check(!EffectTriggerRuntime.IsExpired(state) && state.Remaining[1] == 0);
-    return Task.CompletedTask;
-});
-await Test("event quota is consumed before nested execution, persists, and resets on owner turn", () =>
-{
-    var state = EffectTriggerRuntime.Create(engine);
-    Check(!EffectTriggerRuntime.TryConsume(engine, state, 0, EffectTrigger.CardDrawn));
-    for (int i = 0; i < 3; i++) Check(EffectTriggerRuntime.TryConsume(engine, state, 0, EffectTrigger.CardExhausted));
-    state = Wire.Decode<EffectTriggerState>(Wire.Encode(state));
-    EffectTriggerRuntime.Validate(engine, state);
-    Check(!EffectTriggerRuntime.TryConsume(engine, state, 0, EffectTrigger.CardExhausted));
-    EffectTriggerRuntime.EndTurn(engine, state);
-    Check(state.Remaining[0] == -1);
-    EffectTriggerRuntime.BeginTurn(state);
-    Check(EffectTriggerRuntime.TryConsume(engine, state, 0, EffectTrigger.CardExhausted));
-    return Task.CompletedTask;
-});
-await Test("reject corrupted lifecycle arrays and impossible saved quotas", async () =>
-{
-    var state = EffectTriggerRuntime.Create(complex);
-    await Reject(() => EffectTriggerRuntime.Validate(complex, state with { Remaining = [] }));
-    await Reject(() => EffectTriggerRuntime.Validate(complex, state with { Remaining = [0, -1] }));
-    await Reject(() => EffectTriggerRuntime.Validate(complex, state with { Remaining = [0, 2] }));
-    await Reject(() => EffectTriggerRuntime.Validate(complex, state with { Activations = [0, 4] }));
-});
-await Test("description projects repeat, conditional scaling, triggers and bilingual limits", () =>
-{
-    var zh = CardText.Render(complex, true, i => $"{{E{i}:diff()}}");
-    var en = CardText.Render(engine, false, _ => "2");
-    Check(zh.Contains("下回合") && zh.Contains("易伤") && zh.Contains("重复 2 次") && zh.Contains("最多计 3")
-        && zh.Contains("{E0:diff()}") && !en.Contains("For this combat") && en.Contains("3 times per turn"));
-    Check(PromptBuilder.Contract.Contains("schema_version\":4") && PromptBuilder.Contract.Contains("card_exhausted")
-        && !PromptBuilder.Contract.Contains("scaling_cap"));
-    return Task.CompletedTask;
-});
-await Test("v2 complete batch publication and invalid complex refresh preserve previous definitions", async () =>
-{
-    int call = 0;
-    using var session = new GenerationSession(context.CombatKey, config with { GeneratedCardsPerReward = 2 },
-        new FakeGenerator((_, _) => Task.FromResult(new CardBatch
-        {
-            Cards = ++call == 1 ? [complex, engine] : [complex, engine with
-                { Effects = [engine.Effects[0] with { Trigger = (EffectTrigger)999 }] }]
-        })), (_, _) => { });
-    var now = DateTimeOffset.UtcNow;
-    Check(session.TryPrefetch(context, now)); await session.WaitForPendingAsync();
-    Check(session.TryPrefetch(context, now.AddSeconds(2))); await session.WaitForPendingAsync();
-    var frozen = session.Freeze();
-    Check(frozen.Length == 2 && frozen.All(c => c.SchemaVersion == 2) && frozen[1].Effects[0].Trigger == EffectTrigger.CardExhausted);
+    var history = context with { GenerationHistory = Enumerable.Range(0, 12).Select(_ => JsonSerializer.SerializeToElement(new { card = complex, status = "shown" }, Wire.Json)).ToArray() };
+    var basePrompt = PromptBuilder.Build(config, context);
+    var bounded = PromptBuilder.Build(config with { MaxPromptCharacters = basePrompt.System.Length + basePrompt.User.Length + 32 }, history);
+    Check(bounded.System.Length + bounded.User.Length <= basePrompt.System.Length + basePrompt.User.Length + 32);
+    await Reject(() => PromptBuilder.Build(config with { MaxPromptCharacters = 1 }, context));
 });
 await Test("configuration bounds", async () =>
 {
@@ -261,30 +197,6 @@ await Test("deprecated opening-play config stays readable but new enemy-turn gat
     }
     return Task.CompletedTask;
 });
-await Test("prompt has count, explicit contract, event truncation metadata", () =>
-{
-    var prompt = PromptBuilder.Build(config, context);
-    Check(prompt.User.Contains("REQUESTED_COUNT=1") && prompt.User.Contains("\"omitted_events\":100")
-        && prompt.System.Contains("No code") && prompt.System.Contains("JSON"));
-    return Task.CompletedTask;
-});
-await Test("prompt size is bounded", () => Reject(() => PromptBuilder.Build(config with { MaxPromptCharacters = 1 }, context)));
-await Test("v4 contract fits the minimum configured prompt size with a small observation", () =>
-{
-    var prompt = PromptBuilder.Build(config with { MaxPromptCharacters = 4000 }, context);
-    Check(prompt.System.Length + prompt.User.Length <= 4000);
-    return Task.CompletedTask;
-});
-await Test("oversized history trims oldest observations and preserves explicit omissions", () =>
-{
-    var observations = Enumerable.Range(0, 10).Select(i => JsonSerializer.SerializeToElement(new { index = i, text = new string('a', 500) })).ToArray();
-    var prompt = PromptBuilder.Build(config with { MaxPromptCharacters = 6500 }, context with
-        { RecentEvents = observations, TotalEvents = 10, OmittedEvents = 0 });
-    Check(prompt.System.Length + prompt.User.Length <= 6500 && prompt.User.Contains("\"index\":9")
-        && !prompt.User.Contains("\"index\":0") && prompt.User.Contains("omitted_events"));
-    return Task.CompletedTask;
-});
-
 await Test("OpenAI-compatible route, auth, messages, JSON and token options", async () =>
 {
     var handler = new FakeHandler(async (request, token) =>
@@ -392,7 +304,7 @@ await Test("initial prefetch waits for the enemy turn, not opening plays, withou
     var observed = context with { FirstRoundSummary = JsonSerializer.SerializeToElement(new { damage_taken = 0, enemy_acted = true }) };
     Check(session.TryPrefetch(observed, now, firstEnemyTurnEnded: true));
     await session.WaitForPendingAsync();
-    Check(prompts.Count == 1 && prompts[0].User.Contains("enemy_acted"));
+    Check(prompts.Count == 1 && !prompts[0].User.Contains("first_round_summary"));
     Check(!session.TryPrefetch(context, now.AddMilliseconds(500)));
     Check(session.TryPrefetch(context, now.AddSeconds(2)));
     await session.WaitForPendingAsync();
@@ -461,7 +373,7 @@ await Test("generation diagnostics without prompts distinguish provider, validat
     foreach (var (generator, reason, stage, status) in new (IContentGenerator<CardBatch>, string, string, int?)[]
     {
         (new FakeGenerator((_, _) => Task.FromException<CardBatch>(new GenerationFailureException("completion_token_limit"))), "completion_token_limit", "provider", null),
-        (new FakeGenerator((_, _) => Task.FromResult(new CardBatch { Cards = [valid with { Cost = -1 }] })), "Invalid card type/rarity/cost.", "validation", null),
+        (new FakeGenerator((_, _) => Task.FromResult(new CardBatch { Cards = [valid with { Forms = [valid.Forms[0] with { Cost = new() { Energy = -1 } }, valid.Forms[1]] }] })), "Negative cost.", "validation", null),
         (new FakeGenerator((_, _) => Task.FromException<CardBatch>(new HttpRequestException("SECRET", null, HttpStatusCode.TooManyRequests))), "unspecified_failure", "provider", 429)
     })
     {
@@ -533,65 +445,6 @@ await Test("atomic cache and concurrent journal retain every event", async () =>
     Check(lines.Length == 100 && lines.Select(line => JsonDocument.Parse(line).RootElement.GetProperty("payload").GetProperty("index").GetInt32()).Distinct().Count() == 100);
     File.Delete(cache); File.Delete(journal); Directory.Delete(directory);
 });
-await Test("v3 removes balance ceilings while legacy cards retain caps and budgets", async () =>
-{
-    var powerful = valid with { SchemaVersion = 3, Cost = 0, Effects = [valid.Effects[0] with
-        { Amount = 100, UpgradeAmount = 50, Repeat = 4, Scaling = EffectScaling.SelfBlock, ScalingAmount = 4, ScalingCap = 0 }] };
-    CardValidator.Validate(Wire.Decode<CardDefinition>(Wire.Encode(powerful)));
-    CardValidator.Validate(powerful with { Cost = 8 });
-    CardValidator.Validate(powerful with { Type = ForgeCardType.Skill, Effects = [new() { Kind = EffectKind.Draw, Target = EffectTarget.Self, Amount = 8 }] });
-    await Reject(() => CardValidator.Validate(powerful with { SchemaVersion = 2 }));
-    Check(EffectRules.ResolveAmount(powerful.Effects[0], 150, 100) == 550);
-    Check(EffectRules.ResolveAmount(complex.Effects[0], 4, 100) == 7);
-});
-await Test("v3 unlimited events persist past three activations and finite durations still expire", () =>
-{
-    var definition = engine with { SchemaVersion = 3, Cost = 0, Effects = [engine.Effects[0] with { MaxPerTurn = 0, Duration = 5 }] };
-    CardValidator.Validate(definition);
-    var state = EffectTriggerRuntime.Create(definition);
-    for (int i = 0; i < 20; i++) Check(EffectTriggerRuntime.TryConsume(definition, state, 0, EffectTrigger.CardExhausted));
-    state = Wire.Decode<EffectTriggerState>(Wire.Encode(state)); EffectTriggerRuntime.Validate(definition, state);
-    Check(state.Activations[0] == 20);
-    for (int i = 0; i < 5; i++) EffectTriggerRuntime.EndTurn(definition, state);
-    Check(EffectTriggerRuntime.IsExpired(state));
-    return Task.CompletedTask;
-});
-await Test("v3 still rejects invalid executable programs and incompatible legacy star mechanics", async () =>
-{
-    var card = valid with { SchemaVersion = 3, StarCost = 2, UpgradeStarCost = 1 };
-    CardValidator.Validate(card);
-    foreach (var invalid in new[] { card with { StarCost = -2 }, card with { UpgradeStarCost = 3 },
-        card with { UpgradeCost = 2 }, card with { SchemaVersion = 2 },
-        card with { Effects = [card.Effects[0] with { Repeat = 0 }] },
-        card with { Effects = [card.Effects[0] with { Scaling = EffectScaling.HandSize }] },
-        card with { Effects = [card.Effects[0] with { Trigger = EffectTrigger.CardPlayed, MaxPerTurn = 0 }] },
-        card with { Effects = [card.Effects[0] with { Amount = int.MaxValue, UpgradeAmount = 1 }] } })
-        await Reject(() => CardValidator.Validate(invalid));
-    CardValidator.Validate(card with { Type = ForgeCardType.Skill, Effects = [new()
-        { Kind = EffectKind.Stars, Target = EffectTarget.Self, Amount = 3 }] });
-});
-await Test("duration one text says this turn and unlimited scaling/events omit quota clauses", () =>
-{
-    var effect = engine.Effects[0] with { Duration = 1, MaxPerTurn = 0, Scaling = EffectScaling.SelfStars, ScalingAmount = 2, ScalingCap = 0 };
-    string zh = CardText.RenderEffect(effect, true, "3"), en = CardText.RenderEffect(effect, false, "3");
-    Check(zh.Contains("本回合，") && !zh.Contains("0 个回合") && !zh.Contains("最多") && zh.Contains("星数"));
-    Check(en.Contains("This turn, ") && !en.Contains("next 0") && !en.Contains("at most"));
-    Check(CardText.RenderEffect(effect with { MaxPerTurn = 2, ScalingCap = 3 }, true, "3").Contains("最多 2 次"));
-    return Task.CompletedTask;
-});
-await Test("v4 omits caps and rejects their presence while old capped saves round trip", async () =>
-{
-    var card = valid with { SchemaVersion = 4, Effects = [valid.Effects[0] with { Scaling = EffectScaling.HandSize, ScalingAmount = 2 }] };
-    string json = Wire.Encode(CardValidator.Validate(card));
-    Check(!json.Contains("scaling_cap") && EffectRules.ResolveAmount(card.Effects[0], 8, 100) == 208);
-    CardValidator.Validate(Wire.Decode<CardDefinition>(json));
-    foreach (int cap in new[] { 0, 5 })
-        await Reject(() => Wire.Decode<CardDefinition>(json.Replace("\"scaling_amount\":2", $"\"scaling_amount\":2,\"scaling_cap\":{cap}")));
-    await Reject(() => CardValidator.Validate(card with { Effects = [card.Effects[0] with { ScalingCap = 5 }] }));
-    var legacy = card with { SchemaVersion = 3, Effects = [card.Effects[0] with { ScalingCap = 5 }] };
-    var restored = CardValidator.Validate(Wire.Decode<CardDefinition>(Wire.Encode(legacy)));
-    Check(restored.Effects[0].ScalingCap == 5 && EffectRules.ResolveAmount(restored.Effects[0], 8, 100) == 18);
-});
 await Test("resource icons preserve small upgraded counts and abbreviate large counts", () =>
 {
     const string path = "res://images/packed/sprite_fonts/star_icon.png";
@@ -599,99 +452,8 @@ await Test("resource icons preserve small upgraded counts and abbreviate large c
     Check(CardText.ResourceIcons(2, "2", path) == icon + icon);
     Check(CardText.ResourceIcons(2, "[green]2[/green]", path) == "[green]" + icon + icon + "[/green]");
     Check(CardText.ResourceIcons(4, "[green]4[/green]", path) == "[green]4[/green]" + icon);
-    var power = engine with { SchemaVersion = 4, Effects = [engine.Effects[0] with { MaxPerTurn = 0 }] };
-    Check(!CardText.Render(power, true, _ => "5").Contains("本场战斗中"));
-    Check(!CardText.Render(power with { Effects = [power.Effects[0] with { Trigger = EffectTrigger.AttackPlayed }] }, true, _ => "5").Contains("另一张"));
-    Check(CardText.Render(power with { Effects = [power.Effects[0] with { Duration = 1 }] }, true, _ => "5").Contains("本回合"));
-    return Task.CompletedTask;
-});
-await Test("character instructions append optional Regent mechanics without changing the common prefix", () =>
-{
-    GenerationContext WithCharacter(string name) => context with { Run = JsonSerializer.SerializeToElement(new { character = name, deck = new[] { "Strike" } }) };
-    var regent = PromptBuilder.Build(config, WithCharacter("REGENT"));
-    var ironclad = PromptBuilder.Build(config, WithCharacter("IRONCLAD"));
-    Check(regent.System.StartsWith(ironclad.System, StringComparison.Ordinal) && regent.System.Contains("self_stars"));
-    Check(!ironclad.System.Contains("self_stars") && !ironclad.System.Contains("star_cost") && !regent.System.Contains("Explore star income"));
-    Check(regent.System.Contains("A single effect is welcome") && !regent.System.Contains("usually one or two"));
-    Check(!regent.User.Contains("STYLE:"));
-    return Task.CompletedTask;
-});
-await Test("character availability limits extensions without assigning a design preference", () =>
-{
-    foreach (string character in new[] { "IRONCLAD", "SILENT", "REGENT", "NECROBINDER", "DEFECT" })
-    {
-        var source = context with { Run = JsonSerializer.SerializeToElement(new { character, deck = Array.Empty<object>() }) };
-        string system = PromptBuilder.Build(config, source).System;
-        Check(system.StartsWith(PromptBuilder.Contract, StringComparison.Ordinal));
-        Check(system.Contains("target_poison") == (character == "SILENT"));
-        Check(system.Contains("self_stars") == (character == "REGENT"));
-        Check(system.Contains("not a preference or checklist"));
-        Check(!system.Contains("summon") && !system.Contains("doom") && !system.Contains("focus"));
-    }
-    return Task.CompletedTask;
-});
-await Test("Prismatic Gem and native foreign pools expand availability without trusting prose or generated cards", () =>
-{
-    JsonElement Run(object[] deck, object[] relics) => JsonSerializer.SerializeToElement(new { character = "NECROBINDER", deck, relics });
-    var prismatic = Run([], [new { id = "PRISMATIC_GEM" }]);
-    Check(CharacterMechanics.FromRun(prismatic) == new CharacterMechanics(true, true));
-    var foreign = Run([new { pool = "SILENT_CARD_POOL", origin = "native" }, new { pool = "REGENT_CARD_POOL" }], []);
-    Check(CharacterMechanics.FromRun(ObservationProjector.Compact(context with { Run = foreign }).Run)
-        == new CharacterMechanics(true, true));
-    var generated = Run([new { pool = "SILENT_CARD_POOL", origin = "generated" },
-        new { pool = "REGENT_CARD_POOL", generated_definition = valid }], [new { id = "OTHER", title = "PRISMATIC_GEM" }]);
-    Check(CharacterMechanics.FromRun(generated) == new CharacterMechanics(false, false));
-    string system = PromptBuilder.Build(config, context with { Run = prismatic }).System;
-    Check(system.Contains("target_poison") && system.Contains("self_stars"));
-    return Task.CompletedTask;
-});
-await Test("unavailable mechanics are rejected for generation while saved definitions remain valid", async () =>
-{
-    var common = new CharacterMechanics(false, false);
-    var poison = valid with { SchemaVersion = 4, Type = ForgeCardType.Skill,
-        Effects = [new() { Kind = EffectKind.Poison, Target = EffectTarget.Enemy, Amount = 2 }] };
-    var stars = poison with { Effects = [new() { Kind = EffectKind.Stars, Target = EffectTarget.Self, Amount = 2 }] };
-    var poisonScaling = valid with { SchemaVersion = 4,
-        Effects = [valid.Effects[0] with { Scaling = EffectScaling.TargetPoison, ScalingAmount = 1 }] };
-    var starScaling = poisonScaling with { Effects = [poisonScaling.Effects[0] with { Scaling = EffectScaling.SelfStars }] };
-    foreach (var card in new[] { poison, stars, poisonScaling, starScaling, valid with { SchemaVersion = 4, StarCost = 0 } })
-    {
-        CardValidator.Validate(card);
-        await Reject(() => common.Validate(card));
-        new CharacterMechanics(true, true).Validate(card);
-    }
-    common.Validate(valid);
-});
-await Test("a provider cannot publish unavailable mechanics and a Prismatic run can publish them", async () =>
-{
-    var poison = valid with { SchemaVersion = 4, Type = ForgeCardType.Skill,
-        Effects = [new() { Kind = EffectKind.Poison, Target = EffectTarget.Enemy, Amount = 2 }] };
-    foreach (bool prismatic in new[] { false, true })
-    {
-        var source = context with { Run = JsonSerializer.SerializeToElement(new { character = "NECROBINDER",
-            relics = prismatic ? new[] { new { id = "PRISMATIC_GEM" } } : [] }) };
-        bool published = false;
-        var audits = new List<string>();
-        using var session = new GenerationSession(source.CombatKey, config,
-            new FakeGenerator((_, _) => Task.FromResult(new CardBatch { Cards = [poison] })),
-            (kind, _) => audits.Add(kind), _ => published = true);
-        Check(session.TryPrefetch(source, DateTimeOffset.UtcNow));
-        await session.WaitForPendingAsync();
-        Check(published == prismatic && audits.Contains(prismatic ? "generation_ready" : "generation_failed"));
-    }
-});
-await Test("stable deck prefix survives reordered deck and changed combat metadata", () =>
-{
-    var a = new { id = "A", title = "A", description = "damage" };
-    var b = new { id = "B", title = "B", description = "block" };
-    var first = context with { Run = JsonSerializer.SerializeToElement(new { character = "REGENT", ascension = 10, floor = 2, deck = new[] { a, b } }) };
-    var second = first with { CombatKey = "combat-b", TotalEvents = 120,
-        Run = JsonSerializer.SerializeToElement(new { character = "REGENT", ascension = 10, floor = 3, deck = new[] { b, a } }) };
-    string one = PromptBuilder.Build(config, first).User, two = PromptBuilder.Build(config, second).User;
-    int end = one.IndexOf("\"floor\":", StringComparison.Ordinal);
-    Check(end > one.IndexOf("\"deck\":", StringComparison.Ordinal) && one[..end] == two[..end]);
-    Check(one.IndexOf("\"combat_key\":", StringComparison.Ordinal) > end
-        && one.IndexOf("\"recent_events\":", StringComparison.Ordinal) > one.IndexOf("\"combat_summary\":", StringComparison.Ordinal));
+    Check(CardText.Render(engine, true).Contains("消耗"));
+    Check(!CardText.Render(engine, true).Contains("最多"));
     return Task.CompletedTask;
 });
 await Test("provider logs reasoning, usage and revision before malformed final content and redacts credentials", async () =>
@@ -742,30 +504,6 @@ await Test("standard cached-token diagnostics are read without inventing cache m
     await new OpenAiCardGenerator(client, new(), value => response = value).GenerateAsync(new("s", "u"), default);
     Check(response is { PromptCacheHitTokens: 12, PromptCacheMissTokens: null });
 });
-await Test("compact observations group deck copies and preserve star costs, generated origin and summaries", () =>
-{
-    var card = new { instance = 1, id = "FALLING_STAR", title = "陨星", type = "Attack", rarity = "Basic", cost = 0,
-        star_cost = 2, current_star_cost = 2, current_cost = 0, upgraded = false, description = "damage", generated_definition = (CardDefinition?)null };
-    var generated = new { instance = 2, id = "NEOW_GENERATED_CARD", title = "gift", type = "Skill", rarity = "Common", cost = 1,
-        star_cost = -1, current_star_cost = -1, current_cost = 1, upgraded = false, description = "block", generated_definition = valid };
-    var source = context with
-    {
-        Run = JsonSerializer.SerializeToElement(new { character = "REGENT", deck = new object[] { card, card, generated }, seed = "omit" }),
-        State = JsonSerializer.SerializeToElement(new { player = new { id = "REGENT", hp = 50, side = "Player", powers = new[] { new
-            { id = "BUFF", amount = 2, state = new { PackedIconPath = "omit", IsCanonical = false } } } },
-            player_combat = new { stars = 5, energy = 3, other_resources = new { PrivateStuff = "omit" },
-                piles = new[] { new { pile = "Hand", cards = new object[] { card, generated } } } } }),
-        FirstRoundSummary = JsonSerializer.SerializeToElement(new { damage_taken = 4 })
-    };
-    var compact = ObservationProjector.Compact(source);
-    Check(compact.Run.GetProperty("deck").GetArrayLength() == 2);
-    var native = compact.Run.GetProperty("deck").EnumerateArray().Single(c => c.GetProperty("origin").GetString() == "native");
-    Check(native.GetProperty("count").GetInt32() == 2 && native.GetProperty("star_cost").GetInt32() == 2);
-    Check(compact.State.GetProperty("player_combat").GetProperty("piles")[0].GetProperty("cards")[1].GetProperty("origin").GetString() == "generated");
-    Check(!Wire.Encode(compact).Contains("PackedIconPath") && !Wire.Encode(compact).Contains("PrivateStuff") && !Wire.Encode(compact).Contains("\"omit\""));
-    Check(compact.FirstRoundSummary!.Value.GetProperty("damage_taken").GetInt32() == 4);
-    return Task.CompletedTask;
-});
 await Test("combat summaries retain opening card sequence counts and enemy damage after event trimming", () =>
 {
     var summary = new CombatSummary();
@@ -789,7 +527,7 @@ await Test("candidate pool retains multiple batches, deduplicates mechanics and 
     Check(pool.Add("b", [valid with { Name = "renamed", Flavor = "new" }, engine]) == 1);
     var first = pool.FreezeReward("floor-a", 1);
     Check(first.Length == 1 && pool.HasCandidates);
-    Check(pool.Add("c", [valid with { Effects = [valid.Effects[0] with { Amount = 9 }] }]) == 1);
+    Check(pool.Add("c", [valid with { Forms = [valid.Forms[0] with { Effects = [valid.Forms[0].Immediate[0] with { Amount = 9 }] }, valid.Forms[1]] }]) == 1);
     Check(Wire.Encode(first) == Wire.Encode(pool.FreezeReward("floor-a", 3)));
     pool = new CandidatePool(path, "run-a", 3);
     Check(Wire.Encode(first) == Wire.Encode(pool.FreezeReward("floor-a", 1)));
@@ -822,7 +560,7 @@ await Test("pool closure rejects stale results, capacity expires oldest and corr
     string path = Path.Combine(directory, "pool.json");
     var pool = new CandidatePool(path, "run", 3);
     pool.Add("a", [valid, complex, engine]);
-    pool.Add("b", [valid with { Name = "other", Effects = [valid.Effects[0] with { Amount = 9 }] }]);
+    pool.Add("b", [valid with { Name = "other", Forms = [valid.Forms[0] with { Effects = [valid.Forms[0].Immediate[0] with { Amount = 9 }] }, valid.Forms[1]] }]);
     Check(pool.History().Any(c => c.Status == "expired"));
     await Reject(() => new CandidatePool(path, "different-run", 3));
     // Make the snapshot destination unwritable by replacing the file with a directory.
@@ -846,6 +584,11 @@ string TestDirectory()
     Directory.CreateDirectory(directory); return directory;
 }
 static void Check(bool value) { if (!value) throw new Exception("Assertion failed."); }
+static void Throws<T>(Action action) where T : Exception
+{
+    try { action(); } catch (T) { return; }
+    throw new Exception("Expected " + typeof(T).Name);
+}
 static Task Reject(Action action)
 {
     try { action(); } catch (Exception ex) when (ex is FormatException or JsonException or ArgumentException) { return Task.CompletedTask; }

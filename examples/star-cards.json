@@ -1,55 +1,137 @@
 {
   "cards": [
     {
-      "schema_version": 4,
       "name": "星潮斩",
       "type": "attack",
       "rarity": "uncommon",
-      "cost": 0,
-      "star_cost": 2,
-      "upgrade_star_cost": 1,
-      "effects": [
+      "forms": [
         {
-          "kind": "damage",
-          "target": "enemy",
-          "amount": 8,
-          "upgrade_amount": 3,
-          "scaling": "self_stars",
-          "scaling_amount": 2
+          "cost": {
+            "energy": 0,
+            "stars": 2
+          },
+          "effects": [
+            {
+              "kind": "damage",
+              "target": "enemy",
+              "amount": {
+                "add": [
+                  8,
+                  {
+                    "mul": [
+                      {
+                        "stat": "stars"
+                      },
+                      2
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "cost": {
+            "energy": 0,
+            "stars": 1
+          },
+          "effects": [
+            {
+              "kind": "damage",
+              "target": "enemy",
+              "amount": {
+                "add": [
+                  11,
+                  {
+                    "mul": [
+                      {
+                        "stat": "stars"
+                      },
+                      2
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
         }
       ]
     },
     {
-      "schema_version": 4,
       "name": "余辉回响",
       "type": "power",
       "rarity": "rare",
-      "cost": 2,
-      "star_cost": -1,
-      "effects": [
+      "forms": [
         {
-          "kind": "stars",
-          "target": "self",
-          "amount": 1,
-          "trigger": "attack_played",
-          "duration": 0,
-          "max_per_turn": 0
+          "cost": {
+            "energy": 2
+          },
+          "rules": [
+            {
+              "trigger": {
+                "event": "card_played",
+                "filter": {
+                  "type": "attack"
+                }
+              },
+              "effects": [
+                {
+                  "kind": "gain_stars",
+                  "amount": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "cost": {
+            "energy": 2
+          },
+          "rules": [
+            {
+              "trigger": {
+                "event": "card_played",
+                "filter": {
+                  "type": "attack"
+                }
+              },
+              "effects": [
+                {
+                  "kind": "gain_stars",
+                  "amount": 1
+                }
+              ]
+            }
+          ]
         }
       ]
     },
     {
-      "schema_version": 4,
       "name": "织星",
       "type": "skill",
       "rarity": "common",
-      "cost": 1,
-      "star_cost": -1,
-      "effects": [
+      "forms": [
         {
-          "kind": "stars",
-          "target": "self",
-          "amount": 3,
-          "upgrade_amount": 1
+          "cost": {
+            "energy": 1
+          },
+          "effects": [
+            {
+              "kind": "gain_stars",
+              "amount": 3
+            }
+          ]
+        },
+        {
+          "cost": {
+            "energy": 1
+          },
+          "effects": [
+            {
+              "kind": "gain_stars",
+              "amount": 4
+            }
+          ]
         }
       ]
     }

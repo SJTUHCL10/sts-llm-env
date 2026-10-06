@@ -1,0 +1,39 @@
+{
+  "cards": [
+    {
+      "name": "灵骨盟约", "type": "attack", "rarity": "uncommon",
+      "forms": [
+        {"cost":{"energy":1},"effects":[{"kind":"summon","amount":3},{"kind":"damage","actor":"osty","target":"enemy","amount":6},{"kind":"create_card","card":{"id":"soul"},"to":"draw"}]},
+        {"cost":{"energy":1},"effects":[{"kind":"summon","amount":4},{"kind":"damage","actor":"osty","target":"enemy","amount":8},{"kind":"apply_power","power":"doom","target":"enemy","amount":{"div":[{"stat":"max_hp","of":"osty"},2]}},{"kind":"create_card","card":{"id":"soul"},"to":"hand"}]}
+      ]
+    },
+    {
+      "name": "冷却回路", "type": "skill", "rarity": "uncommon",
+      "forms": [
+        {"cost":{"energy":1},"effects":[{"kind":"channel","orb":"frost","amount":2},{"kind":"create_card","card":{"id":"dazed"},"to":"discard"}]},
+        {"cost":{"energy":1},"effects":[{"kind":"apply_power","power":"focus","amount":2,"until":"turn"},{"kind":"channel","orb":"frost","amount":2},{"kind":"orb_passive","target":"all_orbs"}],"rules":[{"trigger":{"event":"card_exhausted","filter":{"type":"status"}},"lifetime":"turn","effects":[{"kind":"evoke","target":"first_orb","remove":false}]}]}
+      ]
+    },
+    {
+      "name": "星匠敕令", "type": "skill", "rarity": "rare",
+      "forms": [
+        {"cost":{"energy":1,"stars":2},"effects":[{"kind":"forge","amount":4},{"kind":"create_card","card":{"pool":"colorless","pick":"random","filter":{"type":"skill"}},"to":"hand"}]},
+        {"cost":{"energy":1,"stars":1},"effects":[{"kind":"forge","amount":5},{"kind":"create_card","card":{"pool":"colorless","pick":"choose","options":3,"filter":{"type":"skill"}},"to":"hand"}]}
+      ]
+    },
+    {
+      "name": "袖中余锋", "type": "skill", "rarity": "uncommon",
+      "forms": [
+        {"cost":{"energy":1},"keywords":["sly"],"effects":[{"kind":"discard","target":{"pile":"hand","pick":"choose","up_to":true}},{"kind":"create_card","card":{"id":"shiv"},"to":"hand","count":2}]},
+        {"cost":{"energy":1},"keywords":["sly"],"effects":[{"kind":"discard","target":{"pile":"hand","pick":"choose","up_to":true}},{"kind":"create_card","card":{"id":"shiv"},"to":"hand","count":2}],"rules":[{"trigger":{"event":"card_played","filter":{"id":"shiv"},"occurrence":{"first":1}},"lifetime":"turn","effects":[{"kind":"draw","amount":1},{"kind":"block","amount":3}]}]}
+      ]
+    },
+    {
+      "name": "改写之手", "type": "skill", "rarity": "rare",
+      "forms": [
+        {"cost":{"energy":1},"effects":[{"kind":"transform","target":{"pile":"hand","pick":"choose","filter":{"type":"status"}},"card":{"pool":"character","pick":"random"}}]},
+        {"cost":{"energy":1},"effects":[{"kind":"select","target":{"pile":"hand","pick":"choose"},"as":"chosen"},{"kind":"set_cost","target":"selected:chosen","amount":0,"until":"turn"},{"kind":"add_keyword","target":"selected:chosen","keyword":"retain","until":"turn"},{"kind":"copy","target":"selected:chosen","to":"hand"}]}
+      ]
+    }
+  ]
+}

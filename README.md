@@ -18,7 +18,7 @@
 
 默认在敌方首回合结束后预生成，每场最多请求 3 次、间隔至少 15 秒。通过校验的卡牌进入本局候选池；打开奖励时追加 1 张可用候选，原版选项保留。没有候选就正常显示原版奖励，不等待网络，也不会在选择过程中改变选项。晚到的结果可在后续战斗出现。
 
-支持攻击、技能、能力、升级、触发效果及储君星资源。LLM 只能组合已实现的效果，不能返回可执行代码。新生成采用 v3 协议，校验结构与执行规则，但不设强度预算，卡牌平衡需要实际游玩评估。
+新生成采用 v5 协议：两个完整升级形态、通用选牌与生成/变化、规则组和动态表达式，并支持奥斯提/灵魂/灾厄、充能球/集中、铸造/星、小刀/奇巧。LLM 只能组合已实现的效果，不能返回可执行代码；不设强度预算，卡牌平衡需要实际游玩评估。旧协议不提供迁移，建议从新局开始测试。
 
 生成牌定义随原生卡牌存档保存，读档不需要再次调用模型。本局候选池和已冻结奖励另存于 `data/runs`，需要恢复当前局奖励时请保留。已有生成牌的存档应继续启用此 Mod。
 
@@ -52,11 +52,26 @@ dotnet run --project src/Forge.Tool -- validate generated.local.json
 dotnet run --project src/Forge.Tool -- prompt config.example.json examples/context.json prompt.local.json
 ```
 
+## 查看生成记录
+
+使用 Python 3.10+ 启动本地查看器，无需安装第三方包。Windows 启动脚本会查找 Python，也支持本机已有的 Codex Python 运行时。传入游戏目录，启动后自动打开浏览器：
+
+```powershell
+.\view-generation.ps1 -GameDir 'C:\Games\Slay the Spire 2'
+# 也可以直接指定日志目录，或通过 Python 启动：
+.\view-generation.ps1 -Directory 'C:\Games\Slay the Spire 2\mods\NeowsCompany\data\generation'
+python tools/view_generation.py 'C:\Games\Slay the Spire 2\mods\NeowsCompany\data\generation'
+```
+
+不传路径时使用 `STS2_GAME_DIR`，未设置则读取仓库的 `data/generation`。页面按战斗和请求序号整理记录，可以搜索卡名、模型和失败原因，筛选成功/失败，查看卡牌效果、提示词、reasoning、耗时、token 与缓存命中，以及奖励审计事件。JSON 块支持对象和数组逐层折叠，显示字段数或列表长度；标题旁的“复制”按钮复制完整内容，与折叠状态无关。`OBSERVATION_JSON` 单独展示，reasoning 默认折叠。时间按浏览器本地时区显示，缺少完成结果的请求标记为“待完成”。
+
+页面默认每 5 秒刷新，支持边玩边看；无效或未写完的 JSONL 行会被跳过并提示。查看器只读取日志，服务仅监听 `127.0.0.1`，不调用模型或修改游戏文件。按 `Ctrl+C` 停止。启动脚本支持 `-Port 0` 自动选择端口、`-NoBrowser` 仅启动服务，以及 `-PythonExe '<python.exe 路径>'`；直接用 Python 时对应选项为 `--port 0`、`--no-browser`。
+
 ## 文档
 
 - [配置与排错](docs/CONFIGURATION.md)：参数、数据目录和常见失败原因。
 - [LLM 协议](docs/LLM_PROTOCOL.md)：请求上下文、输出和候选池规则。
-- [卡牌协议](docs/CARD_PROGRAM.md)：v3 效果语义与 v1/v2 存档兼容。
+- [卡牌协议](docs/CARD_PROGRAM.md)：v5 完整形态、动作、目标与规则语义。
 - [架构](docs/ARCHITECTURE.md)：模块边界、线程、存档与游戏挂钩。
 - [验证指南](docs/VALIDATION.md)：自动检查与实机验收步骤。
 

@@ -1,135 +1,115 @@
-# 卡牌协议 v4
+# 卡牌协议 v5
 
-新牌使用 v4，旧 v1/v2/v3 卡牌及保存的能力状态继续按原规则执行。效果文字由 CardText 生成，不执行模型文本。完整上下文和 HTTP 输出见 [LLM_PROTOCOL.md](LLM_PROTOCOL.md)。
+卡牌是受校验的数据程序，由游戏侧通过原生命令执行。LLM 返回 `{"cards":[...]}`；文本由程序生成，不参与执行。此轮直接替换旧协议，不提供旧定义迁移。
 
-## 新卡牌字段
+## 两个完整形态
 
-| 字段 | 说明 / 缺省 |
+```json
+{
+  "name": "涅奥的低语",
+  "type": "attack",
+  "rarity": "common",
+  "forms": [
+    {"cost":{"energy":1},"effects":[{"kind":"damage","target":"enemy","amount":7}]},
+    {"cost":{"energy":1},"effects":[{"kind":"damage","target":"all_enemies","amount":9},{"kind":"draw","amount":1}]}
+  ]
+}
+```
+
+`forms[0]` 为基础形态，`forms[1]` 为升级形态，必须恰好两个，彼此不继承。每个形态独立声明费用、关键词、即时效果与规则；升级可以改变目标、动作顺序、效果数量和机制。名称、类型、稀有度及可选 `flavor` 属于卡牌家族。没有 `schema_version`、`upgrade_*` 或 LLM 生成的实例 ID。
+
+费用为 `cost:{energy,stars?,energy_x?,stars_x?}`，数值非负；X 对应的数值必须为 0。省略 `stars` 表示不使用星费用。关键词：`exhaust/ethereal/retain/innate/sly`。`effects`、`rules`、`keywords` 可省略。每个形态共有 1～24 个动作、最多 8 条规则；每条规则 1～8 个动作。
+
+## 动作与目标
+
+动作公共字段：`kind,target?,amount?,repeat?,condition?`。默认目标为自己、重复一次；动作按顺序执行，随机目标每次重新抽取。无关字段会被拒绝。
+
+| kind | 必要参数 / 附加参数 |
 | --- | --- |
-| `schema_version` | 新生成必须为 4 |
-| `name/flavor` | 纯文本名称≤40字符；风味≤160字符，风味可空 |
-| `type` | attack / skill / power |
-| `rarity` | common / uncommon / rare |
-| `cost` | 非负整数能量费用，无原来的 0～5 上限 |
-| `star_cost` | -1（没有星费用）或非负整数星费用 |
-| `upgrade_cost/upgrade_star_cost` | 升级减少的费用，缺省0，不能超过原费用 |
-| `keywords` | exhaust / ethereal / retain / innate；最多3种，不重复 |
-| `effects` | 1～8 条有序效果；围绕一个想法设计，单效果也可以 |
+| damage | amount、敌人目标；actor 可为 osty |
+| block / draw / gain_energy / gain_stars / heal / lose_hp | amount |
+| apply_power | amount、power；力量/集中可用 until:turn |
+| discard / exhaust / upgrade / play | 卡牌目标 |
+| move | 卡牌目标、to |
+| select | 卡牌目标、as；不得附带条件或重复 |
+| copy | 卡牌目标、to；count 默认 1 |
+| transform | 卡牌目标、card |
+| create_card | card、to；count 默认 1 |
+| add_keyword / remove_keyword | 卡牌目标、keyword |
+| set_cost | 卡牌目标、amount、until:turn 或 combat |
+| summon / forge / channel / orb_slots | amount；channel 还需 orb |
+| evoke / orb_passive | 球目标；evoke 可用 remove:false |
 
-`kind` 支持 damage、block、draw、energy、**stars**、strength、dexterity、weak、vulnerable、poison、discard_random_hand、exhaust_random_hand、return_random_discard。
+生物目标：`self/enemy/all_enemies/random_enemy/osty/event.target`。规则没有玩家当前选定的 `enemy`，应使用随机、全体或事件目标。即时攻击使用原生攻击修正；规则和技能中的直接伤害使用 Unpowered。`lose_hp` 绕过格挡并触发原生伤害流程。
 
-这是可执行结构的全集，不是每个角色的生成权限。新生成的中毒/星按角色、棱彩宝石和原生跨角色卡池开放，生成结果也检查权限；保存的定义不追溯限制。范围规则见 [LLM_PROTOCOL.md](LLM_PROTOCOL.md)，机制差距见 [MECHANIC_COVERAGE.md](MECHANIC_COVERAGE.md)。
+卡牌目标：`this_card`、`event.card`、`selected:名称`，或统一选择器：
 
-新增 `self_stars` 缩放，读取原生费用支付后、每次执行时的剩余星数；获得星使用 PlayerCmd.GainStars，星费用使用原生 CanonicalStarCost/扣费流程，可升级并通过原生存档、复制和降级恢复。
+```json
+{"pile":"hand","pick":"choose","count":2,"filter":{"type":"attack"},"up_to":true}
+```
 
-## 新效果字段
+- `pile`: hand/draw/discard/exhaust。
+- `pick`: random/choose/all/first/last；数量默认 1，all 不带 count。随机选择不重复；选择数量会缩至可用张数；up_to 仅用于 choose，允许选零张。
+- `filter`: id/type/rarity/cost/upgraded/keyword，可组合，匹配同一张牌。费用筛选使用当前能量费用，X 不视为 0 费。
+- `select` 绑定一次选择，后续多个动作使用同一批实例；绑定仅在当前动作组内有效。
+- 牌堆选择排除正在执行的来源牌。动作只操作战斗中的牌；不修改永久牌组。`this_card` 在持久规则中通过内部实例标识解析，复制品拥有新标识。
 
-| 字段 | v4 语义 / 缺省 |
-| --- | --- |
-| `kind/target/amount` | 必填；amount≥1；目标 self / enemy / all_enemies / random_enemy |
-| `upgrade_amount` | 非负整数，缺省0 |
-| `trigger` | 与旧v2触发种类相同，缺省on_play |
-| `duration` | 非负整数，缺省1；0仅能力牌可用，表示整场；不再限制最多3回合 |
-| `max_per_turn` | 事件填0表示无限；显式正整数可表示特定额度，无1～3上限。为兼容旧牌缺省仍1；非事件必须为1 |
-| `repeat` | 正整数，缺省1；不再限制最多3次 |
-| `condition` | none / self_has_block / self_hp_below_half / target_weak / target_vulnerable；缺省none |
-| `scaling` | none / self_block / hand_size / discard_size / exhaust_size / target_poison / self_stars；缺省none |
-| `scaling_amount` | 缩放时≥1，未缩放时0；缺省0，无1～3上限 |
+目的地 `to` 使用同一组牌堆名称；抽牌堆位置 `position` 为 top（默认）/bottom/random。多张弃牌使用原生批量命令，保证奇巧的结算顺序。自动打出通过原生 AutoPlay 选择目标与处理费用。
 
-v4 删除 `scaling_cap`，即使填写 0 也会拒绝；缩放始终按实际状态单位计算。旧 v3 的 0 表示无限，正整数上限继续保留；v1/v2 仍使用原来的必填缩放上限。旧定义的序列化形状和候选指纹保持兼容，不会改写已经生成的「残章缀星」。
+## 生成、变化与复制
 
-取消 v3 效果数值和升级增量固定上限、强度预算打分、零费抽牌/回能强制消耗规则。校验仍保留可执行结构、目标关系、未知枚举/字段拒绝、整数及加法范围；1～8效果和关键词限制属于协议结构。原生引擎的显示/数值边界、手牌容量和牌堆规则继续生效。
+固定来源与卡池来源共用 `card`：
 
-事件不限次数不会产生“最多X次”的文字，无上限缩放不会显示“最多计X”。duration=1 显示“本回合”；能力牌整场持续省略“本场战斗中”，有限持续期仍显示。出牌触发省略“另一张”。星和能量使用原生图标，小数量（1～3）重复图标，其他数量使用数字＋图标；能量颜色来自所属角色。
+```json
+{"kind":"create_card","card":{"id":"soul"},"to":"hand","count":2}
+{"kind":"transform","target":{"pile":"hand","pick":"choose","filter":{"type":"status"}},"card":{"pool":"character","pick":"random"}}
+{"kind":"create_card","card":{"pool":"colorless","pick":"choose","options":3,"filter":{"type":"skill"},"upgraded":true},"to":"hand"}
+```
 
-即时伤害通过原生攻击命令执行，受力量、虚弱、目标易伤等攻击修正影响；回合及事件触发伤害使用 `ValueProp.Unpowered` 的原生伤害命令，与滚石、黑洞、冰雹风暴一致，不受这些攻击修正影响。
+固定来源使用受支持的别名：soul/shiv/wound/dazed/burn/void/slimed/fuel/debris/minion_strike/minion_sacrifice/minion_dive/sovereign_blade。原生卡池来源为 character/colorless；random 随机生成，choose 展示备选并选择一张，options 默认 3、上限 10。使用原生解锁与可生成性筛选，不接受任意模型路径。固定来源也支持 upgraded:true。
 
-手牌预览先计算星费用和先前即时效果带来的星、格挡及牌堆数量变化，再计算 scale，最后使用原生伤害/格挡钩子计入力量、虚弱、目标易伤、敏捷、脆弱和附魔。基础 DynamicVar 不被预览改写。选择目标后才计入该目标状态；未来触发、随机抽牌引发的事件链和先前效果新增的能力/敌人 debuff 无法完整预测。缩放数值显示已计入的来源，避免把公式误读成额外增量。
+生成与变化都使用同一种来源；变化保留原生变化流程与牌堆位置。复制保留来源牌的当前原生状态。所有这些操作均局限于本场战斗。
 
-升级说明临时恢复变化槽位的原生升级高亮，兼容升级完成后清除标记的查看流程；零升级增量不应标绿。小数量资源的绿色包围图标，较大数量的绿色包围数字。
+## 数值与条件
 
-触发时机、敌方目标、持续期、随机牌堆操作和独立能力实例规则与旧v2一致。内部实例重入和8层跨能力事件深度保护用于避免程序递归卡死，不是对玩家正常打牌次数的限制。
+普通数值直接写整数，动态数值使用小型表达式：
 
-示例：`examples/star-cards.json`（星费用/剩余星成长、攻击后获得星、即时获得星）。
+```json
+{"add":[5,{"mul":[{"stat":"power","of":"target","id":"poison"},2]}]}
+{"div":[{"stat":"max_hp","of":"osty"},2]}
+{"op":"lt","left":{"mul":[{"stat":"hp"},2]},"right":{"stat":"max_hp"}}
+```
 
----
+表达式为整数、stat、add、mul、div 之一；add/mul 有 2～4 个操作数，div 恰好两个并向下取整，嵌套最多六层。字面分母不能为零；运行时零分母、溢出会中止效果并报告执行失败。普通数量小于零按零执行；apply_power 与 orb_slots 支持有符号数。没有强度预算或缩放上限。
 
-# 旧协议 v1/v2（存档兼容）
+生物数值：hp/max_hp/block/power，of 默认 self，可为 target/osty；power 必须带 id。玩家数值：energy/stars/hand_size/draw_size/discard_size/exhaust_size/orb_count/orb_capacity。上下文数值：paid_energy/paid_stars（本次打出实付资源快照）、event_amount、damage_dealt（最近一个伤害动作的 TotalDamage）。状态在动作执行时读取。
 
-旧生成内容的 `schema_version: 2` 保持原有执行语义。以下数值上限和强度预算仅适用于 v1/v2；共同的触发、目标与生命周期规则也适用于 v3/v4。
+条件为比较 `eq/ne/gt/ge/lt/le`，或 all/any/not。条件满足后执行动作；数值不存在的事件载荷为零，不存在的卡牌/目标不产生操作。目标相关条件按每个目标评估。
 
-## 结构
+## 规则、事件与计数
 
-卡牌保留 `name/type/rarity/cost/keywords/effects/flavor`。`type` 增加 `power`，`effects` 最多 8 条。每条效果是一个独立组件，字段如下：
+```json
+{
+  "trigger":{"event":"card_played","filter":{"type":"attack"},"occurrence":{"first":1}},
+  "lifetime":"combat",
+  "effects":[{"kind":"draw","amount":1},{"kind":"block","amount":3}]
+}
+```
 
-| 字段 | 语义及限制 | 缺省 |
-| --- | --- | --- |
-| `kind` | 原有 9 种命令，加 `discard_random_hand`、`exhaust_random_hand`、`return_random_discard` | 必填 |
-| `target` | `self/enemy/all_enemies/random_enemy` | 必填 |
-| `amount` | 基础数值，至少 1 | 必填 |
-| `upgrade_amount` | 升级增加基础数值 | 0 |
-| `trigger` | 见下表 | `on_play` |
-| `duration` | 1–3；0 为本场战斗持续，仅能力牌可用 | 1 |
-| `max_per_turn` | 事件组件每个自己的回合区间最多响应 1–3 次；其他组件必须为 1 | 1 |
-| `repeat` | 每次执行重复 1–3 次，伤害逐次经过原生伤害流程 | 1 |
-| `condition` | `none/self_has_block/self_hp_below_half/target_weak/target_vulnerable` | `none` |
-| `scaling` | `none/self_block/hand_size/discard_size/exhaust_size/target_poison` | `none` |
-| `scaling_amount` | 每单位增加 1–3；无缩放必须为 0 | 0 |
-| `scaling_cap` | 最多计入 1–5 单位；无缩放必须为 0 | 0 |
+规则把触发器和一组效果分开，多个收益只占一次额度。事件：turn_start/turn_end/card_played/card_drawn/card_discarded/card_exhausted/card_generated/damage_received/attack_completed/summoned/orb_channeled/orb_evoked。卡牌事件支持 filter；其他事件不能使用卡牌筛选。
 
-实际数值为 `基础数值 + 升级增量 + scaling_amount × clamp(当前状态单位数, 0, scaling_cap)`。状态在每次重复执行时读取；敌人条件和中毒缩放按每个敌人读取。低生命条件为严格低于最大生命的一半。条件失败仍消耗该事件的响应次数，持续时间照常减少；描述会注明这一点。
+- `occurrence:{first:N|nth:N|every:N,within:turn|combat}` 表示原生事件的序号，默认按回合。包括规则建立以前的匹配事件；历史筛选属性在事件发生时快照，之后升级牌不会改写历史。每回合第一张攻击使用 first:1。
+- `limit:{count:N,within:turn|combat}` 表示规则满足自身条件后最多生效次数，默认按回合。失败条件不消耗额度；没有 limit 就不限次。它替代旧 max_per_turn，和“第几张牌”语义不同。
+- `lifetime` 默认为 combat。turn 包含建立当回合，turns 默认 1；turn_start 的有限时长计数未来回合开始。next_turn 仅允许 turn_start，下一回合检查一次后到期，条件失败也到期。
+- 规则在即时动作之后建立，忽略建立它的那一次打出。每次打出创建独立实例并捕获当时形态、变量与实付资源，之后升级来源牌不会改写已建立规则。
+- event.card 来自卡牌事件；card_played 还提供目标。damage_received 提供攻击者与未格挡伤害；attack_completed 提供来源卡、首个命中目标与总伤害；summoned 提供数量；orb_evoked 提供首个目标。
 
-伤害、虚弱、易伤、中毒只指向敌人；其他效果只指向自己。`enemy` 是出牌时选择的敌人，只能配 `on_play`。延迟/事件敌方效果用全部或随机敌人，避免存储已死亡/已离场目标。随机目标每次重复重新抽取，使用游戏的 `CombatTargets` RNG；随机牌使用 `CombatCardSelection` RNG。随机手牌操作排除当前正在执行的牌；弃牌回收在手牌满时停止。
+防止自递归重入，并限制触发深度和单次解析操作数量。它们是防卡死保护，不是卡牌强度限制。
 
-## 生命周期
+## 原生状态与角色范围
 
-| `trigger` | 执行时点与持续时间 |
-| --- | --- |
-| `on_play` | 立即按数组顺序执行；`duration/max_per_turn` 必须为 1 |
-| `next_turn_start` | 下一个自己的回合开始，执行一次；`duration` 必须为 1 |
-| `turn_start` | 接下来 `duration` 个自己的回合开始；0 表示之后每个自己的回合 |
-| `turn_end` | 本回合及之后 `duration-1` 个自己的回合结束；执行于手牌清理前 |
-| `card_played/attack_played/skill_played` | 自己打出后续牌/攻击/技能后；忽略施放来源牌的这次出牌 |
-| `card_drawn` | 自己抽到一张牌后，包括每回合正常抽牌 |
-| `card_exhausted` | 自己消耗一张牌后，包括虚无导致的消耗 |
+状态别名：strength/dexterity/weak/vulnerable/frail/poison/doom/focus/vigor/thorns/plating/intangible/artifact/buffer/retain_block。状态本身使用原生持续与叠加规则。until:turn 的力量/集中增减交给原生临时能力，在目标方回合结束时恢复。
 
-事件类有限持续期包含施放回合，随后每个自己的回合结束减少一次。起始触发组件不在施放回合结束时减少，而在未来回合开始响应后减少。事件额度在自己的 `BeforeSideTurnStart` 重置。起始效果用带选择上下文的 `AfterPlayerTurnStart`，可安全抽牌并经过其他 Mod 的选择钩子。结束时效果用 `BeforeSideTurnEnd`；事件持续期在 `AfterSideTurnEndLate` 才到期，使手牌清理期间的虚无消耗仍可触发。
+奥斯提、灵魂、灾厄仅在亡灵范围开放；充能球、集中、燃料在机器人范围开放；星、铸造与储君衍生牌在储君范围开放；毒、小刀、奇巧在静默范围开放。棱彩宝石或牌组中已存在对应原生卡池可开放扩展，生成牌不作为解锁证据。扩展是可选能力，没有频率或必选主题。
 
-每次出牌先完成全部即时组件，再应用一个独立的 `GeneratedEffectPower`。延迟组件按原数组相对顺序响应各自事件，不会在施放时读取并锁定缩放状态。能力牌必须含至少一个延迟/事件组件；不能同时有消耗或保留。攻击必须含伤害，即时伤害必须属于攻击；技能/能力可通过延迟或事件造成伤害。
-
-每个能力实例在异步执行前消耗响应额度。正在执行的实例不会被其产生的嵌套事件重新进入；生成能力之间的事件链还受 8 层深度上限约束。因此“抽牌时抽牌”“消耗时消耗”的组件可存在，但不会无限自触发。同一个实例的其他组件也不会响应其本次执行产生的嵌套事件。其他实例可以响应，直到各自额度或深度限制耗尽。外部原生能力仍通过游戏钩子执行。
-
-## 校验与强度
-
-最多 3 个不重复的原有关键词；费用为 0–5。最大升级/缩放后单次数值与升级增量上限如下（v1/v2 均采用这些放宽后的数值边界）：
-
-| 效果 | 最大升级/缩放后数值 | 最大升级增量 |
-| --- | --- | --- |
-| 伤害 | 80 | 15 |
-| 格挡 | 60 | 12 |
-| 抽牌 | 6 | 3 |
-| 能量 | 4 | 2 |
-| 力量 / 敏捷 | 8 | 3 |
-| 虚弱 / 易伤 | 6 | 3 |
-| 中毒 | 24 | 6 |
-| 牌堆操作 | 5 | 2 |
-
-强度为各组件 `最大升级/缩放数值 × 权重 × 目标倍率 × repeat × 预计响应次数` 的总和。权重：伤害/格挡/随机弃牌 1、抽牌/弃牌回收 5、能量 8、力量/敏捷 6、虚弱/易伤/随机消耗手牌 3、中毒 2。全体目标倍率 1.8，其他 1。即时次数 1；延迟次数为持续回合数乘事件额度；战斗持续组件按 6 回合估值。条件不打折，弃牌等副作用也不给预算补偿。
-
-预算上限为 `10 + 15×费用 + 稀有度加成(0/4/8) + 消耗加成10`。高费牌可以承载较大的单次数值，低费牌仍受预算限制；例如 4 费伤害 52、升级增加 11 可以通过，1 费同样的效果会被拒绝。重复、全体与持续触发仍乘入总预算。零费抽牌、能量或弃牌回收必须消耗。预算是有限估计，持续能力在长战斗中的价值及牌间协同仍需实机调参。
-
-未知字段、未列出的 opcode/目标/触发/条件/缩放，以及非法槽位组合全部拒绝。LLM 不返回可执行代码或独立机械描述；中英文描述由 `CardText` 投影结构，数值显示继续使用原生 DynamicVar。
-
-## 存档兼容
-
-旧 `schema_version: 1` 卡牌继续接受，缺失的新字段解释为即时、单次、无条件、无缩放。v1 不允许携带 v2 专属语义，旧枚举成员没有重排。奖励 sidecar 和牌的 `DefinitionPayload` 原生 SavedProperty 保存完整定义，升级/复制/降级继续保留每张牌的结构。
-
-`GeneratedEffectPower.RuntimePayload` 是独立版本化的原生 SavedProperty，包含完整定义、施放时 DynamicVar 基础数值快照、来源升级状态、每条效果剩余期数/响应次数以及来源出牌忽略标记。原生 `SavedProperties` 可往返该数据；克隆深拷贝可变状态。具体运行存档是否保存当前战斗能力、在哪个检查点恢复，仍由游戏控制；本 Mod 不扩展原生检查点语义。
-
-## 示例与扩展
-
-见 `examples/complex-cards.json`：多次命中并按消耗堆缩放、下回合抽牌/回能、消耗触发格挡的战斗能力、两回合内每次技能触发随机伤害、随机消耗后按消耗堆获得格挡并回收弃牌。旧 `examples/cards.json` 保留用于 v1 回归。
-
-Mock 接口增加 `--fixture examples/complex-cards.json --card-index 1` 可选择特定组件案例，无需真实 LLM。CLI `validate` 检查整份示例，`generate` 仍经过相同协议和校验边界。
-
-当前未开放任意递归效果树、X 费、自动重放、玩家选择/保留选择载荷、自定义 token/orb、卡费修改、持续规则修改或外部 opcode。扩展一条路由必须同时增加合同、校验、原生命令、文本/悬浮提示、生命周期测试及游戏 API 检查。
+具体覆盖和限制见 [MECHANIC_COVERAGE.md](MECHANIC_COVERAGE.md)，可验证示例见 examples/mechanic-cards.json。

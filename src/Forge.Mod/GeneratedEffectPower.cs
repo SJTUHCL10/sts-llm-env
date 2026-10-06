@@ -1,43 +1,44 @@
 using Forge.Core;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Combat.History;
+using MegaCrit.Sts2.Core.Combat.History.Entries;
 using MegaCrit.Sts2.Core.Commands;
+using MegaCrit.Sts2.Core.Commands.Builders;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Entities.Powers;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.HoverTips;
-using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Powers;
 using MegaCrit.Sts2.Core.Saves.Runs;
-
+using MegaCrit.Sts2.Core.ValueProps;
 namespace Forge.Mod;
 
 public sealed record GeneratedPowerSnapshot
 {
-    public int SchemaVersion { get; init; } = 1;
     public required CardDefinition Definition { get; init; }
     public required decimal[] Amounts { get; init; }
     public required EffectTriggerState State { get; init; }
     public bool SourceUpgraded { get; init; }
-    public bool IgnoreArmingPlay { get; init; }
+    public int PaidEnergy { get; init; }
+    public int PaidStars { get; init; }
+    public required string SourceInstanceKey { get; init; }
 }
-
-// Each play creates its own instance: different generated definitions never stack into a shared model state.
 public sealed class GeneratedEffectPower : PowerModel
 {
     private static readonly AsyncLocal<int> TriggerDepth = new();
     private GeneratedPowerSnapshot? _snapshot;
+    private CardPlay? _armingPlay;
     private bool _firing;
     public override PowerType Type => PowerType.Buff;
     public override PowerStackType StackType => PowerStackType.Single;
     public override PowerInstanceType InstanceType => PowerInstanceType.Instanced;
-    protected override IEnumerable<IHoverTip> ExtraHoverTips => _snapshot is null ? []
-        : NeowGeneratedCard.EffectHoverTips(_snapshot.Definition);
-
+    private CardForm Form => _snapshot!.Definition.Form(_snapshot.SourceUpgraded);
+    protected override IEnumerable<IHoverTip> ExtraHoverTips => _snapshot is null ? [] : NeowGeneratedCard.EffectHoverTips(Form);
     [SavedProperty]
     public string RuntimePayload
     {
@@ -45,171 +46,154 @@ public sealed class GeneratedEffectPower : PowerModel
         set
         {
             AssertMutable();
-            if (string.IsNullOrEmpty(value)) { _snapshot = null; return; }
+            if (value.Length == 0) { _snapshot = null; return; }
             var snapshot = Wire.Decode<GeneratedPowerSnapshot>(value);
-            if (snapshot.SchemaVersion != 1) throw new FormatException("Unsupported power state schema.");
             CardValidator.Validate(snapshot.Definition);
-            if (!snapshot.Definition.Effects.Any(e => e.Trigger != EffectTrigger.OnPlay)
-                || snapshot.Amounts is null || snapshot.Amounts.Length != snapshot.Definition.Effects.Length
-                || snapshot.Amounts.Any(n => n < 0 || n > int.MaxValue) || snapshot.State is null)
-                throw new FormatException("Invalid captured effect state.");
-            EffectTriggerRuntime.Validate(snapshot.Definition, snapshot.State);
+            var form = snapshot.Definition.Form(snapshot.SourceUpgraded);
+            if (form.Listeners.Length == 0 || snapshot.Amounts is null || snapshot.Amounts.Length != form.AllEffects.Length
+                || snapshot.Amounts.Any(n => n < int.MinValue || n > int.MaxValue) || snapshot.State is null || snapshot.PaidEnergy < 0 || snapshot.PaidStars < 0
+                || !Guid.TryParseExact(snapshot.SourceInstanceKey, "N", out _))
+                throw new FormatException("Invalid captured rule state.");
+            EffectTriggerRuntime.Validate(form, snapshot.State);
             _snapshot = snapshot;
         }
     }
-
-    internal void Configure(NeowGeneratedCard card)
+    internal void Configure(NeowGeneratedCard card, CardPlay? play = null)
     {
-        AssertMutable();
-        // Detach arrays from the card and other powers, including before native cloning/saving.
         RuntimePayload = Wire.Encode(new GeneratedPowerSnapshot
         {
-            Definition = card.Definition,
-            Amounts = card.Definition.Effects.Select((_, i) => card.DynamicVars[$"E{i}"].BaseValue).ToArray(),
-            State = EffectTriggerRuntime.Create(card.Definition), SourceUpgraded = card.IsUpgraded, IgnoreArmingPlay = true
+            Definition = card.Definition, Amounts = card.ActiveForm.AllEffects.Select((_, i) => card.DynamicVars[$"E{i}"].BaseValue).ToArray(),
+            State = EffectTriggerRuntime.Create(card.ActiveForm), SourceUpgraded = card.IsUpgraded,
+            SourceInstanceKey = card.InstanceKey,
+            PaidEnergy = play?.Resources.EnergySpent ?? 0, PaidStars = play?.Resources.StarsSpent ?? 0
         });
+        _armingPlay = play;
     }
-
     protected override void DeepCloneFields()
     {
         base.DeepCloneFields();
         if (_snapshot is not null) _snapshot = Wire.Decode<GeneratedPowerSnapshot>(Wire.Encode(_snapshot));
-        _firing = false;
+        _firing = false; _armingPlay = null;
     }
-
     public override LocString Title => Localize("title", _snapshot?.Definition.Name ?? "涅奥的造物");
-    public override LocString Description
-    {
-        get
-        {
-            bool chinese = LocManager.Instance.Language is "zhs" or "zht";
-            if (_snapshot is null) return Localize("description", "");
-            var snapshot = _snapshot;
-            string text = string.Join("\n", snapshot.Definition.Effects.Select((effect, index) => (effect, index))
-                .Where(item => item.effect.Trigger != EffectTrigger.OnPlay && snapshot.State.Remaining[item.index] != 0)
-                .Select(item => CardText.RenderEffect(item.effect with
-                {
-                    Duration = snapshot.State.Remaining[item.index] < 0 ? 0 : snapshot.State.Remaining[item.index]
-                }, chinese, RenderAmount(item.effect, snapshot.Amounts[item.index]),
-                    omitCombatLifetime: snapshot.Definition.Type == ForgeCardType.Power, resourceIcons: true)
-                    + (EffectRules.IsEvent(item.effect.Trigger)
-                        ? chinese ? $" 本回合已触发 {snapshot.State.Activations[item.index]} 次。"
-                            : $" Triggered {snapshot.State.Activations[item.index]} times this turn." : "")));
-            return Localize("description", text);
-        }
-    }
-
-    private string RenderAmount(CardEffect effect, decimal amount)
-    {
-        string number = amount.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        if (effect.Kind is not (EffectKind.Stars or EffectKind.Energy)) return number;
-        string path = effect.Kind == EffectKind.Stars ? "res://images/packed/sprite_fonts/star_icon.png"
-            : $"res://images/packed/sprite_fonts/{EnergyIconHelper.GetPrefix(this)}_energy_icon.png";
-        return CardText.ResourceIcons((int)amount, number, path);
-    }
-
+    public override LocString Description => Localize("description", _snapshot is null ? "" : string.Join("\n", Form.Listeners.Select((rule, i) => (rule, i))
+        .Where(item => _snapshot.State.Remaining[item.i] != 0).Select(item => CardText.RenderRule(item.rule, LocManager.Instance.Language is "zhs" or "zht"))));
     private static LocString Localize(string suffix, string text)
     {
         string key = "NEOWS_COMPANY." + AtomicStore.Key(text) + "." + suffix;
         LocManager.Instance.GetTable("powers").MergeWith(new Dictionary<string, string> { [key] = text });
         return new LocString("powers", key);
     }
-
-    public override Task BeforeSideTurnStart(PlayerChoiceContext choiceContext, CombatSide side,
-        IReadOnlyList<Creature> participants, ICombatState combatState)
+    public override Task BeforeSideTurnStart(PlayerChoiceContext choiceContext, CombatSide side, IReadOnlyList<Creature> participants, ICombatState combatState)
     {
-        if (_snapshot is not null && Owner.Side == side && participants.Contains(Owner))
-            EffectTriggerRuntime.BeginTurn(_snapshot.State);
+        if (_snapshot is not null && Owner.Side == side && participants.Contains(Owner)) EffectTriggerRuntime.BeginTurn(Form, _snapshot.State);
         return Task.CompletedTask;
     }
-
-    public override async Task AfterPlayerTurnStart(PlayerChoiceContext choiceContext, Player player)
-    {
-        if (player.Creature != Owner) return;
-        await Fire(choiceContext, [EffectTrigger.NextTurnStart, EffectTrigger.TurnStart]);
-        await RemoveIfExpired();
-    }
-
-    public override async Task BeforeSideTurnEnd(PlayerChoiceContext choiceContext, CombatSide side, IEnumerable<Creature> participants)
-    {
-        if (Owner.Side == side && participants.Contains(Owner)) await Fire(choiceContext, [EffectTrigger.TurnEnd]);
-    }
-
+    public override Task AfterPlayerTurnStart(PlayerChoiceContext choiceContext, Player player) => player.Creature == Owner ? Fire(choiceContext, RuleEvent.TurnStart) : Task.CompletedTask;
+    public override Task BeforeSideTurnEnd(PlayerChoiceContext choiceContext, CombatSide side, IEnumerable<Creature> participants) => side == Owner.Side && participants.Contains(Owner) ? Fire(choiceContext, RuleEvent.TurnEnd) : Task.CompletedTask;
     public override async Task AfterSideTurnEndLate(PlayerChoiceContext choiceContext, CombatSide side, IEnumerable<Creature> participants)
     {
-        if (_snapshot is null || Owner.Side != side || !participants.Contains(Owner)) return;
-        EffectTriggerRuntime.EndTurn(_snapshot.Definition, _snapshot.State);
-        await RemoveIfExpired();
+        if (_snapshot is null || side != Owner.Side || !participants.Contains(Owner)) return;
+        EffectTriggerRuntime.EndTurn(Form, _snapshot.State); await RemoveIfExpired();
     }
-
-    public override async Task AfterCardPlayed(PlayerChoiceContext choiceContext, CardPlay cardPlay)
+    public override Task AfterCardPlayed(PlayerChoiceContext choiceContext, CardPlay cardPlay)
     {
-        if (_snapshot is null || cardPlay.Card.Owner != Owner.Player) return;
-        if (_snapshot.IgnoreArmingPlay) { _snapshot = _snapshot with { IgnoreArmingPlay = false }; return; }
-        EffectTrigger[] triggers = cardPlay.Card.Type switch
-        {
-            CardType.Attack => [EffectTrigger.CardPlayed, EffectTrigger.AttackPlayed],
-            CardType.Skill => [EffectTrigger.CardPlayed, EffectTrigger.SkillPlayed],
-            _ => [EffectTrigger.CardPlayed]
-        };
-        await Fire(choiceContext, triggers, cardPlay.Card);
+        if (ReferenceEquals(_armingPlay, cardPlay)) { _armingPlay = null; return Task.CompletedTask; }
+        return cardPlay.Player.Creature == Owner ? Fire(choiceContext, RuleEvent.CardPlayed, cardPlay.Card, cardPlay.Target) : Task.CompletedTask;
     }
-
-    public override Task AfterCardDrawn(PlayerChoiceContext choiceContext, CardModel card, bool fromHandDraw) =>
-        card.Owner == Owner.Player ? Fire(choiceContext, [EffectTrigger.CardDrawn]) : Task.CompletedTask;
-
-    public override Task AfterCardExhausted(PlayerChoiceContext choiceContext, CardModel card, bool causedByEthereal) =>
-        card.Owner == Owner.Player ? Fire(choiceContext, [EffectTrigger.CardExhausted]) : Task.CompletedTask;
-
-    private async Task Fire(PlayerChoiceContext choice, EffectTrigger[] triggers, CardModel? eventCard = null)
+    public override Task AfterCardDrawn(PlayerChoiceContext choiceContext, CardModel card, bool fromHandDraw) => card.Owner.Creature == Owner ? Fire(choiceContext, RuleEvent.CardDrawn, card) : Task.CompletedTask;
+    public override Task AfterCardDiscarded(PlayerChoiceContext choiceContext, CardModel card) => card.Owner.Creature == Owner ? Fire(choiceContext, RuleEvent.CardDiscarded, card) : Task.CompletedTask;
+    public override Task AfterCardExhausted(PlayerChoiceContext choiceContext, CardModel card, bool causedByEthereal) => card.Owner.Creature == Owner ? Fire(choiceContext, RuleEvent.CardExhausted, card) : Task.CompletedTask;
+    public override Task AfterCardGeneratedForCombat(CardModel card, Player? creator) => creator?.Creature == Owner ? Fire(new BlockingPlayerChoiceContext(), RuleEvent.CardGenerated, card) : Task.CompletedTask;
+    public override Task AfterDamageReceived(PlayerChoiceContext choiceContext, Creature target, DamageResult result, ValueProp props, Creature? dealer, CardModel? cardSource) => target == Owner ? Fire(choiceContext, RuleEvent.DamageReceived, target: dealer, amount: result.UnblockedDamage) : Task.CompletedTask;
+    public override Task AfterAttack(PlayerChoiceContext choiceContext, AttackCommand command) => command.Attacker == Owner || command.Attacker == Owner.Player?.Osty ? Fire(choiceContext, RuleEvent.AttackCompleted, command.CardPlay?.Card, command.Results.SelectMany(r => r).Select(r => r.Receiver).FirstOrDefault(), (int)command.Results.SelectMany(r => r).Sum(r => r.TotalDamage)) : Task.CompletedTask;
+    public override Task AfterSummon(PlayerChoiceContext choiceContext, Player summoner, decimal amount) => summoner.Creature == Owner ? Fire(choiceContext, RuleEvent.Summoned, amount: (int)amount) : Task.CompletedTask;
+    public override Task AfterOrbChanneled(PlayerChoiceContext choiceContext, Player player, OrbModel orb) => player.Creature == Owner ? Fire(choiceContext, RuleEvent.OrbChanneled) : Task.CompletedTask;
+    public override Task AfterOrbEvoked(PlayerChoiceContext choiceContext, OrbModel orb, IEnumerable<Creature> targets) => orb.Owner.Creature == Owner ? Fire(choiceContext, RuleEvent.OrbEvoked, target: targets.FirstOrDefault()) : Task.CompletedTask;
+    private async Task Fire(PlayerChoiceContext choice, RuleEvent fired, CardModel? eventCard = null, Creature? target = null, int amount = 0)
     {
-        if (_snapshot is null || _firing || TriggerDepth.Value >= 8 || !Owner.IsAlive || CombatManager.Instance.IsEnding) return;
-        var snapshot = _snapshot;
-        var owner = Owner.Player;
-        if (owner is null) return;
+        if (_snapshot is null || _firing || TriggerDepth.Value >= 8 || !Owner.IsAlive || CombatManager.Instance.IsEnding || Owner.Player is null) return;
+        var snapshot = _snapshot; var form = Form;
         var source = (NeowGeneratedCard)ModelDb.Card<NeowGeneratedCard>().ToMutable();
-        source.DefinitionPayload = Wire.Encode(snapshot.Definition);
-        source.Owner = owner;
+        source.DefinitionPayload = Wire.Encode(snapshot.Definition); source.Owner = Owner.Player;
         if (snapshot.SourceUpgraded) { source.UpgradeInternal(); source.FinalizeUpgradeInternal(); }
-        for (int i = 0; i < snapshot.Amounts.Length; i++) source.DynamicVars[$"E{i}"].BaseValue = snapshot.Amounts[i];
-        _firing = true;
-        TriggerDepth.Value++;
+        var context = new GeneratedExecutionContext(source, choice, amounts: snapshot.Amounts)
+        {
+            Triggered = true, EventCard = eventCard, EventTarget = target, EventAmount = amount,
+            OriginCard = Owner.Player.PlayerCombatState?.AllCards.OfType<NeowGeneratedCard>().FirstOrDefault(card => card.InstanceKey == snapshot.SourceInstanceKey),
+            PaidEnergy = snapshot.PaidEnergy, PaidStars = snapshot.PaidStars
+        };
+        var eligible = form.Listeners.Select(rule => rule.Trigger.Event == fired && (rule.Trigger.Filter is null || eventCard is not null && GeneratedEventFacts.MatchesCurrent(rule.Trigger, eventCard, Owner, CombatState))).ToArray();
+        // Read ordinals before any payoff can append nested events.
+        var ordinals = form.Listeners.Select((rule, i) => eligible[i] && rule.Trigger.Occurrence is not null ? GeneratedEventFacts.Ordinal(rule.Trigger, Owner, CombatState) : 1).ToArray();
+        _firing = true; TriggerDepth.Value++; choice.PushModel(source);
         try
         {
-            for (int i = 0; i < snapshot.Definition.Effects.Length; i++)
+            int offset = form.Immediate.Length;
+            for (int i = 0; i < form.Listeners.Length; i++)
             {
-                var effect = snapshot.Definition.Effects[i];
-                if (triggers.Contains(effect.Trigger) && EffectTriggerRuntime.TryConsume(snapshot.Definition, snapshot.State, i, effect.Trigger))
-                    await GeneratedEffectExecutor.Execute(source, effect, snapshot.Amounts[i], CombatState, choice,
-                        excludedCard: eventCard);
+                var rule = form.Listeners[i];
+                context.Selections.Clear();
+                if (eligible[i] && EffectTriggerRuntime.TryConsume(form, snapshot.State, i, fired, ordinals[i], context.Matches(rule.Condition)))
+                    await GeneratedEffectExecutor.ExecuteGroup(context, rule.Effects, offset);
+                offset += rule.Effects.Length;
             }
         }
-        finally { TriggerDepth.Value--; _firing = false; }
+        finally { source.InvokeExecutionFinished(); choice.PopModel(source); TriggerDepth.Value--; _firing = false; }
+        await RemoveIfExpired();
     }
-
-    private Task RemoveIfExpired() => _snapshot is not null && EffectTriggerRuntime.IsExpired(_snapshot.State)
-        ? PowerCmd.Remove(this) : Task.CompletedTask;
+    private Task RemoveIfExpired() => _snapshot is not null && EffectTriggerRuntime.IsExpired(_snapshot.State) ? PowerCmd.Remove(this) : Task.CompletedTask;
 }
 
-// Use installed native placeholders so a custom power requires no texture bundle.
+internal static class GeneratedEventFacts
+{
+    private sealed record Facts(ModelId Id, CardType Type, CardRarity Rarity, int Cost, bool Upgraded, CardKeyword[] Keywords);
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<CombatHistoryEntry, Facts> Saved = new();
+    internal static CardModel? EventCard(CombatHistoryEntry e, RuleEvent type) => (type, e) switch
+    {
+        (RuleEvent.CardPlayed, CardPlayFinishedEntry p) => p.CardPlay.Card, (RuleEvent.CardDrawn, CardDrawnEntry p) => p.Card,
+        (RuleEvent.CardDiscarded, CardDiscardedEntry p) => p.Card, (RuleEvent.CardExhausted, CardExhaustedEntry p) => p.Card,
+        (RuleEvent.CardGenerated, CardGeneratedEntry p) => p.Card, _ => null
+    };
+    internal static void Capture(CombatHistoryEntry entry)
+    {
+        var card = new[] { RuleEvent.CardPlayed, RuleEvent.CardDrawn, RuleEvent.CardDiscarded, RuleEvent.CardExhausted, RuleEvent.CardGenerated }.Select(type => EventCard(entry, type)).FirstOrDefault(c => c is not null);
+        if (card is not null) Saved.GetValue(entry, _ => new(card.Id, card.Type, card.Rarity, card.EnergyCost.CostsX ? -1 : card.EnergyCost.GetWithModifiers(CostModifiers.All), card.IsUpgraded, card.Keywords.ToArray()));
+    }
+    internal static int Ordinal(EffectTrigger trigger, Creature owner, ICombatState combat)
+    {
+        return CombatManager.Instance.History.Entries.Count(entry => entry.Actor == owner
+            && (trigger.Occurrence!.Within == CounterScope.Combat || entry.HappenedThisTurn(combat))
+            && EventCard(entry, trigger.Event) is { } card && Matches(entry, card, trigger.Filter));
+    }
+    internal static bool MatchesCurrent(EffectTrigger trigger, CardModel card, Creature owner, ICombatState combat)
+    {
+        var entry = CombatManager.Instance.History.Entries.LastOrDefault(e => e.Actor == owner && e.HappenedThisTurn(combat) && ReferenceEquals(EventCard(e, trigger.Event), card));
+        return entry is null ? NativeMechanics.Matches(card, trigger.Filter) : Matches(entry, card, trigger.Filter);
+    }
+    private static bool Matches(CombatHistoryEntry entry, CardModel card, CardFilter? filter)
+    {
+        if (filter is null) return true;
+        if (!Saved.TryGetValue(entry, out var f)) return NativeMechanics.Matches(card, filter);
+        return (filter.Id is null || f.Id == NativeMechanics.Card(filter.Id).Id)
+            && (filter.Type is null || f.Type.ToString().Equals(filter.Type, StringComparison.OrdinalIgnoreCase))
+            && (filter.Rarity is null || f.Rarity.ToString().Equals(filter.Rarity.ToString(), StringComparison.OrdinalIgnoreCase))
+            && (filter.Cost is null || f.Cost == filter.Cost) && (filter.Upgraded is null || f.Upgraded == filter.Upgraded)
+            && (filter.Keyword is null || f.Keywords.Contains(NeowGeneratedCard.NativeKeyword(filter.Keyword.Value)));
+    }
+}
+[HarmonyPatch(typeof(CombatHistory), "Add")]
+internal static class GeneratedHistoryFactsPatch
+{
+    private static void Prefix(CombatHistoryEntry entry) => GeneratedEventFacts.Capture(entry);
+}
 [HarmonyPatch(typeof(PowerModel), nameof(PowerModel.PackedIconPath), MethodType.Getter)]
 internal static class GeneratedPowerIconPatch
 {
-    private static bool Prefix(PowerModel __instance, ref string __result)
-    {
-        if (__instance is not GeneratedEffectPower) return true;
-        __result = ModelDb.Power<DexterityPower>().PackedIconPath;
-        return false;
-    }
+    private static bool Prefix(PowerModel __instance, ref string __result) { if (__instance is not GeneratedEffectPower) return true; __result = ModelDb.Power<DexterityPower>().PackedIconPath; return false; }
 }
-
 [HarmonyPatch(typeof(PowerModel), nameof(PowerModel.ResolvedBigIconPath), MethodType.Getter)]
 internal static class GeneratedPowerBigIconPatch
 {
-    private static bool Prefix(PowerModel __instance, ref string __result)
-    {
-        if (__instance is not GeneratedEffectPower) return true;
-        __result = ModelDb.Power<DexterityPower>().ResolvedBigIconPath;
-        return false;
-    }
+    private static bool Prefix(PowerModel __instance, ref string __result) { if (__instance is not GeneratedEffectPower) return true; __result = ModelDb.Power<DexterityPower>().ResolvedBigIconPath; return false; }
 }

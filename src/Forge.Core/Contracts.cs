@@ -6,145 +6,308 @@ namespace Forge.Core;
 
 public static class Wire
 {
-    internal static readonly JsonSerializerOptions LegacyCardJson = CreateOptions();
-    public static readonly JsonSerializerOptions Json = CreateOptions();
-
-    static Wire() => Json.Converters.Insert(0, new CardDefinitionJsonConverter());
-
-    private static JsonSerializerOptions CreateOptions() => new()
+    public static readonly JsonSerializerOptions Json = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
-        PropertyNameCaseInsensitive = false,
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
-        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.SnakeCaseLower, allowIntegerValues: false) }
+        MaxDepth = 32,
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.SnakeCaseLower, false) }
     };
     public static string Encode<T>(T value) => JsonSerializer.Serialize(value, Json);
-    public static T Decode<T>(string value)
-    {
-        return JsonSerializer.Deserialize<T>(value, Json) ?? throw new FormatException("Empty JSON document.");
-    }
+    public static T Decode<T>(string value) => JsonSerializer.Deserialize<T>(value, Json)
+        ?? throw new FormatException("Empty JSON document.");
 }
 
-internal sealed class CardDefinitionJsonConverter : JsonConverter<CardDefinition>
+public enum ForgeCardType { Attack, Skill, Power }
+public enum ForgeRarity { Common, Uncommon, Rare }
+public enum ForgeKeyword { Exhaust, Ethereal, Retain, Innate, Sly }
+public enum GenerationTiming { Prefetch, WaitOnReward }
+public enum EffectKind
 {
-    public override CardDefinition? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
-    {
-        using var document = JsonDocument.ParseValue(ref reader);
-        var json = document.RootElement;
-        var card = json.Deserialize<CardDefinition>(Wire.LegacyCardJson);
-        if (card?.SchemaVersion == 4 && json.TryGetProperty("effects", out var effects) && effects.ValueKind == JsonValueKind.Array)
-            foreach (var effect in effects.EnumerateArray())
-                if (effect.ValueKind == JsonValueKind.Object && effect.TryGetProperty("scaling_cap", out _))
-                    throw new JsonException("scaling_cap is not part of schema_version 4.");
-        return card;
-    }
+    Damage, Block, Draw, GainEnergy, GainStars, ApplyPower, Discard, Exhaust, Move, Select,
+    Upgrade, Copy, Transform, CreateCard, Play, AddKeyword, RemoveKeyword, SetCost,
+    Summon, Forge, Channel, Evoke, OrbPassive, OrbSlots, Heal, LoseHp
+}
+public enum CardPileName { Hand, Draw, Discard, Exhaust }
+public enum SelectionMode { Random, Choose, All, First, Last }
+public enum RuleEvent { TurnStart, TurnEnd, CardPlayed, CardDrawn, CardDiscarded, CardExhausted, CardGenerated, DamageReceived, AttackCompleted, Summoned, OrbChanneled, OrbEvoked }
+public enum CounterScope { Turn, Combat }
+public enum LifetimeKind { Turn, NextTurn, Combat }
+public enum Comparison { Eq, Ne, Gt, Ge, Lt, Le }
 
-    public override void Write(Utf8JsonWriter writer, CardDefinition card, JsonSerializerOptions options)
+[JsonConverter(typeof(NumberExpressionConverter))]
+public sealed record NumberExpression
+{
+    [JsonIgnore] public int? Value { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Stat { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Of { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Id { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public NumberExpression[]? Add { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public NumberExpression[]? Mul { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public NumberExpression[]? Div { get; init; }
+    public static implicit operator NumberExpression(int value) => new() { Value = value };
+}
+internal sealed class NumberExpressionConverter : JsonConverter<NumberExpression>
+{
+    public override NumberExpression Read(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options)
     {
-        var json = JsonSerializer.SerializeToElement(card, Wire.LegacyCardJson);
-        if (card.SchemaVersion != 4) { json.WriteTo(writer); return; }
-        if (card.Effects?.Any(e => e?.ScalingCap != 0) == true) throw new JsonException("Scaling caps require a legacy card schema.");
-        writer.WriteStartObject();
-        foreach (var property in json.EnumerateObject())
+        if (reader.TokenType == JsonTokenType.Number) return new() { Value = reader.GetInt32() };
+        using var document = JsonDocument.ParseValue(ref reader);
+        if (document.RootElement.ValueKind != JsonValueKind.Object) throw new JsonException("Expected integer or expression.");
+        string? stat = null, of = null, id = null;
+        NumberExpression[]? add = null, mul = null, div = null;
+        var seen = new HashSet<string>();
+        foreach (var p in document.RootElement.EnumerateObject())
         {
-            writer.WritePropertyName(property.Name);
-            if (property.Name != "effects" || property.Value.ValueKind != JsonValueKind.Array) { property.Value.WriteTo(writer); continue; }
-            writer.WriteStartArray();
-            foreach (var effect in property.Value.EnumerateArray())
+            if (!seen.Add(p.Name)) throw new JsonException("Duplicate expression field.");
+            switch (p.Name)
             {
-                if (effect.ValueKind != JsonValueKind.Object) { effect.WriteTo(writer); continue; }
-                writer.WriteStartObject();
-                foreach (var slot in effect.EnumerateObject()) if (slot.Name != "scaling_cap") slot.WriteTo(writer);
-                writer.WriteEndObject();
+                case "stat": stat = p.Value.GetString(); break;
+                case "of": of = p.Value.GetString(); break;
+                case "id": id = p.Value.GetString(); break;
+                case "add": add = p.Value.Deserialize<NumberExpression[]>(options); break;
+                case "mul": mul = p.Value.Deserialize<NumberExpression[]>(options); break;
+                case "div": div = p.Value.Deserialize<NumberExpression[]>(options); break;
+                default: throw new JsonException("Unknown expression field.");
             }
-            writer.WriteEndArray();
         }
+        return new() { Stat = stat, Of = of, Id = id, Add = add, Mul = mul, Div = div };
+    }
+    public override void Write(Utf8JsonWriter writer, NumberExpression value, JsonSerializerOptions options)
+    {
+        if (value.Value is int n) { writer.WriteNumberValue(n); return; }
+        writer.WriteStartObject();
+        if (value.Stat is not null) writer.WriteString("stat", value.Stat);
+        if (value.Of is not null) writer.WriteString("of", value.Of);
+        if (value.Id is not null) writer.WriteString("id", value.Id);
+        foreach (var pair in new[] { ("add", value.Add), ("mul", value.Mul), ("div", value.Div) })
+            if (pair.Item2 is not null) { writer.WritePropertyName(pair.Item1); JsonSerializer.Serialize(writer, pair.Item2, options); }
         writer.WriteEndObject();
     }
 }
-
-public enum EffectKind { Damage, Block, Draw, Energy, Strength, Dexterity, Weak, Vulnerable, Poison, DiscardRandomHand, ExhaustRandomHand, ReturnRandomDiscard, Stars }
-public enum EffectTarget { Self, Enemy, AllEnemies, RandomEnemy }
-public enum ForgeCardType { Attack, Skill, Power }
-public enum ForgeRarity { Common, Uncommon, Rare }
-public enum ForgeKeyword { Exhaust, Ethereal, Retain, Innate }
-public enum GenerationTiming { Prefetch, WaitOnReward }
-public enum EffectTrigger { OnPlay, NextTurnStart, TurnStart, TurnEnd, CardPlayed, AttackPlayed, SkillPlayed, CardDrawn, CardExhausted }
-public enum EffectCondition { None, SelfHasBlock, SelfHpBelowHalf, TargetWeak, TargetVulnerable }
-public enum EffectScaling { None, SelfBlock, HandSize, DiscardSize, ExhaustSize, TargetPoison, SelfStars }
-
+public sealed record EffectCondition
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Comparison? Op { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public NumberExpression? Left { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public NumberExpression? Right { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public EffectCondition[]? All { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public EffectCondition[]? Any { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public EffectCondition? Not { get; init; }
+}
+public sealed record CardFilter
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Id { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Type { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ForgeRarity? Rarity { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Cost { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Upgraded { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ForgeKeyword? Keyword { get; init; }
+}
+[JsonConverter(typeof(EffectTargetConverter))]
+public sealed record EffectTarget
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Ref { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CardPileName? Pile { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SelectionMode? Pick { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public NumberExpression? Count { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CardFilter? Filter { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? UpTo { get; init; }
+    public static implicit operator EffectTarget(string value) => new() { Ref = value };
+}
+internal sealed class EffectTargetConverter : JsonConverter<EffectTarget>
+{
+    public override EffectTarget Read(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.String) return new() { Ref = reader.GetString() };
+        using var document = JsonDocument.ParseValue(ref reader);
+        if (document.RootElement.ValueKind != JsonValueKind.Object) throw new JsonException("Expected target or selector.");
+        CardPileName? pile = null; SelectionMode? pick = null; NumberExpression? count = null;
+        CardFilter? filter = null; bool? upTo = null;
+        var seen = new HashSet<string>();
+        foreach (var p in document.RootElement.EnumerateObject())
+        {
+            if (!seen.Add(p.Name)) throw new JsonException("Duplicate target field.");
+            switch (p.Name)
+            {
+                case "pile": pile = p.Value.Deserialize<CardPileName>(options); break;
+                case "pick": pick = p.Value.Deserialize<SelectionMode>(options); break;
+                case "count": count = p.Value.Deserialize<NumberExpression>(options); break;
+                case "filter": filter = p.Value.Deserialize<CardFilter>(options); break;
+                case "up_to": upTo = p.Value.GetBoolean(); break;
+                default: throw new JsonException("Unknown target field.");
+            }
+        }
+        return new() { Pile = pile, Pick = pick, Count = count, Filter = filter, UpTo = upTo };
+    }
+    public override void Write(Utf8JsonWriter writer, EffectTarget value, JsonSerializerOptions options)
+    {
+        if (value.Ref is not null) { writer.WriteStringValue(value.Ref); return; }
+        writer.WriteStartObject();
+        void Slot<T>(string name, T item) { if (item is not null) { writer.WritePropertyName(name); JsonSerializer.Serialize(writer, item, options); } }
+        Slot("pile", value.Pile); Slot("pick", value.Pick); Slot("count", value.Count); Slot("filter", value.Filter); Slot("up_to", value.UpTo);
+        writer.WriteEndObject();
+    }
+}
+public sealed record CardSource
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Id { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Pool { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SelectionMode? Pick { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CardFilter? Filter { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Upgraded { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Options { get; init; }
+}
+public sealed record CardCost
+{
+    public int Energy { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Stars { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? EnergyX { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? StarsX { get; init; }
+}
 public sealed record CardEffect
 {
     public required EffectKind Kind { get; init; }
-    public required EffectTarget Target { get; init; }
-    public required int Amount { get; init; }
-    public int UpgradeAmount { get; init; }
-    public EffectTrigger Trigger { get; init; }
-    // Duration 0 means combat-long and is legal only on Power cards. Event durations include the arming turn.
-    public int Duration { get; init; } = 1;
-    public int MaxPerTurn { get; init; } = 1;
-    public int Repeat { get; init; } = 1;
-    public EffectCondition Condition { get; init; }
-    public EffectScaling Scaling { get; init; }
-    public int ScalingAmount { get; init; }
-    // Read/preserve v1-v3 saved caps. New v4 definitions have no cap field.
-    public int ScalingCap { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public EffectTarget? Target { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public NumberExpression? Amount { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public NumberExpression? Repeat { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public EffectCondition? Condition { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Power { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Actor { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CardPileName? To { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Position { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CardSource? Card { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public NumberExpression? Count { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? As { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ForgeKeyword? Keyword { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public LifetimeKind? Until { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Orb { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Remove { get; init; }
 }
-
+public sealed record EventOccurrence
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? First { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Nth { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Every { get; init; }
+    public CounterScope Within { get; init; } = CounterScope.Turn;
+}
+public sealed record TriggerQuota
+{
+    public required int Count { get; init; }
+    public CounterScope Within { get; init; } = CounterScope.Turn;
+}
+public sealed record EffectTrigger
+{
+    public required RuleEvent Event { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CardFilter? Filter { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public EventOccurrence? Occurrence { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public TriggerQuota? Limit { get; init; }
+}
+public sealed record CardRule
+{
+    public required EffectTrigger Trigger { get; init; }
+    public LifetimeKind Lifetime { get; init; } = LifetimeKind.Combat;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Turns { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public EffectCondition? Condition { get; init; }
+    public required CardEffect[] Effects { get; init; }
+}
+public sealed record CardForm
+{
+    public required CardCost Cost { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ForgeKeyword[]? Keywords { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CardEffect[]? Effects { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CardRule[]? Rules { get; init; }
+    [JsonIgnore] public CardEffect[] Immediate => Effects ?? [];
+    [JsonIgnore] public CardRule[] Listeners => Rules ?? [];
+    [JsonIgnore] public ForgeKeyword[] Tags => Keywords ?? [];
+    [JsonIgnore] public CardEffect[] AllEffects => Immediate.Concat(Listeners.SelectMany(r => r.Effects)).ToArray();
+}
 public sealed record CardDefinition
 {
-    public int SchemaVersion { get; init; } = 1;
     public required string Name { get; init; }
     public required ForgeCardType Type { get; init; }
     public required ForgeRarity Rarity { get; init; }
-    public required int Cost { get; init; }
-    public int StarCost { get; init; } = -1;
-    public int UpgradeCost { get; init; }
-    public int UpgradeStarCost { get; init; }
-    public ForgeKeyword[] Keywords { get; init; } = [];
-    public required CardEffect[] Effects { get; init; }
-    public string Flavor { get; init; } = "";
+    public required CardForm[] Forms { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Flavor { get; init; }
+    public CardForm Form(bool upgraded) => Forms[upgraded ? 1 : 0];
 }
-
-public sealed record CardBatch
-{
-    public required CardDefinition[] Cards { get; init; }
-}
-
-// Game-independent serialized snapshots keep the provider and prompt pipeline reusable.
+public sealed record CardBatch { public required CardDefinition[] Cards { get; init; } }
+// Internal journal/session metadata is projected before being sent to a provider.
 public sealed record GenerationContext
 {
-    [JsonPropertyOrder(-10)]
     public int SchemaVersion { get; init; } = 1;
-    [JsonPropertyOrder(1)]
     public required string CombatKey { get; init; }
-    [JsonPropertyOrder(-9)]
     public required JsonElement Run { get; init; }
-    [JsonPropertyOrder(2)]
     public required JsonElement State { get; init; }
-    [JsonPropertyOrder(6)]
     public required JsonElement[] RecentEvents { get; init; }
-    [JsonPropertyOrder(4)]
     public int TotalEvents { get; init; }
-    [JsonPropertyOrder(5)]
     public int OmittedEvents { get; init; }
-    [JsonPropertyOrder(3)]
     public JsonElement? CombatSummary { get; init; }
-    [JsonPropertyOrder(0)]
     public JsonElement? FirstRoundSummary { get; init; }
-    [JsonPropertyOrder(-8)]
     public JsonElement[] GenerationHistory { get; init; } = [];
 }
-
-public sealed record Prompt(string System, string User)
-{
-    [JsonIgnore] public int Revision { get; init; }
-}
+public sealed record Prompt(string System, string User) { [JsonIgnore] public int Revision { get; init; } }
 public sealed record ProviderDiagnostics(int Revision, string? ReasoningContent, string? FinishReason,
     int? PromptTokens, int? CompletionTokens, int? TotalTokens,
     int? PromptCacheHitTokens = null, int? PromptCacheMissTokens = null);
-public interface IContentGenerator<T>
-{
-    Task<T> GenerateAsync(Prompt prompt, CancellationToken cancellationToken);
-}
+public interface IContentGenerator<T> { Task<T> GenerateAsync(Prompt prompt, CancellationToken cancellationToken); }

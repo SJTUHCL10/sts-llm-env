@@ -12,7 +12,7 @@ dotnet run --project tests/Forge.GameSmoke -c Release
 .\build.ps1 -GameDir $env:STS2_GAME_DIR
 ```
 
-核心测试覆盖配置、协议校验、旧版兼容、提示词裁剪、固定前缀与角色扩展、cache usage 字段、请求形状、失败与超时、凭据脱敏、触发生命周期、候选池去重与容量、稳定奖励、取消和持久化回滚。GameSmoke 覆盖原生卡牌/能力的复制、升级、降级、保存恢复、星费用、白银熔炉奖励升级及 Harmony 挂钩契约，也使用真实游戏钩子检查 scale、力量/虚弱/易伤、敏捷/脆弱、能力伤害、资源图标参数和升级高亮状态。
+核心测试覆盖两个完整形态、统一选择/来源/表达式、规则组额度与事件序号、有限生命周期、四角色校验、设计视图精简，以及网络、取消、诊断与候选池流程。GameSmoke 使用真实 v0.111.0 程序集，检查原生模型别名、升级时目标/效果结构/费用/关键词切换、X 资源费用、保存恢复、实例引用、规则快照与历史事件筛选、原生伤害预览及 Harmony 契约。
 
 这些检查不能证明实际 UI 布局、卡牌平衡、游戏中的效果执行或任意战斗检查点恢复正确。不要把历史测试数量当作当前验证结果。
 
@@ -34,7 +34,7 @@ dotnet run --project src/Forge.Tool -- prompt config.example.json examples/conte
 
 `generate` 会实际调用本地 HTTP 服务，并默认写入 `generated.local.json.response.local.json` 响应诊断；`prompt` 完全离线。可用 `--fixture examples/complex-cards.json --card-index N`（N 为 0–4）或 `--fixture examples/star-cards.json --card-index N`（N 为 0–2）切换模拟卡牌。星机制观测示例为 `examples/regent-context.json`。
 
-所有卡牌夹具均可直接交给 `validate`：`cards.json`、`complex-cards.json`、`high-cost-cards.json`、`star-cards.json`。模拟接口只验证传输与协议，不代表真实模型的生成质量。
+所有卡牌夹具均可直接交给 `validate`：`cards.json`、`complex-cards.json`、`high-cost-cards.json`、`star-cards.json`、`mechanic-cards.json`。模拟接口只验证传输与协议，不代表真实模型的生成质量。
 
 ## 实机验收
 
@@ -52,14 +52,19 @@ dotnet run --project src/Forge.Tool -- prompt config.example.json examples/conte
 10. **日志与服务**：关闭战斗、提示词、reasoning 记录后核对开关；保留生成审计时应仍有请求结果和取消诊断。真实服务的参数支持、耗时和卡牌有效率需单独验证。
 11. **多人**：确认跳过生成，保留原版奖励。
 
-本次显示和伤害改动还需逐项实机验收：
+v5 还需逐项实机验收：
 
-- 「星陨不辍」回合结束伤害在敌人易伤、玩家力量/虚弱时保持相同；即时攻击仍按原生攻击修正。
-- 星/能量 1～3 使用重复图标，4 以上使用数字＋图标；换角色核对能量颜色。能力牌省略整场持续前缀，有限持续仍可读；出牌触发不显示“另一张”。
-- 手牌中剩余星、星费用、前置获得星、牌堆 scale 与数值一致；选择易伤目标后伤害改变，虚弱/敏捷/脆弱改变预览。未来触发与随机事件链不是完整模拟。
-- 「披星为幕」「星弦」升级查看的变化槽位标绿，星的小数量图标也标绿；未改变槽位无绿。核对奖励、锻造、卡组查看及战斗内升级界面。
-- 新生成 schema v4 无 scaling_cap；旧「残章缀星」读档仍保留原上限。
-- 后续生成日志检查 cache hit/miss 字段，比较相同模型/风格/角色下的缓存命中率。离线公共前缀长度不能当作实际 token 命中量。
+- 基础形态与升级形态改变攻击范围、增加/移除动作、改变关键词与规则；升级预览、实际升级、复制、读档、降级一致。
+- summon 与 Osty 攻击/治疗、Soul 放入不同牌堆、Doom 阈值结算。
+- 每种球的生成/溢出/首末与全部激发、remove:false、被动与槽位改变、正负/暂时 Focus。
+- Forge 强化或生成君王之剑；固定/随机/发现生成、状态变化、变化后的牌堆位置与升级。
+- 多张弃牌的 Sly 顺序、小刀触发、select 绑定后的费用与临时保留/奇巧、自动打出。
+- 每回合第一张匹配牌包括规则建立前的历史；条件失败不消耗 limit；规则组多个收益只占一次额度；建立规则的打出不触发自身。
+- 有限 turn_start/next_turn 到期、规则来源升级后快照不变、this_card 指向原实例而非复制品。
+- literal 资源图标、动态公式、力量/虚弱/易伤与格挡预览、不同角色能量颜色。
+- OBSERVATION_JSON 不含会话/协议元数据与原始嵌套 state；完整内部审计仍保留；查看器同时显示基础与升级形态。
+
+自动检查不能替代这些实机项目，也不能证明任意战斗检查点恢复正确。
 
 ## 发布前检查
 
