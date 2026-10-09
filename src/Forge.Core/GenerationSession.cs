@@ -79,7 +79,8 @@ public sealed class GenerationSession : IDisposable
                 _publish?.Invoke(cards);
                 _ready = _ready.Concat(cards).DistinctBy(CandidatePool.Fingerprint).ToArray();
             }
-            _audit("generation_ready", new { card_protocol = MechanicCatalog.ProtocolVersion, revision, context.TotalEvents, elapsed_ms = timer.ElapsedMilliseconds, cards });
+            _audit("generation_ready", new { card_protocol = MechanicCatalog.ProtocolVersion, revision, context.TotalEvents, elapsed_ms = timer.ElapsedMilliseconds, cards,
+                card_texts = cards.Select(card => card.Forms.Select(form => CardText.Render(form, true, cardType: card.Type)).ToArray()).ToArray() });
         }
         catch (Exception ex)
         {

@@ -63,7 +63,7 @@ dotnet run --project src/Forge.Tool -- prompt config.example.json examples/conte
 python tools/view_generation.py 'C:\Games\Slay the Spire 2\mods\NeowsCompany\data\generation'
 ```
 
-不传路径时使用 `STS2_GAME_DIR`，未设置则读取仓库的 `data/generation`。页面按战斗和请求序号整理记录，可以搜索卡名、模型和失败原因，筛选成功/失败，查看卡牌效果、提示词、reasoning、耗时、token 与缓存命中，以及奖励审计事件。JSON 块支持对象和数组逐层折叠，显示字段数或列表长度；标题旁的“复制”按钮复制完整内容，与折叠状态无关。`OBSERVATION_JSON` 单独展示，reasoning 默认折叠。时间按浏览器本地时区显示，缺少完成结果的请求标记为“待完成”。
+不传路径时使用 `STS2_GAME_DIR`，未设置则读取仓库的 `data/generation`。页面按战斗和请求序号整理记录，可以搜索卡名、模型和失败原因，筛选成功/失败，查看基础与升级版卡牌效果文本、效果结构、提示词、reasoning、模型原始输出（content）、耗时、token 与缓存命中，以及奖励审计事件。新日志保存共享 CardText 渲染器生成的效果文本；旧日志由查看器从定义还原。JSON 块点开后，所有嵌套对象和列表默认展开，仍可手动折叠；标题旁的“复制”按钮复制完整内容，与折叠状态无关。`OBSERVATION_JSON` 单独展示，reasoning 和原始输出默认折叠。原始输出保留空白和代码围栏（已知凭据和服务地址会脱敏），旧日志未保存的 content 无法补回。时间按浏览器本地时区显示，缺少完成结果的请求标记为“待完成”。
 
 页面默认每 5 秒刷新，支持边玩边看；无效或未写完的 JSONL 行会被跳过并提示。查看器只读取日志，服务仅监听 `127.0.0.1`，不调用模型或修改游戏文件。按 `Ctrl+C` 停止。启动脚本支持 `-Port 0` 自动选择端口、`-NoBrowser` 仅启动服务，以及 `-PythonExe '<python.exe 路径>'`；直接用 Python 时对应选项为 `--port 0`、`--no-browser`。
 

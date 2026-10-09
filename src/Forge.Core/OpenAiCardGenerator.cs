@@ -43,23 +43,28 @@ public sealed class OpenAiCardGenerator(HttpClient client, ProviderConfig config
             string? reasoning = message.ValueKind == JsonValueKind.Object
                 && message.TryGetProperty("reasoning_content", out var thinking) && thinking.ValueKind == JsonValueKind.String
                 ? thinking.GetString() : null;
-            // Only explicit diagnostic fields are persisted; never log headers or an arbitrary response envelope.
-            if (reasoning is not null)
+            string? rawContent = message.ValueKind == JsonValueKind.Object
+                && message.TryGetProperty("content", out var output) && output.ValueKind == JsonValueKind.String
+                ? output.GetString() : null;
+            // Persist only explicit model output fields, never headers or an arbitrary response envelope.
+            string? Redact(string? text)
+            {
                 foreach (string secret in new[] { key, config.ApiKey, config.BaseUrl }.Where(s => s.Length > 0).Distinct())
-                    reasoning = reasoning.Replace(secret, "[redacted]", StringComparison.Ordinal);
+                    text = text?.Replace(secret, "[redacted]", StringComparison.Ordinal);
+                return text;
+            }
             string? finish = choice.TryGetProperty("finish_reason", out var finished) && finished.ValueKind == JsonValueKind.String
                 ? finished.GetString() : null;
             var usage = document.RootElement.TryGetProperty("usage", out var tokenUsage) ? tokenUsage : default;
             var promptDetails = usage.ValueKind == JsonValueKind.Object && usage.TryGetProperty("prompt_tokens_details", out var details)
                 ? details : default;
-            diagnostics?.Invoke(new(prompt.Revision, reasoning, finish is "stop" or "length" or "content_filter" ? finish : null,
+            diagnostics?.Invoke(new(prompt.Revision, Redact(reasoning), finish is "stop" or "length" or "content_filter" ? finish : null,
                 ReadTokens(usage, "prompt_tokens"), ReadTokens(usage, "completion_tokens"), ReadTokens(usage, "total_tokens"),
                 ReadTokens(usage, "prompt_cache_hit_tokens") ?? ReadTokens(promptDetails, "cached_tokens"),
-                ReadTokens(usage, "prompt_cache_miss_tokens")));
+                ReadTokens(usage, "prompt_cache_miss_tokens"), Redact(rawContent)));
             if (choice.TryGetProperty("finish_reason", out var reason) && reason.GetString() is "length" or "content_filter")
                 throw new GenerationFailureException(reason.GetString() == "length" ? "completion_token_limit" : "content_filtered");
-            string content = choice.GetProperty("message").GetProperty("content").GetString()
-                ?? throw new GenerationFailureException("missing_content");
+            string content = rawContent ?? throw new GenerationFailureException("missing_content");
             content = content.Trim();
             if (content.StartsWith("```", StringComparison.Ordinal))
             {

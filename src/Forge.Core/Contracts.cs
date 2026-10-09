@@ -309,5 +309,5 @@ public sealed record GenerationContext
 public sealed record Prompt(string System, string User) { [JsonIgnore] public int Revision { get; init; } }
 public sealed record ProviderDiagnostics(int Revision, string? ReasoningContent, string? FinishReason,
     int? PromptTokens, int? CompletionTokens, int? TotalTokens,
-    int? PromptCacheHitTokens = null, int? PromptCacheMissTokens = null);
+    int? PromptCacheHitTokens = null, int? PromptCacheMissTokens = null, string? Content = null);
 public interface IContentGenerator<T> { Task<T> GenerateAsync(Prompt prompt, CancellationToken cancellationToken); }

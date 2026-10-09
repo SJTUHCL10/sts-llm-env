@@ -1,4 +1,5 @@
 using Forge.Core;
+using Forge.Tool;
 
 try
 {
@@ -12,6 +13,10 @@ try
         var cards = Wire.Decode<CardBatch>(File.ReadAllText(cardsPath));
         foreach (var card in cards.Cards) CardValidator.Validate(card);
         Console.WriteLine($"Valid: {cards.Cards.Length} cards.");
+    }
+    else if (args is ["audit-text", var auditInput, var auditOutput])
+    {
+        return CardTextAudit.Write(auditInput, auditOutput);
     }
     else if (args is ["prompt", var promptConfiguration, var promptObservation, var promptOutput])
     {
@@ -42,7 +47,7 @@ try
     }
     else
     {
-        Console.WriteLine("Neow's Company tool: config <path> | validate <cards.json> | prompt <config.json> <context.json> <output.json> | generate <config.json> <context.json> <output.json>");
+        Console.WriteLine("Neow's Company tool: config <path> | validate <cards.json> | audit-text <cards.json|run.json|logs-directory> <report.md> | prompt <config.json> <context.json> <output.json> | generate <config.json> <context.json> <output.json>");
         return 2;
     }
     return 0;

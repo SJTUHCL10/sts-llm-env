@@ -11,6 +11,7 @@ using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Entities.Powers;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.HoverTips;
+using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Powers;
@@ -76,8 +77,29 @@ public sealed class GeneratedEffectPower : PowerModel
         _firing = false; _armingPlay = null;
     }
     public override LocString Title => Localize("title", _snapshot?.Definition.Name ?? "涅奥的造物");
-    public override LocString Description => Localize("description", _snapshot is null ? "" : string.Join("\n", Form.Listeners.Select((rule, i) => (rule, i))
-        .Where(item => _snapshot.State.Remaining[item.i] != 0).Select(item => CardText.RenderRule(item.rule, LocManager.Instance.Language is "zhs" or "zht"))));
+    public override LocString Description => Localize("description", RuntimeDescriptionText(LocManager.Instance.Language is "zhs" or "zht"));
+    internal string RuntimeDescriptionText(bool chinese)
+    {
+        if (_snapshot is null) return "";
+        string prefix = EnergyIconHelper.GetPrefix(this);
+        int offset = Form.Immediate.Length;
+        var lines = new List<string>();
+        for (int i = 0; i < Form.Listeners.Length; i++)
+        {
+            var rule = Form.Listeners[i];
+            int index = offset;
+            if (_snapshot.State.Remaining[i] != 0)
+                lines.Add(CardText.RenderRule(rule, chinese, effect =>
+                {
+                    string amount = effect.Amount?.Value is not null ? _snapshot.Amounts[index].ToString(System.Globalization.CultureInfo.InvariantCulture) : CardText.Number(effect.Amount, chinese, resource: (kind, value) => CardText.ResourceText(kind, value, prefix));
+                    index++;
+                    return CardText.RenderEffect(effect, chinese, amount, (kind, value) => CardText.ResourceText(kind, value, prefix));
+                }, combatIsImplicit: true,
+                    resource: (kind, value) => CardText.ResourceText(kind, value, prefix)));
+            offset += rule.Effects.Length;
+        }
+        return string.Join("\n", lines);
+    }
     private static LocString Localize(string suffix, string text)
     {
         string key = "NEOWS_COMPANY." + AtomicStore.Key(text) + "." + suffix;

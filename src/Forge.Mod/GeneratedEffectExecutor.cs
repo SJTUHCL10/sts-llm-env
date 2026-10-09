@@ -179,7 +179,7 @@ internal static class GeneratedEffectExecutor
             switch (e.Kind)
             {
                 case EffectKind.Damage: await Damage(c, e, amount, target); break;
-                case EffectKind.Block: await CreatureCmd.GainBlock(target, c.Triggered ? amount : GeneratedEffectPreview.EnchantBlock(source, amount), ValueProp.Move, c.Play); break;
+                case EffectKind.Block: await CreatureCmd.GainBlock(target, c.Triggered ? amount : GeneratedEffectPreview.EnchantBlock(source, amount), GeneratedEffectPreview.BlockProps(c.Triggered), c.Triggered ? null : c.Play); break;
                 case EffectKind.Draw: await CardPileCmd.Draw(c.Choice, amount, owner); break;
                 case EffectKind.GainEnergy: await PlayerCmd.GainEnergy(amount, owner); break;
                 case EffectKind.GainStars: await PlayerCmd.GainStars(amount, owner); break;

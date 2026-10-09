@@ -31,8 +31,8 @@ class ViewerTests(unittest.TestCase):
             event("generation_request", {"revision": 1, "model": "fixture", "prompt": {"system": "协议", "user": "{}"}}),
             event("generation_request", {"revision": 2, "model": "fixture"}),
             event("generation_response", {"revision": 2, "reasoning_content": "失败诊断", "total_tokens": 500}),
-            event("generation_response", {"revision": 1, "reasoning_content": "卡牌设计", "prompt_cache_hit_tokens": 12}),
-            event("generation_ready", {"revision": 1, "elapsed_ms": 321, "cards": [{"name": "涅奥的低语"}]}),
+            event("generation_response", {"revision": 1, "content": "  原始输出\n", "reasoning_content": "卡牌设计", "prompt_cache_hit_tokens": 12}),
+            event("generation_ready", {"revision": 1, "elapsed_ms": 321, "cards": [{"name": "涅奥的低语"}], "card_texts": [["抽1张牌。", "抽2张牌。"]]}),
             event("generation_failed", {"revision": 2, "reason": "completion_token_limit", "stage": "provider"}),
             event("generation_request", {"revision": 3}),
             event("generation_discarded", {"revision": 3, "reason": "reward_frozen_or_session_ended"}),
@@ -45,6 +45,8 @@ class ViewerTests(unittest.TestCase):
         self.assertEqual(summary["cards"], ["涅奥的低语"])
         self.assertEqual(summary["floor"], 7)
         self.assertEqual(result["requests"][0]["response"]["reasoning_content"], "卡牌设计")
+        self.assertEqual(result["requests"][0]["response"]["content"], "  原始输出\n")
+        self.assertEqual(result["requests"][0]["result"]["card_texts"], [["抽1张牌。", "抽2张牌。"]])
         self.assertEqual(result["requests"][1]["response"]["total_tokens"], 500)
         self.assertEqual(result["events"][-1]["kind"], "reward_frozen")
 

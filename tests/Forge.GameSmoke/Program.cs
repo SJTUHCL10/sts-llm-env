@@ -20,6 +20,11 @@ using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves;
 using MegaCrit.Sts2.Core.Saves.Runs;
 using MegaCrit.Sts2.Core.Unlocks;
+using MegaCrit.Sts2.Core.Commands;
+using MegaCrit.Sts2.Core.Entities.Creatures;
+using MegaCrit.Sts2.Core.Hooks;
+using MegaCrit.Sts2.Core.Localization.DynamicVars;
+using MegaCrit.Sts2.Core.ValueProps;
 
 string game = args.FirstOrDefault() ?? Environment.GetEnvironmentVariable("STS2_GAME_DIR") ?? throw new ArgumentException("Provide game directory.");
 string lib = Path.Combine(game, "data_sts2_windows_x86_64");
@@ -146,6 +151,8 @@ static class Smoke
             card.UpdateDynamicVarPreview(CardPreviewMode.Normal, other.Creature, card.DynamicVars);
             Check(card.DynamicVars["E0"].PreviewValue == 18 && card.DynamicVars["E0"].BaseValue == 0 && owner.PlayerCombatState.Stars == 5);
             Console.WriteLine("PASS expression preview includes payment/Strength/Weak/Vulnerable without mutating state or base values");
+            CheckBlockContracts(card, owner, guard);
+            CheckTextContracts();
             var effect = new CardEffect { Kind = EffectKind.Damage, Target = "all_enemies", Amount = 7 };
             var ruleForm = new CardForm { Cost = new() { Energy = 1 }, Rules = [new() { Trigger = new() { Event = RuleEvent.TurnEnd }, Effects = [effect] }] };
             card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "星幕", Type = ForgeCardType.Power, Rarity = ForgeRarity.Rare, Forms = [ruleForm, ruleForm] });
@@ -166,6 +173,84 @@ static class Smoke
         finally { CombatManager.Instance.History.Clear(); turnField.SetValue(CombatManager.Instance, previous); guard.UnpatchAll(guard.Id); }
     }
     private static bool SkipSaveManager(ref SaveManager? __result) { __result = null; return false; }
+    private static void CheckBlockContracts(NeowGeneratedCard card, Player owner, Harmony guard)
+    {
+        // Keep the native block hooks and rounding; bypass only audiovisual command work.
+        // This test combat has no enemies, so keep its lifecycle open for executor checks.
+        guard.Patch(AccessTools.PropertyGetter(typeof(CombatManager), nameof(CombatManager.IsEnding)), prefix: new HarmonyMethod(typeof(Smoke), nameof(KeepCombatOpen)));
+        guard.Patch(AccessTools.Method(typeof(CreatureCmd), nameof(CreatureCmd.GainBlock), [typeof(Creature), typeof(decimal), typeof(ValueProp), typeof(CardPlay), typeof(bool)]),
+            prefix: new HarmonyMethod(typeof(Smoke), nameof(GainBlockWithoutVisuals)));
+        ((DexterityPower)ModelDb.Power<DexterityPower>().ToMutable()).ApplyInternal(owner.Creature, 3, silent: true);
+        var immediate = new CardEffect { Kind = EffectKind.Block, Amount = 4 };
+        var listener = new CardRule { Trigger = new() { Event = RuleEvent.CardPlayed, Filter = new() { Cost = 0 } }, Effects = [new() { Kind = EffectKind.Block, Amount = 2 }] };
+        var form = new CardForm { Cost = new() { Energy = 1 }, Effects = [immediate], Rules = [listener] };
+        foreach (bool frail in new[] { false, true })
+        {
+            if (frail) ((FrailPower)ModelDb.Power<FrailPower>().ToMutable()).ApplyInternal(owner.Creature, 1, silent: true);
+            foreach (ForgeCardType type in new[] { ForgeCardType.Power, ForgeCardType.Skill })
+            {
+                if (card.IsUpgraded) card.DowngradeInternal();
+                card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "触发格挡", Type = type, Rarity = ForgeRarity.Uncommon, Forms = [form, form] });
+                card.UpdateDynamicVarPreview(CardPreviewMode.Normal, null, card.DynamicVars);
+                Check(card.DynamicVars["E0"].PreviewValue == (frail ? 5.25m : 7m) && card.DynamicVars["E1"].PreviewValue == 2m);
+                Check(((BlockVar)card.DynamicVars["E0"]).Props == ValueProp.Move && ((BlockVar)card.DynamicVars["E1"]).Props == ValueProp.Unpowered);
+                var play = new CardPlay { Card = card, Player = owner, Target = null, IsAutoPlay = false, Resources = new() { EnergySpent = 1, EnergyValue = 1, StarsSpent = 0, StarValue = 0 }, ResultPile = PileType.Discard, PlayIndex = 0, PlayCount = 1 };
+                int before = owner.Creature.Block;
+                var context = new GeneratedExecutionContext(card, new BlockingPlayerChoiceContext(), play);
+                GeneratedEffectExecutor.ExecuteGroup(context, form.Immediate, 0).GetAwaiter().GetResult();
+                Check(owner.Creature.Block - before == (frail ? 5 : 7) && BlockCapture.Props == ValueProp.Move && BlockCapture.Play == play);
+                before = owner.Creature.Block;
+                context = new GeneratedExecutionContext(card, new BlockingPlayerChoiceContext(), play) { Triggered = true };
+                GeneratedEffectExecutor.ExecuteGroup(context, listener.Effects, 1).GetAwaiter().GetResult();
+                Check(owner.Creature.Block - before == 2 && BlockCapture.Props == ValueProp.Unpowered && BlockCapture.Play is null);
+                card.UpgradeInternal(); card.FinalizeUpgradeInternal();
+                var loaded = (NeowGeneratedCard)CardModel.FromSerializable(card.ToSerializable()); loaded.Owner = owner;
+                loaded.UpdateDynamicVarPreview(CardPreviewMode.Normal, null, loaded.DynamicVars);
+                Check(loaded.DynamicVars["E1"].PreviewValue == 2 && ((BlockVar)loaded.DynamicVars["E1"]).Props == ValueProp.Unpowered);
+            }
+        }
+        card.DowngradeInternal();
+        Console.WriteLine("PASS native Dexterity/Frail apply to direct block only, with matching executor/preview/upgrade/save properties");
+    }
+    private static class BlockCapture
+    {
+        internal static ValueProp Props;
+        internal static CardPlay? Play;
+    }
+    private static bool KeepCombatOpen(ref bool __result) { __result = false; return false; }
+    private static bool GainBlockWithoutVisuals(Creature creature, decimal amount, ValueProp props, CardPlay? cardPlay, ref Task<decimal> __result)
+    {
+        BlockCapture.Props = props; BlockCapture.Play = cardPlay;
+        decimal modified = Math.Max(0, Hook.ModifyBlock(creature.CombatState!, creature, amount, props, cardPlay?.Card, cardPlay, out _));
+        creature.GainBlockInternal(modified);
+        __result = Task.FromResult(modified);
+        return false;
+    }
+    private static void CheckTextContracts()
+    {
+        foreach (var character in new CharacterModel[] { ModelDb.Character<Ironclad>(), ModelDb.Character<Silent>(), ModelDb.Character<Regent>(), ModelDb.Character<Necrobinder>(), ModelDb.Character<Defect>() })
+        {
+            var owner = Player.CreateForNewRun(character, UnlockState.all, 10);
+            // Text requires an owner for the native character energy icon, no inventory or combat effects.
+            var card = (NeowGeneratedCard)ModelDb.Card<NeowGeneratedCard>().ToMutable(); card.Owner = owner;
+            var rule = new CardRule { Trigger = new() { Event = RuleEvent.CardPlayed, Filter = new() { Cost = 0 } }, Effects = [new() { Kind = EffectKind.GainEnergy, Amount = 2 }, new() { Kind = EffectKind.GainStars, Amount = 3 }, new() { Kind = EffectKind.Block, Amount = 1 }] };
+            var form = new CardForm { Cost = new() { Energy = 1 }, Rules = [rule] };
+            card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "费用图标", Type = ForgeCardType.Power, Rarity = ForgeRarity.Rare, Forms = [form, form] });
+            string prefix = EnergyIconHelper.GetPrefix(card);
+            string icon = $"[img]res://images/packed/sprite_fonts/{prefix}_energy_icon.png[/img]";
+            string text = card.RuntimeDescriptionText(true);
+            Check(prefix == character.CardPool.EnergyColorName && text.Contains("耗能为0" + icon + "的牌") && text.Contains("获得" + icon + icon) && !text.Contains("本场战斗") && !text.Contains("点星"));
+            card.DynamicVars["E2"].BaseValue = 5;
+            var power = (GeneratedEffectPower)ModelDb.Power<GeneratedEffectPower>().ToMutable(); power.Configure(card);
+            power.ApplyInternal(owner.Creature, 1, silent: true);
+            string description = power.RuntimeDescriptionText(true);
+            Check(description.Contains("耗能为0" + icon + "的牌") && description.Contains("获得5点格挡") && !description.Contains("本场战斗"));
+            card.UpgradeInternal(); card.FinalizeUpgradeInternal();
+            text = card.RuntimeDescriptionText(true);
+            Check(text.Contains("耗能为0" + icon + "的牌") && !text.Contains("本场战斗"));
+        }
+        Console.WriteLine("PASS all five native character energy icons in card/upgrade/power text and captured listener amounts");
+    }
     private static bool SkipStartingInventory() => false;
     private static void Check(bool value) { if (!value) throw new Exception("Game contract assertion failed."); }
 }

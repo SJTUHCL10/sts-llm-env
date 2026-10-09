@@ -16,6 +16,8 @@ dotnet run --project tests/Forge.GameSmoke -c Release
 
 这些检查不能证明实际 UI 布局、卡牌平衡、游戏中的效果执行或任意战斗检查点恢复正确。不要把历史测试数量当作当前验证结果。
 
+卡牌文案的批量导出、原版措辞核对表、费用／星图标与触发格挡回归流程见 [CARD_TEXT.md](CARD_TEXT.md)。
+
 ## 本地接口联调
 
 在一个终端运行固定响应服务：

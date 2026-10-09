@@ -9,6 +9,8 @@ namespace Forge.Mod;
 
 internal static class GeneratedEffectPreview
 {
+    // Listener rewards come from a power, even when a Skill installed the listener.
+    internal static ValueProp BlockProps(bool triggered) => triggered ? ValueProp.Unpowered : ValueProp.Move;
     internal static ValueProp DamageProps(CardEffect effect) => ValueProp.Move;
     internal static decimal EnchantBlock(NeowGeneratedCard card, decimal amount)
     {
@@ -28,7 +30,7 @@ internal static class GeneratedEffectPreview
         else if (effect.Kind == EffectKind.Block)
         {
             if (!triggered) amount = EnchantBlock(card, amount);
-            if (hooks) amount = Hook.ModifyBlock(card.CombatState!, card.Owner.Creature, amount, ValueProp.Move, triggered ? null : card, null, out _);
+            if (hooks) amount = Hook.ModifyBlock(card.CombatState!, card.Owner.Creature, amount, BlockProps(triggered), triggered ? null : card, null, out _);
         }
         return effect.Kind is EffectKind.ApplyPower or EffectKind.OrbSlots ? amount : Math.Max(0, amount);
     }
@@ -89,7 +91,7 @@ internal sealed class GeneratedDamageVar(string name, decimal amount, CardEffect
     public override void UpdateCardPreview(CardModel card, CardPreviewMode previewMode, Creature? target, bool runGlobalHooks) => GeneratedEffectPreview.Update((NeowGeneratedCard)card, index, this, previewMode, target, runGlobalHooks);
     public void SetUpgradeHighlight(bool value) => WasJustUpgraded = value;
 }
-internal sealed class GeneratedBlockVar(string name, decimal amount, int index) : BlockVar(name, amount, ValueProp.Move), IGeneratedPreviewVar
+internal sealed class GeneratedBlockVar(string name, decimal amount, int index, bool triggered) : BlockVar(name, amount, GeneratedEffectPreview.BlockProps(triggered)), IGeneratedPreviewVar
 {
     public override void UpdateCardPreview(CardModel card, CardPreviewMode previewMode, Creature? target, bool runGlobalHooks) => GeneratedEffectPreview.Update((NeowGeneratedCard)card, index, this, previewMode, target, runGlobalHooks);
     public void SetUpgradeHighlight(bool value) => WasJustUpgraded = value;

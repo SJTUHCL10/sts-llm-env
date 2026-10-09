@@ -31,6 +31,25 @@ await Test("two complete forms round trip and upgrade changes mechanics", () =>
     Check(!json.Contains("upgrade_") && !json.Contains("schema_version") && !json.Contains("null") && !json.Contains("repeat"));
     return Task.CompletedTask;
 });
+await Test("description keeps turn-start duration, choices, repeated effects and removal semantics explicit", () =>
+{
+    var rule = new CardRule { Trigger = new() { Event = RuleEvent.TurnStart }, Lifetime = LifetimeKind.Turn, Turns = 2, Effects = [new() { Kind = EffectKind.Block, Amount = 1 }] };
+    Check(CardText.RenderRule(rule, true, combatIsImplicit: true) == "接下来的2个回合，在你的回合开始时，获得1点格挡。");
+    Check(CardText.RenderRule(rule with { Turns = 1 }, true, combatIsImplicit: true) == "下回合，在你的回合开始时，获得1点格挡。");
+    var first = rule with { Lifetime = LifetimeKind.Combat, Turns = null, Trigger = new() { Event = RuleEvent.CardPlayed, Filter = new() { Id = "shiv" }, Occurrence = new() { First = 1 } } };
+    Check(CardText.RenderRule(first, true, combatIsImplicit: true) == "每回合首次打出一张小刀时，获得1点格挡。");
+    Check(CardText.RenderRule(first with { Trigger = first.Trigger with { Occurrence = new() { Every = 3, Within = CounterScope.Combat } } }, true, combatIsImplicit: true)
+        == "本场战斗，每打出3张小刀时，获得1点格挡。");
+    var create = new CardEffect { Kind = EffectKind.CreateCard, Card = new() { Pool = "colorless", Pick = SelectionMode.Choose, Filter = new() { Type = "skill" } }, To = CardPileName.Hand };
+    Check(CardText.RenderEffect(create, true) == "从3张随机无色技能牌中选择1张，添加到你的手牌。");
+    Check(CardText.RenderEffect(create with { Count = 2 }, true).StartsWith("重复以下操作2次："));
+    Check(CardText.RenderEffect(new() { Kind = EffectKind.Damage, Target = "enemy", Amount = 2, Repeat = 3 }, true) == "重复以下效果3次：造成2点伤害。");
+    var poison = new NumberExpression { Stat = "power", Of = "target", Id = "poison" };
+    var remove = new CardEffect { Kind = EffectKind.ApplyPower, Power = "poison", Target = "enemy", Amount = new() { Mul = [-1, poison] } };
+    Check(CardText.RenderEffect(remove, true) == "移除目标敌人的所有中毒。");
+    Check(CardText.RenderEffect(remove with { Amount = new() { Mul = [-1, poison with { Of = "self" }] } }, true).Contains("施加"));
+    return Task.CompletedTask;
+});
 await Test("reject missing forms, old fields, mixed targets, irrelevant slots and invalid expressions", async () =>
 {
     await Reject(() => Wire.Decode<CardDefinition>("{}"));
@@ -456,7 +475,54 @@ await Test("resource icons preserve small upgraded counts and abbreviate large c
     Check(!CardText.Render(engine, true).Contains("最多"));
     return Task.CompletedTask;
 });
-await Test("provider logs reasoning, usage and revision before malformed final content and redacts credentials", async () =>
+await Test("native card wording covers fixed/random creation, zero-cost listeners and implicit power lifetimes", () =>
+{
+    string Icons(string kind, string value) => CardText.ResourceText(kind, value, "silent");
+    const string energy = "[img]res://images/packed/sprite_fonts/silent_energy_icon.png[/img]";
+    var shiv = new CardEffect { Kind = EffectKind.CreateCard, Card = new() { Id = "shiv" }, Count = 2, To = CardPileName.Hand };
+    Check(CardText.RenderEffect(shiv, true) == "将2张小刀添加到你的手牌。");
+    Check(CardText.RenderEffect(shiv with { Card = new() { Pool = "colorless", Pick = SelectionMode.Random }, To = CardPileName.Draw, Position = "bottom" }, true)
+        == "将2张随机无色牌添加到你的抽牌堆底部。");
+    var rule = new CardRule { Trigger = new() { Event = RuleEvent.CardPlayed, Filter = new() { Cost = 0 } }, Effects = [new() { Kind = EffectKind.Block, Amount = 2 }] };
+    var form = new CardForm { Cost = new() { Energy = 1 }, Rules = [rule] };
+    var powerCard = engine with { Forms = [form, form] };
+    string expected = $"每当你打出一张耗能为0{energy}的牌，获得2点格挡。";
+    Check(CardText.Render(powerCard, true, resource: Icons) == expected);
+    Check(CardText.Render(powerCard, true, upgraded: true, resource: Icons) == expected);
+    Check(CardText.Render(powerCard with { Type = ForgeCardType.Skill }, true, resource: Icons) == "本场战斗，" + expected);
+    Check(CardText.RenderRule(rule, true, combatIsImplicit: true, resource: Icons) == expected);
+    Check(CardText.RenderRule(rule with { Lifetime = LifetimeKind.Turn }, true, combatIsImplicit: true, resource: Icons).StartsWith("本回合，"));
+    var next = rule with { Trigger = new() { Event = RuleEvent.TurnStart }, Lifetime = LifetimeKind.NextTurn };
+    Check(CardText.RenderRule(next, true, combatIsImplicit: true) == "下回合，在你的回合开始时，获得2点格挡。");
+    Check(CardText.RenderRule(rule with { Trigger = rule.Trigger with { Limit = new() { Count = 1, Within = CounterScope.Combat } } }, true, combatIsImplicit: true).Contains("本场战斗最多生效1次"));
+    Check(CardText.RenderRule(rule, false, combatIsImplicit: true, resource: Icons) == $"Whenever you play a 0{energy}-cost card, Gain 2 Block.");
+    Check(CardText.RenderRule(rule with { Trigger = new() { Event = RuleEvent.CardPlayed, Filter = new() { Id = "shiv" } } }, true, combatIsImplicit: true)
+        == "每当你打出一张小刀，获得2点格挡。");
+    return Task.CompletedTask;
+});
+await Test("all numeric resource contexts use icons, preserve expressions and upgrade highlights", () =>
+{
+    string Icons(string kind, string value) => CardText.ResourceText(kind, value, "regent");
+    const string energy = "[img]res://images/packed/sprite_fonts/regent_energy_icon.png[/img]";
+    const string star = "[img]res://images/packed/sprite_fonts/star_icon.png[/img]";
+    foreach (int count in new[] { 0, 1, 2, 3, 4 })
+    {
+        string iconCount = count is >= 1 and <= 3 ? string.Concat(Enumerable.Repeat(energy, count)) : count + energy;
+        Check(CardText.RenderEffect(new() { Kind = EffectKind.GainEnergy, Amount = count }, true, resource: Icons) == "获得" + iconCount + "。");
+        Check(CardText.RenderEffect(new() { Kind = EffectKind.SetCost, Target = "this_card", Amount = count, Until = LifetimeKind.Turn }, true, resource: Icons)
+            == "本牌在本回合的耗能变为" + iconCount + "。");
+    }
+    Check(CardText.RenderEffect(new() { Kind = EffectKind.GainStars, Amount = 3 }, true, "[green]3[/green]", Icons) == "获得[green]" + star + star + star + "[/green]。");
+    Check(CardText.RenderEffect(new() { Kind = EffectKind.GainStars, Amount = new() { Stat = "paid_energy" } }, true, resource: Icons) == "获得本次消耗的" + energy + "数量" + star + "。");
+    var costFilter = new CardFilter { Cost = 2, Type = "skill" };
+    string text = CardText.RenderEffect(new() { Kind = EffectKind.CreateCard, Count = 1, Card = new() { Pool = "colorless", Pick = SelectionMode.Random, Filter = costFilter }, To = CardPileName.Hand }, true, resource: Icons);
+    Check(text.Contains("耗能为" + energy + energy + "的无色技能"));
+    Check(CardText.Target(new() { Pile = CardPileName.Hand, Pick = SelectionMode.Choose, Count = 1, Filter = costFilter }, true, Icons).Contains("耗能为" + energy + energy + "的技能牌"));
+    Check(CardText.Condition(new() { Op = Comparison.Ge, Left = new() { Stat = "stars" }, Right = 3 }, true, Icons) == "你的" + star + "数量 ≥ " + star + star + star);
+    Check(CardText.Condition(new() { Op = Comparison.Eq, Left = 0, Right = new() { Stat = "energy" } }, true, Icons) == "0" + energy + " = 你的" + energy + "数量");
+    return Task.CompletedTask;
+});
+await Test("provider logs raw content, reasoning, usage and revision before malformed final content and redacts credentials", async () =>
 {
     ProviderDiagnostics? response = null;
     using var client = new HttpClient(new FakeHandler(async (request, token) =>
@@ -465,15 +531,16 @@ await Test("provider logs reasoning, usage and revision before malformed final c
         Check(!body.RootElement.TryGetProperty("reasoning_effort", out _));
         return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(JsonSerializer.Serialize(new
         {
-            choices = new[] { new { message = new { content = "invalid", reasoning_content = "idea TEST_SECRET" }, finish_reason = "stop" } },
+            choices = new[] { new { message = new { content = "  ```json\ninvalid TEST_SECRET https://api.openai.com/v1\n```  ", reasoning_content = "idea TEST_SECRET" }, finish_reason = "stop" } },
             usage = new { prompt_tokens = 12, completion_tokens = 34, total_tokens = 46,
                 prompt_cache_hit_tokens = 8, prompt_cache_miss_tokens = 4 }
         })) };
     }));
-    await RejectAsync(() => new OpenAiCardGenerator(client, new() { ApiKey = "TEST_SECRET", ApiKeyEnvironmentVariable = "", ReasoningEffort = null },
+    await RejectAsync(() => new OpenAiCardGenerator(client, new() { BaseUrl = "https://api.openai.com/v1", ApiKey = "TEST_SECRET", ApiKeyEnvironmentVariable = "", ReasoningEffort = null },
         diagnostics => response = diagnostics).GenerateAsync(new("s", "u") { Revision = 2 }, default));
     Check(response is { Revision: 2, PromptTokens: 12, CompletionTokens: 34, TotalTokens: 46, PromptCacheHitTokens: 8, PromptCacheMissTokens: 4 }
-        && response.ReasoningContent == "idea [redacted]");
+        && response.ReasoningContent == "idea [redacted]"
+        && response.Content == "  ```json\ninvalid [redacted] [redacted]\n```  ");
 });
 await Test("truncated responses without a message still retain token-limit diagnosis", async () =>
 {
@@ -482,7 +549,7 @@ await Test("truncated responses without a message still retain token-limit diagn
     { Content = new StringContent("{\"choices\":[{\"finish_reason\":\"length\"}]}") })));
     try { await new OpenAiCardGenerator(client, new(), value => diagnostics = value).GenerateAsync(new("s", "u"), default);
         throw new Exception("Expected truncation failure."); }
-    catch (GenerationFailureException ex) { Check(ex.Reason == "completion_token_limit" && diagnostics?.FinishReason == "length"); }
+    catch (GenerationFailureException ex) { Check(ex.Reason == "completion_token_limit" && diagnostics is { FinishReason: "length", Content: null }); }
 });
 await Test("missing reasoning is logged as null independently of final card decoding", async () =>
 {
@@ -491,6 +558,30 @@ await Test("missing reasoning is logged as null independently of final card deco
     var batch = await new OpenAiCardGenerator(client, new(), diagnostics => response = diagnostics).GenerateAsync(new("s", "u"), default);
     Check(batch.Cards.Length == 1 && response is { ReasoningContent: null, FinishReason: "stop" });
     Check(response?.PromptCacheHitTokens is null && response?.PromptCacheMissTokens is null);
+    Check(response?.Content == Wire.Encode(new CardBatch { Cards = [valid] }));
+});
+await Test("truncated model content is recorded before the token-limit failure", async () =>
+{
+    ProviderDiagnostics? diagnostics = null;
+    const string partial = "  {\"cards\":[";
+    using var client = new HttpClient(new FakeHandler((_, _) => Task.FromResult(Response(partial, "length"))));
+    try { await new OpenAiCardGenerator(client, new(), value => diagnostics = value).GenerateAsync(new("s", "u"), default);
+        throw new Exception("Expected truncation failure."); }
+    catch (GenerationFailureException ex) { Check(ex.Reason == "completion_token_limit" && diagnostics?.Content == partial); }
+});
+await Test("generation journal snapshots base and upgraded effects with the shared card renderer", async () =>
+{
+    JsonElement ready = default;
+    using var session = new GenerationSession(context.CombatKey, config,
+        new FakeGenerator((_, _) => Task.FromResult(new CardBatch { Cards = [valid] })),
+        (kind, value) => { if (kind == "generation_ready") ready = JsonSerializer.SerializeToElement(value, Wire.Json); });
+    Check(session.TryPrefetch(context, DateTimeOffset.UtcNow));
+    await session.WaitForPendingAsync();
+    var texts = ready.GetProperty("card_texts")[0];
+    Check(texts.GetArrayLength() == valid.Forms.Length);
+    for (int i = 0; i < valid.Forms.Length; i++)
+        Check(texts[i].GetString() == CardText.Render(valid.Forms[i], true, cardType: valid.Type));
+    Check(Wire.Encode(Wire.Decode<CardDefinition>(ready.GetProperty("cards")[0].GetRawText())) == Wire.Encode(valid));
 });
 await Test("standard cached-token diagnostics are read without inventing cache misses", async () =>
 {

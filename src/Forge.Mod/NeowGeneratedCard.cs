@@ -70,7 +70,7 @@ public sealed class NeowGeneratedCard : CardModel
     protected override IEnumerable<DynamicVar> CanonicalVars => ActiveForm.AllEffects.Select((e, i) => e.Kind switch
     {
         EffectKind.Damage => (DynamicVar)new GeneratedDamageVar($"E{i}", e.Amount?.Value ?? 0, e, i),
-        EffectKind.Block => new GeneratedBlockVar($"E{i}", e.Amount?.Value ?? 0, i),
+        EffectKind.Block => new GeneratedBlockVar($"E{i}", e.Amount?.Value ?? 0, i, i >= ActiveForm.Immediate.Length),
         _ => new GeneratedAmountVar($"E{i}", e.Amount?.Value ?? 0, i)
     });
     private void RebuildForm(bool preserveCost)
@@ -131,25 +131,16 @@ public sealed class NeowGeneratedCard : CardModel
     internal LocString RuntimeDescription()
     {
         bool chinese = LocManager.Instance.Language is "zhs" or "zht";
-        string key = "NEOWS_COMPANY." + AtomicStore.Key(_payload + chinese + IsUpgraded) + ".description";
-        string description = CardText.Render(ActiveForm, chinese, i => ActiveForm.AllEffects[i].Amount?.Value is null ? CardText.Number(ActiveForm.AllEffects[i].Amount, chinese)
-            : ActiveForm.AllEffects[i].Kind is EffectKind.GainEnergy or EffectKind.GainStars ? $"{{R{i}}}" : $"{{E{i}:diff()}}");
+        string prefix = EnergyIconHelper.GetPrefix(this);
+        string key = "NEOWS_COMPANY." + AtomicStore.Key(_payload + chinese + IsUpgraded + prefix) + ".description";
+        string description = RuntimeDescriptionText(chinese);
         LocManager.Instance.GetTable("cards").MergeWith(new Dictionary<string, string> { [key] = description });
         return new LocString("cards", key);
     }
-    protected override void AddExtraArgsToDescription(LocString description)
-    {
-        base.AddExtraArgsToDescription(description);
-        for (int i = 0; i < ActiveForm.AllEffects.Length; i++)
-        {
-            var effect = ActiveForm.AllEffects[i];
-            if (effect.Amount?.Value is null || effect.Kind is not (EffectKind.GainEnergy or EffectKind.GainStars)) continue;
-            var variable = DynamicVars[$"E{i}"];
-            string path = effect.Kind == EffectKind.GainStars ? "res://images/packed/sprite_fonts/star_icon.png"
-                : $"res://images/packed/sprite_fonts/{EnergyIconHelper.GetPrefix(this)}_energy_icon.png";
-            description.Add($"R{i}", CardText.ResourceIcons((int)variable.PreviewValue, variable.ToHighlightedString(false), path));
-        }
-    }
+    internal string RuntimeDescriptionText(bool chinese) => CardText.Render(ActiveForm, chinese,
+        i => ActiveForm.AllEffects[i].Amount?.Value is null ? CardText.Number(ActiveForm.AllEffects[i].Amount, chinese, resource: (kind, value) => CardText.ResourceText(kind, value, EnergyIconHelper.GetPrefix(this)))
+            : ActiveForm.AllEffects[i].Kind is EffectKind.GainEnergy or EffectKind.GainStars or EffectKind.SetCost ? DynamicVars[$"E{i}"].ToHighlightedString(false) : $"{{E{i}:diff()}}",
+        _definition.Type, (kind, value) => CardText.ResourceText(kind, value, EnergyIconHelper.GetPrefix(this)));
     internal LocString RuntimeTitle()
     {
         string key = "NEOWS_COMPANY." + AtomicStore.Key(_payload) + ".title";

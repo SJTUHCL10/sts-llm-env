@@ -42,6 +42,7 @@
     .card { padding:18px; border:1px solid #52624b; background:linear-gradient(145deg,#2c392d,#1d2822); border-radius:10px; overflow-wrap:anywhere; }
     .card .name { display:flex; gap:16px; justify-content:space-between; font-size:19px; font-weight:600; color:#e2edc5; }
     .card .flavor { color:#b8c8ad; font-style:italic; margin-top:14px; }
+    .card-text { white-space:pre-wrap; margin:8px 0; }
     .effect { border-top:1px solid #3c4c3d; padding:8px 0; }
     .effect:first-child { border-top:0; }
     details { border:1px solid var(--line); border-radius:8px; margin:12px 0; background:var(--panel); }
@@ -149,13 +150,13 @@
       function populate() {
         if (!node.open || rendered) return;
         rendered = true;
-        entries.forEach(([field,child],index) => children.append(jsonNode(child,array ? Number(field) : field,false,index < entries.length-1)));
+        entries.forEach(([field,child],index) => children.append(jsonNode(child,array ? Number(field) : field,true,index < entries.length-1)));
       }
       node.addEventListener('toggle',populate);
       node.open = open; populate();
       return node;
     }
-    function disclosure(title, text, open=false, className='') {
+    function disclosure(title, text, open=false, className='', parseJson=true) {
       const node = el('details'); node.open = open;
       const heading = el('summary',undefined,'block-heading');
       const copy = el('button','复制','copy-button'); copy.type = 'button';
@@ -169,7 +170,7 @@
       copy.onkeydown = event => event.stopPropagation();
       heading.append(el('span',title),copy); node.append(heading);
       let parsed, isJson = false;
-      if (typeof text === 'string' && /^[\s]*[\[{]/.test(text)) {
+      if (parseJson && typeof text === 'string' && /^[\s]*[\[{]/.test(text)) {
         try { parsed = JSON.parse(text); isJson = true; } catch {}
       }
       if (isJson) {
@@ -215,7 +216,107 @@
       const total = field => index.reduce((sum,item) => sum+item[field],0);
       $('stats').textContent = `${index.length} 场战斗 · ${total('requests')} 次请求 · 成功 ${total('ready')} · 失败 ${total('failed')} · 待完成 ${total('pending')} · 丢弃 ${total('discarded')}　|　匹配 ${sessions.length} 场`;
     }
-    function renderModernCard(card) {
+    // Historical journals have no card_texts snapshot. Mirror Core/CardText's Chinese
+    // renderer for those records; new journals use the shared renderer's saved text.
+    const textNames = {...types,...kinds, frail:'脆弱',doom:'灾厄',focus:'集中',vigor:'活力',thorns:'荆棘',plating:'覆甲',intangible:'无实体',artifact:'人工制品',buffer:'缓冲',retain_block:'保留格挡',
+      soul:'灵魂',shiv:'小刀',wound:'伤口',dazed:'晕眩',burn:'灼伤',void:'虚空',slimed:'黏液',fuel:'燃料',debris:'碎屑',minion_strike:'仆从打击',minion_sacrifice:'仆从捐躯',minion_dive:'仆从俯冲',sovereign_blade:'君王之剑',
+      lightning:'闪电',frost:'冰霜',dark:'黑暗',plasma:'等离子',glass:'玻璃',random:'随机',hp:'生命',max_hp:'最大生命',hand_size:'手牌数',draw_size:'抽牌堆牌数',discard_size:'弃牌堆牌数',exhaust_size:'消耗堆牌数',orb_count:'充能球数',orb_capacity:'球槽数',event_amount:'事件数值',damage_dealt:'上次攻击实际伤害',status:'状态',curse:'诅咒',sly:'奇巧'};
+    const textName = id => textNames[id] ?? id;
+    const powerUnit = id => ['strength','dexterity','focus','vigor','thorns','plating'].includes(id) ? '点' : '层';
+    const pileText = pile => ({hand:'手牌',draw:'抽牌堆',discard:'弃牌堆',exhaust:'消耗堆'}[pile] ?? pile);
+    function numberText(value=1) {
+      if (value == null) return '1';
+      if (typeof value !== 'object') return String(value);
+      if (value.stat) {
+        if (['paid_energy','paid_stars'].includes(value.stat)) return '本次消耗的'+(value.stat === 'paid_energy' ? '能量' : '星')+'数量';
+        return ({osty:'奥斯提的',target:'目标的'}[value.of] ?? '你的')+textName(value.stat === 'power' ? value.id : value.stat)+(value.stat === 'power' ? powerUnit(value.id)+'数' : '');
+      }
+      const terms = value.add ?? value.mul ?? value.div;
+      return Array.isArray(terms) ? '('+terms.map(numberText).join(value.add ? ' + ' : value.mul ? ' × ' : ' ÷ ')+')'+(value.div ? '向下取整' : '') : json(value);
+    }
+    function conditionText(condition) {
+      if (condition.not) return '不满足 '+conditionText(condition.not);
+      if (condition.all) return condition.all.map(conditionText).join('且');
+      if (condition.any) return condition.any.map(conditionText).join('或');
+      const operand = (value,other) => numberText(value)+(typeof value === 'number' && ['energy','paid_energy','stars','paid_stars'].includes(other?.stat) ? '点'+(other.stat.includes('stars') ? '星' : '能量') : '');
+      return operand(condition.left,condition.right)+' '+({eq:'=',ne:'≠',gt:'>',ge:'≥',lt:'<',le:'≤'}[condition.op] ?? condition.op)+' '+operand(condition.right,condition.left);
+    }
+    function filterText(filter={},pool='') {
+      return (filter.cost != null ? '耗能为'+filter.cost+'点能量的' : '')+(filter.keyword ? textName(filter.keyword)+'的' : '')+
+        (filter.upgraded == null ? '' : filter.upgraded ? '已升级' : '未升级')+(filter.rarity ? textName(filter.rarity) : '')+pool+(filter.type ? textName(filter.type) : '')+(filter.id ? textName(filter.id) : '');
+    }
+    function targetText(target) {
+      if (typeof target === 'string') return ({self:'你',enemy:'目标敌人',random_enemy:'随机敌人',all_enemies:'所有敌人',osty:'奥斯提',this_card:'本牌','event.card':'触发事件的牌','event.target':'事件目标',first_orb:'最前方充能球',last_orb:'最后方充能球',all_orbs:'所有充能球'}[target] ?? '选中的牌');
+      if (!target?.pile) return '你';
+      return '你的'+pileText(target.pile)+'中的'+({all:'所有',choose:'',random:'随机',first:'最前方',last:'最后方'}[target.pick] ?? '')+
+        (target.up_to ? '至多' : '')+(target.pick === 'all' ? '' : numberText(target.count)+'张')+filterText(target.filter)+(target.filter?.id ? '' : '牌');
+    }
+    function effectText(effect) {
+      const n = numberText(effect.amount), target = targetText(effect.target), self = effect.target == null || effect.target === 'self';
+      const card = effect.card ?? {};
+      let source = card.id ? textName(card.id) : filterText(card.filter,card.pool === 'colorless' ? '无色' : '本角色');
+      if (card.pool) source += '牌';
+      if (card.pick === 'random') source = '随机'+source;
+      if (card.upgraded) source += '+';
+      if (card.pick === 'choose') source = '从'+(card.options ?? 3)+'张随机'+source+'中选择1张';
+      const destination = effect.to ? '你的'+pileText(effect.to)+(effect.to === 'draw' ? ({bottom:'底部',random:'随机位置'}[effect.position] ?? '顶部') : '') : '';
+      let text;
+      switch (effect.kind) {
+        case 'damage': text = (effect.actor === 'osty' ? '奥斯提' : '')+(effect.target === 'enemy' ? '' : '对'+target)+'造成'+n+'点伤害。'; break;
+        case 'block': text = (self ? '' : target)+'获得'+n+'点格挡。'; break;
+        case 'draw': text = '抽'+n+'张牌。'; break;
+        case 'gain_energy': case 'gain_stars': text = '获得'+n+'点'+(effect.kind === 'gain_energy' ? '能量' : '星')+'。'; break;
+        case 'apply_power': text = (self ? '获得' : '对'+target+'施加')+n+powerUnit(effect.power)+textName(effect.power)+'。'; break;
+        case 'discard': text = '丢弃'+target+'。'; break;
+        case 'exhaust': text = '消耗'+target+'。'; break;
+        case 'move': text = '将'+target+'移至'+destination+'。'; break;
+        case 'select': text = '选择'+target+'。'; break;
+        case 'upgrade': text = '升级'+target+'。'; break;
+        case 'copy': text = '将'+target+'的'+numberText(effect.count)+'张复制品添加到'+destination+'。'; break;
+        case 'transform': text = card.pick === 'choose' ? source+'，将'+target+'变化为所选的牌。' : '将'+target+'变化为'+source+'。'; break;
+        case 'create_card': text = card.pick === 'choose' ? (effect.count == null || effect.count === 1 ? '' : '重复以下操作'+numberText(effect.count)+'次：')+source+'，添加到'+destination+'。' : '将'+numberText(effect.count)+'张'+source+'添加到'+destination+'。'; break;
+        case 'play': text = '自动打出'+target+'。'; break;
+        case 'add_keyword': text = target+'获得'+textName(effect.keyword)+'。'; break;
+        case 'remove_keyword': text = '移除'+target+'的'+textName(effect.keyword)+'。'; break;
+        case 'set_cost': text = target+'在'+(effect.until === 'turn' ? '本回合' : '本场战斗')+'的耗能变为'+n+'点能量。'; break;
+        case 'summon': text = '召唤'+n+'。'; break;
+        case 'forge': text = '铸造'+n+'。'; break;
+        case 'channel': text = '生成'+n+'个'+textName(effect.orb)+'充能球。'; break;
+        case 'evoke': text = '激发'+target+(effect.remove === false ? '，但不移除它' : '')+'。'; break;
+        case 'orb_passive': text = '触发'+target+'的被动效果。'; break;
+        case 'orb_slots': text = '改变'+n+'个充能球槽位。'; break;
+        case 'heal': text = (self ? '' : target)+'回复'+n+'点生命。'; break;
+        case 'lose_hp': text = (self ? '' : target)+'失去'+n+'点生命。'; break;
+        default: text = '未知效果：'+json(effect);
+      }
+      const factors = effect.amount?.mul;
+      if (effect.kind === 'apply_power' && factors?.length === 2 && factors.includes(-1)) {
+        const stat = factors[factors[0] === -1 ? 1 : 0];
+        if (stat?.stat === 'power' && stat.id === effect.power && (stat.of === 'target' || ((stat.of == null || stat.of === 'self') && self) || (stat.of === 'osty' && effect.target === 'osty'))) text = '移除'+target+'的所有'+textName(effect.power)+'。';
+      }
+      if (effect.until === 'turn' && ['apply_power','add_keyword'].includes(effect.kind)) text += '持续至目标的回合结束。';
+      if (effect.condition) text = '若'+conditionText(effect.condition)+'，'+text;
+      if (effect.repeat != null) text = '重复以下效果'+numberText(effect.repeat)+'次：'+text;
+      return text;
+    }
+    function ruleText(rule,cardType) {
+      const trigger = rule.trigger ?? {}, event = trigger.event;
+      const verb = {turn_start:'在你的回合开始时',turn_end:'在你的回合结束时',card_played:'打出',card_drawn:'抽到',card_discarded:'丢弃',card_exhausted:'消耗',card_generated:'向战斗中添加',damage_received:'受到伤害后',attack_completed:'攻击结算后',summoned:'召唤后',orb_channeled:'生成充能球后',orb_evoked:'激发充能球后'}[event] ?? event;
+      const card = filterText(trigger.filter)+(trigger.filter?.id ? '' : '牌');
+      let when = ['card_played','card_drawn','card_discarded','card_exhausted','card_generated'].includes(event) ? '每当你'+verb+'一张'+card : verb;
+      const life = rule.lifetime ?? 'combat', turns = rule.turns ?? 1;
+      const lifetime = life === 'combat' ? (cardType === 'power' ? '' : '本场战斗，') : life === 'next_turn' ? '下回合，' : event === 'turn_start' ? (turns === 1 ? '下回合，' : '接下来的'+turns+'个回合，') : turns === 1 ? '本回合，' : '从本回合起的'+turns+'个回合，';
+      if (trigger.occurrence) {
+        const o = trigger.occurrence, scope = o.within === 'combat' ? '本场战斗' : '每回合';
+        when = o.every != null ? scope+'，每'+verb+o.every+'张'+card+'时' : scope+(o.first != null ? o.first === 1 ? '首次' : '前'+o.first+'次' : '第'+o.nth+'次')+verb+'一张'+card+'时';
+      }
+      const quota = trigger.limit ? '（'+(trigger.limit.within === 'combat' ? '本场战斗' : '每回合')+'最多生效'+trigger.limit.count+'次）' : '';
+      return lifetime+when+quota+'，'+(rule.condition ? '若'+conditionText(rule.condition)+'，' : '')+(rule.effects ?? []).map(e => effectText(e).replace(/。+$/,'')).join('，')+'。';
+    }
+    function formText(form,cardType) {
+      return [...(form.effects ?? []).map(effectText),...(form.rules ?? []).map(rule => ruleText(rule,cardType))].join('\n') || '无效果。';
+    }
+    function renderModernCard(card, texts=[]) {
       const node = el('article',undefined,'card');
       node.append(el('div',card.name ?? '未命名','name'),el('div',[types[card.type] ?? card.type,types[card.rarity] ?? card.rarity].join(' · '),'muted'));
       const actionNames = {damage:'伤害',block:'格挡',draw:'抽牌',gain_energy:'获得能量',gain_stars:'获得星',apply_power:'施加状态',discard:'弃牌',exhaust:'消耗',move:'移动牌',select:'选牌',upgrade:'升级',copy:'复制',transform:'变化',create_card:'生成牌',play:'自动打出',add_keyword:'赋予关键词',remove_keyword:'移除关键词',set_cost:'修改费用',summon:'召唤',forge:'铸造',channel:'生成球',evoke:'激发',orb_passive:'球被动',orb_slots:'球槽',heal:'回血',lose_hp:'失去生命'};
@@ -230,7 +331,11 @@
         const cost = form.cost ?? {};
         node.append(el('h4',(index === 0 ? '基础' : '升级')+' · '+(cost.energy_x ? 'X' : cost.energy ?? 0)+' 能量'+(cost.stars !== undefined ? ' · '+(cost.stars_x ? 'X' : cost.stars)+' 星' : '')));
         for (const keyword of form.keywords ?? []) node.append(badge('',types[keyword] ?? keyword));
-        for (const action of form.effects ?? []) appendAction(node,action);
+        if (typeof texts[index] === 'string') node.append(el('div',texts[index] || '无效果。','card-text'));
+        else node.append(el('div',formText(form,card.type),'card-text'));
+        const structure = el('details');
+        structure.append(el('summary','效果结构'));
+        for (const action of form.effects ?? []) appendAction(structure,action);
         for (const rule of form.rules ?? []) {
           const group = el('div');
           const trigger = rule.trigger ?? {};
@@ -240,15 +345,16 @@
           if (rule.condition !== undefined) parts.push('条件: '+format(rule.condition));
           group.append(el('div',parts.join(' · '),'muted'));
           for (const action of rule.effects ?? []) appendAction(group,action);
-          node.append(group);
+          structure.append(group);
         }
+        node.append(structure);
       });
       if (card.flavor) node.append(el('p',card.flavor,'flavor'));
       node.append(disclosure('卡牌原始 JSON',json(card)));
       return node;
     }
-    function renderCard(card) {
-      if (Array.isArray(card.forms)) return renderModernCard(card);
+    function renderCard(card, texts) {
+      if (Array.isArray(card.forms)) return renderModernCard(card,texts);
       const node = el('article',undefined,'card');
       const name = el('div',undefined,'name');
       name.append(el('span',card.name ?? '未命名'),el('span',card.cost === -1 ? 'X 能量' : (card.cost ?? '?')+' 能量'));
@@ -313,9 +419,10 @@
         if (result.reason) root.append(el('div','原因：'+result.reason+(result.stage ? '\n阶段：'+result.stage:'')+(result.http_status ? '\nHTTP：'+result.http_status:'')+(result.category ? '\n异常类型：'+result.category:''),'notice'));
         if (selected.status === 'pending') root.append(el('div','尚未记录完成结果；请求可能仍在进行，或程序退出前未写入最终记录。','notice'));
         const cards = el('div',undefined,'cards');
-        for (const card of result.cards ?? []) cards.append(renderCard(card));
+        (result.cards ?? []).forEach((card,index) => cards.append(renderCard(card,result.card_texts?.[index])));
         root.append(cards);
         root.append(disclosure('模型 reasoning',response.reasoning_content ?? '没有记录 reasoning（服务未返回，或记录开关已关闭）。',false,'reasoning'));
+        root.append(disclosure('模型原始输出 / content',response.content ?? '没有记录原始输出（旧版日志未保存，或服务未返回 content）。',false,'',false));
         if (req.prompt) {
           root.append(disclosure('System 提示词',req.prompt.system ?? '未记录'));
           let context = req.prompt.user;
