@@ -31,6 +31,54 @@ await Test("two complete forms round trip and upgrade changes mechanics", () =>
     Check(!json.Contains("upgrade_") && !json.Contains("schema_version") && !json.Contains("null") && !json.Contains("repeat"));
     return Task.CompletedTask;
 });
+await Test("X flags alone define resource costs and accept existing explicit costs", async () =>
+{
+    foreach (string json in new[] { "{\"energy_x\":true}", "{\"energy\":1,\"stars_x\":true}", "{\"energy_x\":true,\"stars_x\":true}",
+        "{\"energy\":0,\"stars\":0,\"energy_x\":true,\"stars_x\":true}", "{\"energy\":2,\"stars\":3,\"energy_x\":true,\"stars_x\":true}" })
+    {
+        var cost = Wire.Decode<CardCost>(json);
+        var card = valid with { Forms = valid.Forms.Select(f => f with { Cost = cost }).ToArray() };
+        CardValidator.Validate(Wire.Decode<CardDefinition>(Wire.Encode(card)));
+        CharacterMechanics.FromRun(JsonSerializer.SerializeToElement(new { character = "REGENT" })).Validate(card);
+        if (cost.StarsX == true) await Reject(() => CharacterMechanics.FromRun(context.Run).Validate(card));
+    }
+    foreach (var cost in new CardCost[] { new() { Energy = -1, EnergyX = true }, new() { Stars = -1, StarsX = true } })
+        await Reject(() => CardValidator.Validate(valid with { Forms = valid.Forms.Select(f => f with { Cost = cost }).ToArray() }));
+});
+await Test("X descriptions retain symbols across amounts, counts, selectors, repeats and conditions", () =>
+{
+    foreach (var (cost, stat) in new[] { (new CardCost { EnergyX = true }, "paid_energy"), (new CardCost { StarsX = true }, "paid_stars") })
+    {
+        var x = new NumberExpression { Stat = stat };
+        var plusOne = new NumberExpression { Add = [x, 1] };
+        var form = new CardForm { Cost = cost, Effects = [new() { Kind = EffectKind.Draw, Amount = x }] };
+        var card = valid with { Forms = [form, form with { Effects = [new() { Kind = EffectKind.Draw, Amount = plusOne }] }] };
+        Check(CardText.Render(card, true, _ => "99") == "抽X张牌。");
+        Check(CardText.Render(card, true, _ => "99", upgraded: true) == "抽(X + 1)张牌。");
+        Check(CardText.Render(card, false, _ => "99") == "Draw X cards.");
+        var effect = new CardEffect { Kind = EffectKind.Damage, Target = "enemy", Amount = 5, Repeat = x };
+        Check(CardText.RenderEffect(effect, true, cost: cost) == "重复以下效果X次：造成5点伤害。");
+        Check(CardText.RenderEffect(new() { Kind = EffectKind.CreateCard, Card = new() { Id = "shiv" }, Count = x, To = CardPileName.Hand }, true, cost: cost)
+            == "将X张小刀添加到你的手牌。");
+        Check(CardText.Target(new() { Pile = CardPileName.Hand, Pick = SelectionMode.Choose, Count = x }, true, cost: cost) == "你的手牌中的X张牌");
+        Check(CardText.Condition(new() { Op = Comparison.Ge, Left = plusOne, Right = 2 }, true, cost: cost) == "(X + 1) ≥ 2");
+        Check(CardText.Number(new() { Div = [new() { Mul = [5, x] }, 2] }, true, cost: cost) == "((5 × X) ÷ 2)向下取整");
+        Check(!CardText.Number(x, true, cost: new()).Contains("X"));
+        Check(!CardText.Number(new() { Stat = stat == "paid_energy" ? "paid_stars" : "paid_energy" }, true, cost: cost).Contains("X"));
+        var rule = new CardRule { Trigger = new() { Event = RuleEvent.TurnEnd }, Condition = new() { Op = Comparison.Ge, Left = x, Right = 2 }, Effects = [new() { Kind = EffectKind.Draw, Amount = x }] };
+        Check(CardText.Render(form with { Effects = null, Rules = [rule] }, true).Contains($"若X ≥ 2点{(stat == "paid_energy" ? "能量" : "星")}，抽X张牌"));
+    }
+    return Task.CompletedTask;
+});
+await Test("powers support Retain and Sly with the existing character gate", async () =>
+{
+    var retained = engine with { Forms = engine.Forms.Select(f => f with { Keywords = [ForgeKeyword.Retain] }).ToArray() };
+    CharacterMechanics.FromRun(context.Run).Validate(CardValidator.Validate(retained));
+    var sly = retained with { Forms = retained.Forms.Select(f => f with { Keywords = [ForgeKeyword.Retain, ForgeKeyword.Sly] }).ToArray() };
+    CardValidator.Validate(Wire.Decode<CardDefinition>(Wire.Encode(sly)));
+    CharacterMechanics.FromRun(JsonSerializer.SerializeToElement(new { character = "SILENT" })).Validate(sly);
+    await Reject(() => CharacterMechanics.FromRun(context.Run).Validate(sly));
+});
 await Test("description keeps turn-start duration, choices, repeated effects and removal semantics explicit", () =>
 {
     var rule = new CardRule { Trigger = new() { Event = RuleEvent.TurnStart }, Lifetime = LifetimeKind.Turn, Turns = 2, Effects = [new() { Kind = EffectKind.Block, Amount = 1 }] };
@@ -198,12 +246,29 @@ await Test("prompt trims only optional history and rejects an insufficient budge
 await Test("configuration bounds", async () =>
 {
     config.Validate();
+    foreach (int maxTokens in new[] { 128, 16000, 16384 })
+        (config with { Provider = new() { MaxTokens = maxTokens } }).Validate();
+    foreach (int maxTokens in new[] { 127, 16385 })
+    {
+        try
+        {
+            (config with { Provider = new() { MaxTokens = maxTokens } }).Validate();
+            throw new Exception("Invalid token limit was accepted.");
+        }
+        catch (FormatException ex) { Check(ex.Message == "provider.max_tokens must be 128..16384."); }
+    }
     await Reject(() => (config with { GeneratedCardsPerReward = 4 }).Validate());
     await Reject(() => (config with { Provider = new() { BaseUrl = "file:///C:/x" } }).Validate());
     await Reject(() => (config with { ActiveStyle = "missing" }).Validate());
     await Reject(() => (config with { Provider = new() { Temperature = double.NaN } }).Validate());
     await Reject(() => (config with { PrefetchInitialCardPlays = -1 }).Validate());
     await Reject(() => (config with { PrefetchInitialCardPlays = 11 }).Validate());
+});
+await Test("removed combat logging accepts old configs and is omitted from new defaults", () =>
+{
+    Check(Wire.Decode<ForgeConfig>("{\"record_combat\":true}").RecordCombat);
+    Check(!new ForgeConfig().RecordCombat && !Wire.Encode(new ForgeConfig()).Contains("record_combat"));
+    return Task.CompletedTask;
 });
 await Test("deprecated opening-play config stays readable but new enemy-turn gating is independent", () =>
 {
@@ -498,6 +563,10 @@ await Test("native card wording covers fixed/random creation, zero-cost listener
     Check(CardText.RenderRule(rule, false, combatIsImplicit: true, resource: Icons) == $"Whenever you play a 0{energy}-cost card, Gain 2 Block.");
     Check(CardText.RenderRule(rule with { Trigger = new() { Event = RuleEvent.CardPlayed, Filter = new() { Id = "shiv" } } }, true, combatIsImplicit: true)
         == "每当你打出一张小刀，获得2点格挡。");
+    var generated = rule with { Trigger = new() { Event = RuleEvent.CardGenerated } };
+    Check(CardText.RenderRule(generated, true, combatIsImplicit: true) == "每当你生成一张牌，获得2点格挡。");
+    Check(CardText.RenderRule(generated with { Trigger = generated.Trigger with { Occurrence = new() { Every = 3 } } }, true, combatIsImplicit: true)
+        == "每回合，每生成3张牌时，获得2点格挡。");
     return Task.CompletedTask;
 });
 await Test("all numeric resource contexts use icons, preserve expressions and upgrade highlights", () =>

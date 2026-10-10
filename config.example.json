@@ -8,7 +8,6 @@
   "candidate_pool_capacity": 24,
   "prompt_event_limit": 60,
   "max_prompt_characters": 60000,
-  "record_combat": true,
   "record_generation": true,
   "record_generation_prompts": true,
   "record_generation_reasoning": true,

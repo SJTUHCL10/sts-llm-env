@@ -22,8 +22,6 @@ public static class CardValidator
             Require(form is not null && form.Cost is not null, "Missing form/cost.");
             var cost = form.Cost;
             Require(cost.Energy >= 0 && cost.Stars is not < 0, "Negative cost.");
-            Require(cost.EnergyX != true || cost.Energy == 0, "X energy requires energy=0.");
-            Require(cost.StarsX != true || cost.Stars == 0, "X stars requires stars=0.");
             Require(form.Tags.Length <= 5 && form.Tags.Distinct().Count() == form.Tags.Length && form.Tags.All(Enum.IsDefined), "Invalid keywords.");
             Require(form.Listeners.Length <= 8 && form.Listeners.All(r => r is not null && r.Effects is not null)
                 && form.AllEffects.Length is >= 1 and <= 24, "A form needs 1..24 actions, at most 8 rules.");
@@ -51,7 +49,7 @@ public static class CardValidator
                 ValidateEffects(rule.Effects, true, new());
             }
             Require(card.Type != ForgeCardType.Power || form.Listeners.Length > 0 || form.Immediate.Any(e => e.Kind == EffectKind.ApplyPower), "Power needs a rule or native power.");
-            Require(card.Type != ForgeCardType.Power || !form.Tags.Any(k => k is ForgeKeyword.Exhaust or ForgeKeyword.Retain or ForgeKeyword.Sly), "Power cannot exhaust, retain, or have Sly.");
+            Require(card.Type != ForgeCardType.Power || !form.Tags.Contains(ForgeKeyword.Exhaust), "Power cannot exhaust.");
             Require(card.Type != ForgeCardType.Attack || form.AllEffects.Any(e => e.Kind == EffectKind.Damage), "Attack needs damage.");
         }
         return card;

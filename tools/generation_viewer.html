@@ -224,35 +224,36 @@
     const textName = id => textNames[id] ?? id;
     const powerUnit = id => ['strength','dexterity','focus','vigor','thorns','plating'].includes(id) ? '点' : '层';
     const pileText = pile => ({hand:'手牌',draw:'抽牌堆',discard:'弃牌堆',exhaust:'消耗堆'}[pile] ?? pile);
-    function numberText(value=1) {
+    function numberText(value=1,cost={}) {
       if (value == null) return '1';
       if (typeof value !== 'object') return String(value);
       if (value.stat) {
+        if ((value.stat === 'paid_energy' && cost.energy_x) || (value.stat === 'paid_stars' && cost.stars_x)) return 'X';
         if (['paid_energy','paid_stars'].includes(value.stat)) return '本次消耗的'+(value.stat === 'paid_energy' ? '能量' : '星')+'数量';
         return ({osty:'奥斯提的',target:'目标的'}[value.of] ?? '你的')+textName(value.stat === 'power' ? value.id : value.stat)+(value.stat === 'power' ? powerUnit(value.id)+'数' : '');
       }
       const terms = value.add ?? value.mul ?? value.div;
-      return Array.isArray(terms) ? '('+terms.map(numberText).join(value.add ? ' + ' : value.mul ? ' × ' : ' ÷ ')+')'+(value.div ? '向下取整' : '') : json(value);
+      return Array.isArray(terms) ? '('+terms.map(term => numberText(term,cost)).join(value.add ? ' + ' : value.mul ? ' × ' : ' ÷ ')+')'+(value.div ? '向下取整' : '') : json(value);
     }
-    function conditionText(condition) {
-      if (condition.not) return '不满足 '+conditionText(condition.not);
-      if (condition.all) return condition.all.map(conditionText).join('且');
-      if (condition.any) return condition.any.map(conditionText).join('或');
-      const operand = (value,other) => numberText(value)+(typeof value === 'number' && ['energy','paid_energy','stars','paid_stars'].includes(other?.stat) ? '点'+(other.stat.includes('stars') ? '星' : '能量') : '');
+    function conditionText(condition,cost={}) {
+      if (condition.not) return '不满足 '+conditionText(condition.not,cost);
+      if (condition.all) return condition.all.map(c => conditionText(c,cost)).join('且');
+      if (condition.any) return condition.any.map(c => conditionText(c,cost)).join('或');
+      const operand = (value,other) => numberText(value,cost)+(typeof value === 'number' && ['energy','paid_energy','stars','paid_stars'].includes(other?.stat) ? '点'+(other.stat.includes('stars') ? '星' : '能量') : '');
       return operand(condition.left,condition.right)+' '+({eq:'=',ne:'≠',gt:'>',ge:'≥',lt:'<',le:'≤'}[condition.op] ?? condition.op)+' '+operand(condition.right,condition.left);
     }
     function filterText(filter={},pool='') {
       return (filter.cost != null ? '耗能为'+filter.cost+'点能量的' : '')+(filter.keyword ? textName(filter.keyword)+'的' : '')+
         (filter.upgraded == null ? '' : filter.upgraded ? '已升级' : '未升级')+(filter.rarity ? textName(filter.rarity) : '')+pool+(filter.type ? textName(filter.type) : '')+(filter.id ? textName(filter.id) : '');
     }
-    function targetText(target) {
-      if (typeof target === 'string') return ({self:'你',enemy:'目标敌人',random_enemy:'随机敌人',all_enemies:'所有敌人',osty:'奥斯提',this_card:'本牌','event.card':'触发事件的牌','event.target':'事件目标',first_orb:'最前方充能球',last_orb:'最后方充能球',all_orbs:'所有充能球'}[target] ?? '选中的牌');
+    function targetText(target,cost={}) {
+      if (typeof target === 'string') return ({self:'你',enemy:'目标敌人',random_enemy:'随机敌人',all_enemies:'所有敌人',osty:'奥斯提',this_card:'本牌','event.card':'该牌','event.target':'事件目标',first_orb:'最前方充能球',last_orb:'最后方充能球',all_orbs:'所有充能球'}[target] ?? '选中的牌');
       if (!target?.pile) return '你';
       return '你的'+pileText(target.pile)+'中的'+({all:'所有',choose:'',random:'随机',first:'最前方',last:'最后方'}[target.pick] ?? '')+
-        (target.up_to ? '至多' : '')+(target.pick === 'all' ? '' : numberText(target.count)+'张')+filterText(target.filter)+(target.filter?.id ? '' : '牌');
+        (target.up_to ? '至多' : '')+(target.pick === 'all' ? '' : numberText(target.count,cost)+'张')+filterText(target.filter)+(target.filter?.id ? '' : '牌');
     }
-    function effectText(effect) {
-      const n = numberText(effect.amount), target = targetText(effect.target), self = effect.target == null || effect.target === 'self';
+    function effectText(effect,cost={}) {
+      const n = numberText(effect.amount,cost), target = targetText(effect.target,cost), self = effect.target == null || effect.target === 'self';
       const card = effect.card ?? {};
       let source = card.id ? textName(card.id) : filterText(card.filter,card.pool === 'colorless' ? '无色' : '本角色');
       if (card.pool) source += '牌';
@@ -272,9 +273,9 @@
         case 'move': text = '将'+target+'移至'+destination+'。'; break;
         case 'select': text = '选择'+target+'。'; break;
         case 'upgrade': text = '升级'+target+'。'; break;
-        case 'copy': text = '将'+target+'的'+numberText(effect.count)+'张复制品添加到'+destination+'。'; break;
+        case 'copy': text = '将'+target+'的'+numberText(effect.count,cost)+'张复制品添加到'+destination+'。'; break;
         case 'transform': text = card.pick === 'choose' ? source+'，将'+target+'变化为所选的牌。' : '将'+target+'变化为'+source+'。'; break;
-        case 'create_card': text = card.pick === 'choose' ? (effect.count == null || effect.count === 1 ? '' : '重复以下操作'+numberText(effect.count)+'次：')+source+'，添加到'+destination+'。' : '将'+numberText(effect.count)+'张'+source+'添加到'+destination+'。'; break;
+        case 'create_card': text = card.pick === 'choose' ? (effect.count == null || effect.count === 1 ? '' : '重复以下操作'+numberText(effect.count,cost)+'次：')+source+'，添加到'+destination+'。' : '将'+numberText(effect.count,cost)+'张'+source+'添加到'+destination+'。'; break;
         case 'play': text = '自动打出'+target+'。'; break;
         case 'add_keyword': text = target+'获得'+textName(effect.keyword)+'。'; break;
         case 'remove_keyword': text = '移除'+target+'的'+textName(effect.keyword)+'。'; break;
@@ -294,14 +295,15 @@
         const stat = factors[factors[0] === -1 ? 1 : 0];
         if (stat?.stat === 'power' && stat.id === effect.power && (stat.of === 'target' || ((stat.of == null || stat.of === 'self') && self) || (stat.of === 'osty' && effect.target === 'osty'))) text = '移除'+target+'的所有'+textName(effect.power)+'。';
       }
-      if (effect.until === 'turn' && ['apply_power','add_keyword'].includes(effect.kind)) text += '持续至目标的回合结束。';
-      if (effect.condition) text = '若'+conditionText(effect.condition)+'，'+text;
-      if (effect.repeat != null) text = '重复以下效果'+numberText(effect.repeat)+'次：'+text;
+      if (effect.until === 'turn' && ['apply_power','add_keyword'].includes(effect.kind))
+        text += effect.kind === 'add_keyword' || self || effect.target === 'osty' ? '持续至回合结束。' : '持续至目标的回合结束。';
+      if (effect.condition) text = '若'+conditionText(effect.condition,cost)+'，'+text;
+      if (effect.repeat != null) text = '重复以下效果'+numberText(effect.repeat,cost)+'次：'+text;
       return text;
     }
-    function ruleText(rule,cardType) {
+    function ruleText(rule,cardType,cost={}) {
       const trigger = rule.trigger ?? {}, event = trigger.event;
-      const verb = {turn_start:'在你的回合开始时',turn_end:'在你的回合结束时',card_played:'打出',card_drawn:'抽到',card_discarded:'丢弃',card_exhausted:'消耗',card_generated:'向战斗中添加',damage_received:'受到伤害后',attack_completed:'攻击结算后',summoned:'召唤后',orb_channeled:'生成充能球后',orb_evoked:'激发充能球后'}[event] ?? event;
+      const verb = {turn_start:'在你的回合开始时',turn_end:'在你的回合结束时',card_played:'打出',card_drawn:'抽到',card_discarded:'丢弃',card_exhausted:'消耗',card_generated:'生成',damage_received:'受到伤害后',attack_completed:'攻击结算后',summoned:'召唤后',orb_channeled:'生成充能球后',orb_evoked:'激发充能球后'}[event] ?? event;
       const card = filterText(trigger.filter)+(trigger.filter?.id ? '' : '牌');
       let when = ['card_played','card_drawn','card_discarded','card_exhausted','card_generated'].includes(event) ? '每当你'+verb+'一张'+card : verb;
       const life = rule.lifetime ?? 'combat', turns = rule.turns ?? 1;
@@ -311,10 +313,10 @@
         when = o.every != null ? scope+'，每'+verb+o.every+'张'+card+'时' : scope+(o.first != null ? o.first === 1 ? '首次' : '前'+o.first+'次' : '第'+o.nth+'次')+verb+'一张'+card+'时';
       }
       const quota = trigger.limit ? '（'+(trigger.limit.within === 'combat' ? '本场战斗' : '每回合')+'最多生效'+trigger.limit.count+'次）' : '';
-      return lifetime+when+quota+'，'+(rule.condition ? '若'+conditionText(rule.condition)+'，' : '')+(rule.effects ?? []).map(e => effectText(e).replace(/。+$/,'')).join('，')+'。';
+      return lifetime+when+quota+'，'+(rule.condition ? '若'+conditionText(rule.condition,cost)+'，' : '')+(rule.effects ?? []).map(e => effectText(e,cost).replace(/。+$/,'')).join('，')+'。';
     }
     function formText(form,cardType) {
-      return [...(form.effects ?? []).map(effectText),...(form.rules ?? []).map(rule => ruleText(rule,cardType))].join('\n') || '无效果。';
+      return [...(form.effects ?? []).map(effect => effectText(effect,form.cost)),...(form.rules ?? []).map(rule => ruleText(rule,cardType,form.cost))].join('\n') || '无效果。';
     }
     function renderModernCard(card, texts=[]) {
       const node = el('article',undefined,'card');
@@ -329,7 +331,7 @@
       card.forms.forEach((form,index) => {
         if (!form || typeof form !== 'object') return;
         const cost = form.cost ?? {};
-        node.append(el('h4',(index === 0 ? '基础' : '升级')+' · '+(cost.energy_x ? 'X' : cost.energy ?? 0)+' 能量'+(cost.stars !== undefined ? ' · '+(cost.stars_x ? 'X' : cost.stars)+' 星' : '')));
+        node.append(el('h4',(index === 0 ? '基础' : '升级')+' · '+(cost.energy_x ? 'X' : cost.energy ?? 0)+' 能量'+(cost.stars_x || cost.stars !== undefined ? ' · '+(cost.stars_x ? 'X' : cost.stars)+' 星' : '')));
         for (const keyword of form.keywords ?? []) node.append(badge('',types[keyword] ?? keyword));
         if (typeof texts[index] === 'string') node.append(el('div',texts[index] || '无效果。','card-text'));
         else node.append(el('div',formText(form,card.type),'card-text'));

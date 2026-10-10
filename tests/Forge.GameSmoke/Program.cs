@@ -14,6 +14,8 @@ using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Characters;
+using MegaCrit.Sts2.Core.Models.Acts;
+using MegaCrit.Sts2.Core.Models.Encounters;
 using MegaCrit.Sts2.Core.Models.Powers;
 using MegaCrit.Sts2.Core.Models.Relics;
 using MegaCrit.Sts2.Core.Runs;
@@ -24,12 +26,22 @@ using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Hooks;
 using MegaCrit.Sts2.Core.Localization.DynamicVars;
+using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.ValueProps;
 
-string game = args.FirstOrDefault() ?? Environment.GetEnvironmentVariable("STS2_GAME_DIR") ?? throw new ArgumentException("Provide game directory.");
-string lib = Path.Combine(game, "data_sts2_windows_x86_64");
-AssemblyLoadContext.Default.Resolving += (context, name) => File.Exists(Path.Combine(lib, name.Name + ".dll")) ? context.LoadFromAssemblyPath(Path.Combine(lib, name.Name + ".dll")) : null;
-Smoke.Run();
+try
+{
+    string game = args.FirstOrDefault() ?? Environment.GetEnvironmentVariable("STS2_GAME_DIR") ?? throw new ArgumentException("Provide game directory.");
+    string lib = Path.Combine(game, "data_sts2_windows_x86_64");
+    AssemblyLoadContext.Default.Resolving += (context, name) => File.Exists(Path.Combine(lib, name.Name + ".dll")) ? context.LoadFromAssemblyPath(Path.Combine(lib, name.Name + ".dll")) : null;
+    Smoke.Run();
+}
+catch (Exception ex)
+{
+    // A console test failure should retain its stack trace without invoking a Windows crash dialog.
+    Console.Error.WriteLine("FAIL game API smoke checks: " + ex);
+    Environment.ExitCode = 1;
+}
 
 static class Smoke
 {
@@ -88,17 +100,28 @@ static class Smoke
         Check(!unmodifiedReward.Card.IsUpgraded);
         Console.WriteLine("PASS Silver Crucible reward upgrade changes the complete form without consuming another charge");
         var x = (NeowGeneratedCard)ModelDb.Card<NeowGeneratedCard>().ToMutable();
-        x.DefinitionPayload = Wire.Encode(definition with { Forms = definition.Forms.Select(f => f with { Cost = new() { Energy = 0, EnergyX = true, Stars = 0, StarsX = true } }).ToArray() });
+        x.DefinitionPayload = Wire.Encode(definition with { Forms = definition.Forms.Select(f => f with { Cost = new() { EnergyX = true, StarsX = true } }).ToArray() });
         x.UpgradeInternal(); x.FinalizeUpgradeInternal();
-        Check(x.EnergyCost.CostsX && x.HasStarCostX && ((NeowGeneratedCard)CardModel.FromSerializable(x.ToSerializable())).HasStarCostX);
+        Check(x.EnergyCost.CostsX && x.HasStarCostX && x.BaseStarCost == 0 && ((NeowGeneratedCard)CardModel.FromSerializable(x.ToSerializable())).HasStarCostX);
+        x.DefinitionPayload = Wire.Encode(definition with { Forms = [definition.Forms[0] with { Cost = new() { Energy = 2, StarsX = true } },
+            definition.Forms[1] with { Cost = new() { Energy = 7, EnergyX = true, Stars = 9, StarsX = true } }] });
+        x.DowngradeInternal(); Check(!x.EnergyCost.CostsX && x.EnergyCost.Canonical == 2 && x.CanonicalStarCost == 0);
+        x.UpgradeInternal(); x.FinalizeUpgradeInternal();
+        Check(x.EnergyCost.CostsX && x.EnergyCost.Canonical == 0 && x.CanonicalStarCost == 0);
+        x = (NeowGeneratedCard)CardModel.FromSerializable(x.ToSerializable());
+        Check(x.EnergyCost.CostsX && x.HasStarCostX);
+        x.DowngradeInternal(); Check(!x.EnergyCost.CostsX && x.EnergyCost.Canonical == 2 && x.HasStarCostX);
         Console.WriteLine("PASS native X energy/star cost properties and upgraded serialization");
         var engine = (NeowGeneratedCard)ModelDb.Card<NeowGeneratedCard>().ToMutable();
         engine.DefinitionPayload = Wire.Encode(new CardDefinition
         {
             Name = "余烬之心", Type = ForgeCardType.Power, Rarity = ForgeRarity.Rare,
-            Forms = new[] { 1, 2 }.Select(n => new CardForm { Cost = new() { Energy = 1 }, Rules = [new() { Trigger = new() { Event = RuleEvent.CardDiscarded, Limit = new() { Count = 1 } }, Effects = [new() { Kind = EffectKind.Draw, Amount = n }, new() { Kind = EffectKind.Block, Amount = n * 2 }] }] }).ToArray()
+            Forms = new[] { 1, 2 }.Select(n => new CardForm { Cost = new() { Energy = 1 }, Keywords = [ForgeKeyword.Retain, ForgeKeyword.Sly], Rules = [new() { Trigger = new() { Event = RuleEvent.CardDiscarded, Limit = new() { Count = 1 } }, Effects = [new() { Kind = EffectKind.Draw, Amount = n }, new() { Kind = EffectKind.Block, Amount = n * 2 }] }] }).ToArray()
         });
         engine.UpgradeInternal(); engine.FinalizeUpgradeInternal();
+        Check(engine.Keywords.Contains(CardKeyword.Retain) && engine.Keywords.Contains(CardKeyword.Sly));
+        var restoredEngine = (NeowGeneratedCard)CardModel.FromSerializable(engine.ToSerializable());
+        Check(restoredEngine.Keywords.Contains(CardKeyword.Retain) && restoredEngine.Keywords.Contains(CardKeyword.Sly));
         var power = (GeneratedEffectPower)ModelDb.Power<GeneratedEffectPower>().ToMutable(); power.Configure(engine);
         var snapshot = Wire.Decode<GeneratedPowerSnapshot>(power.RuntimePayload);
         Check(snapshot.SourceUpgraded && snapshot.Amounts.SequenceEqual(new decimal[] { 2, 4 }));
@@ -126,11 +149,41 @@ static class Smoke
         Console.WriteLine("PASS native Harmony reward/history/description hooks and placeholder power icons");
         Console.WriteLine("PASS game API smoke checks (rendered UI/live combat not exercised)");
     }
+    private static void CheckCombatRewardEligibility(Player player)
+    {
+        var run = RunState.CreateForTest([player], acts: [ModelDb.Act<Underdocks>(),
+            ModelDb.Act<Overgrowth>(), ModelDb.Act<Glory>()], seed: "REWARDS");
+        var bosses = new EncounterModel[] { ModelDb.Encounter<AeonglassBoss>().ToMutable(), ModelDb.Encounter<QueenBoss>().ToMutable() };
+        foreach (int act in new[] { 0, 1, 2 })
+        {
+            run.CurrentActIndex = act;
+            foreach (var boss in bosses)
+                Check(ForgeRuntime.HasCombatCardReward(new CombatState(boss, run)) == (act < 2));
+            Check(ForgeRuntime.HasCombatCardReward(new CombatState(ModelDb.Encounter<AxebotsNormal>().ToMutable(), run)));
+            Check(ForgeRuntime.HasCombatCardReward(new CombatState(ModelDb.Encounter<MechaKnightElite>().ToMutable(), run)));
+        }
+        // Native logic follows the actual act list, including shorter custom runs; no floor dependency.
+        var shortRun = RunState.CreateForTest([Player.CreateForNewRun<Regent>(UnlockState.all, 4)],
+            acts: [ModelDb.Act<Underdocks>()], seed: "SHORT");
+        Check(!ForgeRuntime.HasCombatCardReward(new CombatState(bosses[0], shortRun)));
+        Console.WriteLine("PASS final-act bosses skip generation, earlier bosses and normal/elite combats remain eligible");
+    }
+
     private static void CheckCombatContracts()
     {
+        // Use native localization/formatters with an in-memory table; no Godot assets or save initialization.
+        var localization = (LocManager)RuntimeHelpers.GetUninitializedObject(typeof(LocManager));
+        AccessTools.Field(typeof(LocManager), "_tables").SetValue(localization,
+            new Dictionary<string, LocTable> { ["cards"] = new("cards", new()) });
+        AccessTools.PropertySetter(typeof(LocManager), nameof(LocManager.Language)).Invoke(localization, ["zhs"]);
+        AccessTools.PropertySetter(typeof(LocManager), nameof(LocManager.CultureInfo)).Invoke(localization, [System.Globalization.CultureInfo.InvariantCulture]);
+        AccessTools.Method(typeof(LocManager), "LoadLocFormatters").Invoke(localization, null);
+        AccessTools.PropertySetter(typeof(LocManager), nameof(LocManager.Instance)).Invoke(null, [localization]);
         var guard = new Harmony("neowscompany.tests.saves");
         guard.Patch(AccessTools.PropertyGetter(typeof(SaveManager), nameof(SaveManager.Instance)), prefix: new HarmonyMethod(typeof(Smoke), nameof(SkipSaveManager)));
         guard.Patch(AccessTools.Method(typeof(Player), "PopulateStartingInventory"), prefix: new HarmonyMethod(typeof(Smoke), nameof(SkipStartingInventory)));
+        guard.Patch(AccessTools.PropertyGetter(typeof(CardModel), nameof(CardModel.Description)),
+            postfix: new HarmonyMethod(AccessTools.Method(typeof(GeneratedDescriptionPatch), "Postfix")));
         var owner = Player.CreateForNewRun<Regent>(UnlockState.all, 1); var other = Player.CreateForNewRun<Regent>(UnlockState.all, 2);
         var run = RunState.CreateForTest([owner, other], acts: [], seed: "PROTOCOL5");
         var combat = new CombatState(runState: run); combat.AddPlayer(owner); combat.AddPlayer(other); owner.ResetCombatState(); other.ResetCombatState();
@@ -150,7 +203,36 @@ static class Smoke
             owner.PlayerCombatState.Hand.AddInternal(card);
             card.UpdateDynamicVarPreview(CardPreviewMode.Normal, other.Creature, card.DynamicVars);
             Check(card.DynamicVars["E0"].PreviewValue == 18 && card.DynamicVars["E0"].BaseValue == 0 && owner.PlayerCombatState.Stars == 5);
+            Check(card.GetDescriptionForPile(PileType.Hand, other.Creature).Contains("18"));
+            card.UpdateDynamicVarPreview(CardPreviewMode.Normal, null, card.DynamicVars);
+            Check(card.DynamicVars["E0"].PreviewValue == 12 && card.GetDescriptionForPile(PileType.Hand).Contains("12"));
+            var loaded = (NeowGeneratedCard)CardModel.FromSerializable(card.ToSerializable()); loaded.Owner = owner;
+            owner.PlayerCombatState.Hand.RemoveInternal(card); owner.PlayerCombatState.Hand.AddInternal(loaded);
+            loaded.UpdateDynamicVarPreview(CardPreviewMode.Normal, other.Creature, loaded.DynamicVars);
+            Check(loaded.GetDescriptionForPile(PileType.Hand, other.Creature).Contains("18") && loaded.DynamicVars["E0"].BaseValue == 0);
+            owner.PlayerCombatState.Hand.RemoveInternal(loaded); owner.PlayerCombatState.Hand.AddInternal(card);
+            card.UpgradeInternal(); card.FinalizeUpgradeInternal();
+            card.UpdateDynamicVarPreview(CardPreviewMode.Normal, other.Creature, card.DynamicVars);
+            Check(card.GetDescriptionForPile(PileType.Hand, other.Creature).Contains("18"));
+            card.DowngradeInternal();
+            var xForm = form with { Cost = new() { StarsX = true }, Effects = [new() { Kind = EffectKind.Damage, Target = "enemy", Amount = new() { Mul = [5, new() { Stat = "paid_stars" }] } }] };
+            card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "碎星", Type = ForgeCardType.Attack, Rarity = ForgeRarity.Uncommon, Forms = [xForm, xForm] });
+            card.UpdateDynamicVarPreview(CardPreviewMode.Normal, other.Creature, card.DynamicVars);
+            Check(card.DynamicVars["E0"].PreviewValue == 30.375m && card.GetDescriptionForPile(PileType.Hand, other.Creature).Contains("(5 × X)") && owner.PlayerCombatState.Stars == 5);
+            owner.PlayerCombatState.Hand.RemoveInternal(card); owner.PlayerCombatState.DrawPile.AddInternal(card);
+            card.UpdateDynamicVarPreview(CardPreviewMode.Normal, null, card.DynamicVars);
+            Check(card.RuntimeDescriptionText(true) == "造成(5 × X)点伤害。");
+            owner.PlayerCombatState.DrawPile.RemoveInternal(card); owner.PlayerCombatState.Hand.AddInternal(card);
+            card.UpgradeInternal(); card.FinalizeUpgradeInternal();
+            Check(card.GetDescriptionForPile(PileType.Hand, other.Creature).Contains("(5 × X)"));
+            var savedX = (NeowGeneratedCard)CardModel.FromSerializable(card.ToSerializable()); savedX.Owner = owner;
+            Check(savedX.RuntimeDescriptionText(true) == "造成(5 × X)点伤害。");
+            card.DowngradeInternal();
+            var energyX = xForm with { Cost = new() { EnergyX = true }, Effects = [new() { Kind = EffectKind.Draw, Amount = new() { Stat = "paid_energy" } }] };
+            card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "蓄势", Type = ForgeCardType.Skill, Rarity = ForgeRarity.Common, Forms = [energyX, energyX] });
+            Check(card.RuntimeDescriptionText(true) == "抽X张牌。");
             Console.WriteLine("PASS expression preview includes payment/Strength/Weak/Vulnerable without mutating state or base values");
+            Console.WriteLine("PASS X-energy/X-star descriptions retain symbols in hand/draw piles and through upgrade/save/load");
             CheckBlockContracts(card, owner, guard);
             CheckTextContracts();
             var effect = new CardEffect { Kind = EffectKind.Damage, Target = "all_enemies", Amount = 7 };
@@ -169,6 +251,7 @@ static class Smoke
             Check(GeneratedEventFacts.MatchesCurrent(trigger, card, owner.Creature, combat));
             Check(NativeMechanics.Matches(NativeMechanics.Card("soul"), new() { Id = "soul", Type = "skill" }));
             Console.WriteLine("PASS native event ordinals include earlier events and snapshot filter properties before later upgrades");
+            CheckCombatRewardEligibility(Player.CreateForNewRun<Regent>(UnlockState.all, 3));
         }
         finally { CombatManager.Instance.History.Clear(); turnField.SetValue(CombatManager.Instance, previous); guard.UnpatchAll(guard.Id); }
     }

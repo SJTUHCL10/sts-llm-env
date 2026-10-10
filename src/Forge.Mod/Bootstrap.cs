@@ -25,7 +25,13 @@ public static class Bootstrap
             try
             {
                 config = Wire.Decode<ForgeConfig>(File.ReadAllText(path));
-                config.Validate();
+                try { config.Validate(); }
+                catch (FormatException ex)
+                {
+                    // Validation messages are local constants; never log file contents or parser errors.
+                    Log.Error("[NeowsCompany] Generation disabled by invalid config: " + ex.Message);
+                    config = new ForgeConfig { Enabled = false };
+                }
             }
             catch (Exception ex)
             {

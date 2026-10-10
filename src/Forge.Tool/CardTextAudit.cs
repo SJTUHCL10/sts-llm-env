@@ -52,7 +52,8 @@ internal static class CardTextAudit
             {
                 var form = card.Forms[i];
                 string cost = form.Cost.EnergyX == true ? "X⚡" : Icons("energy", form.Cost.Energy.ToString());
-                if (form.Cost.Stars is int stars) cost += " / " + (form.Cost.StarsX == true ? "X⭐" : Icons("stars", stars.ToString()));
+                if (form.Cost.StarsX == true) cost += " / X⭐";
+                else if (form.Cost.Stars is int stars) cost += " / " + Icons("stars", stars.ToString());
                 report.AppendLine($"**{(i == 0 ? "基础" : "升级")}** · 耗能 {cost}\n");
                 report.AppendLine(CardText.Render(card, true, upgraded: i == 1, resource: Icons) + "\n");
                 if (form.Tags.Length > 0) report.AppendLine(string.Join("。", form.Tags.Select(k => CardText.Name(k.ToString().ToLowerInvariant(), true))) + "。\n");

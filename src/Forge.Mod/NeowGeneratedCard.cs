@@ -51,10 +51,10 @@ public sealed class NeowGeneratedCard : CardModel
         }
     }
     public NeowGeneratedCard() : base(1, CardType.Skill, CardRarity.Common, TargetType.Self, shouldShowInCardLibrary: false) { }
-    protected override int CanonicalEnergyCost => ActiveForm.Cost.Energy;
+    protected override int CanonicalEnergyCost => HasEnergyCostX ? 0 : ActiveForm.Cost.Energy;
     protected override bool HasEnergyCostX => ActiveForm.Cost.EnergyX == true;
     public override bool HasStarCostX => ActiveForm.Cost.StarsX == true;
-    public override int CanonicalStarCost => ActiveForm.Cost.Stars ?? -1;
+    public override int CanonicalStarCost => HasStarCostX ? 0 : ActiveForm.Cost.Stars ?? -1;
     public override string Title => _definition.Name + (IsUpgraded ? "+" : "");
     public override CardPoolModel Pool => ModelDb.CardPool<TokenCardPool>();
     public override CardType Type => _definition.Type switch { ForgeCardType.Attack => CardType.Attack, ForgeCardType.Power => CardType.Power, _ => CardType.Skill };
@@ -76,12 +76,12 @@ public sealed class NeowGeneratedCard : CardModel
     private void RebuildForm(bool preserveCost)
     {
         CardEnergyCost? oldCost = preserveCost ? EnergyCost : null;
-        MockSetEnergyCost(new CardEnergyCost(this, ActiveForm.Cost.Energy, ActiveForm.Cost.EnergyX == true));
-        if (oldCost is not null)
+        MockSetEnergyCost(new CardEnergyCost(this, CanonicalEnergyCost, HasEnergyCostX));
+        if (oldCost is not null && oldCost.CostsX == HasEnergyCostX)
         {
             var copied = oldCost.Clone(this);
-            copied.UpgradeBy(ActiveForm.Cost.Energy - copied.GetWithModifiers(CostModifiers.None));
-            copied.SetCustomBaseCost(ActiveForm.Cost.Energy);
+            copied.UpgradeBy(CanonicalEnergyCost - copied.GetWithModifiers(CostModifiers.None));
+            copied.SetCustomBaseCost(CanonicalEnergyCost);
             MockSetEnergyCost(copied);
         }
         StarCostSetter.Invoke(this, [CanonicalStarCost]);
@@ -138,7 +138,7 @@ public sealed class NeowGeneratedCard : CardModel
         return new LocString("cards", key);
     }
     internal string RuntimeDescriptionText(bool chinese) => CardText.Render(ActiveForm, chinese,
-        i => ActiveForm.AllEffects[i].Amount?.Value is null ? CardText.Number(ActiveForm.AllEffects[i].Amount, chinese, resource: (kind, value) => CardText.ResourceText(kind, value, EnergyIconHelper.GetPrefix(this)))
+        i => ActiveForm.AllEffects[i].Amount?.Value is null && !GeneratedEffectPreview.CanResolve(this, i) ? CardText.Number(ActiveForm.AllEffects[i].Amount, chinese, resource: (kind, value) => CardText.ResourceText(kind, value, EnergyIconHelper.GetPrefix(this)))
             : ActiveForm.AllEffects[i].Kind is EffectKind.GainEnergy or EffectKind.GainStars or EffectKind.SetCost ? DynamicVars[$"E{i}"].ToHighlightedString(false) : $"{{E{i}:diff()}}",
         _definition.Type, (kind, value) => CardText.ResourceText(kind, value, EnergyIconHelper.GetPrefix(this)));
     internal LocString RuntimeTitle()

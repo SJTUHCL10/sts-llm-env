@@ -18,7 +18,7 @@
 
 `forms[0]` 为基础形态，`forms[1]` 为升级形态，必须恰好两个，彼此不继承。每个形态独立声明费用、关键词、即时效果与规则；升级可以改变目标、动作顺序、效果数量和机制。名称、类型、稀有度及可选 `flavor` 属于卡牌家族。没有 `schema_version`、`upgrade_*` 或 LLM 生成的实例 ID。
 
-费用为 `cost:{energy,stars?,energy_x?,stars_x?}`，数值非负；X 对应的数值必须为 0。省略 `stars` 表示不使用星费用。关键词：`exhaust/ethereal/retain/innate/sly`。`effects`、`rules`、`keywords` 可省略。每个形态共有 1～24 个动作、最多 8 条规则；每条规则 1～8 个动作。
+费用为 `cost:{energy?,stars?,energy_x?,stars_x?}`，固定费用数值非负。省略 `energy` 默认为 0，省略 `stars` 表示不使用星费用；X 费用只需 `energy_x:true` 或 `stars_x:true`，不需要额外填写对应的固定费用。例如 `cost:{energy:1,stars_x:true}` 消耗 1 能量和全部星。X 标记优先于同种资源的固定费用，兼容已有显式填写 0 的定义。关键词：`exhaust/ethereal/retain/innate/sly`；能力牌允许 `retain` 和已启用职业的 `sly`，但不能带 `exhaust`。`effects`、`rules`、`keywords` 可省略。每个形态共有 1～24 个动作、最多 8 条规则；每条规则 1～8 个动作。
 
 ## 动作与目标
 

@@ -37,7 +37,9 @@ public sealed record ForgeConfig
     public int CandidatePoolCapacity { get; init; } = 24;
     public int PromptEventLimit { get; init; } = 60;
     public int MaxPromptCharacters { get; init; } = 60000;
-    public bool RecordCombat { get; init; } = true;
+    // Read old configs without restoring the removed full-combat journal.
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool RecordCombat { get; init; }
     public bool RecordGeneration { get; init; } = true;
     public bool RecordGenerationPrompts { get; init; } = true;
     public bool RecordGenerationReasoning { get; init; } = true;
@@ -66,8 +68,10 @@ public sealed record ForgeConfig
             || url.Scheme is not ("http" or "https") || !string.IsNullOrEmpty(url.UserInfo)
             || !string.IsNullOrEmpty(url.Query) || !string.IsNullOrEmpty(url.Fragment))
             throw new FormatException("base_url must be an HTTP(S) API root, usually ending in /v1.");
+        if (Provider.MaxTokens is < 128 or > 16384)
+            throw new FormatException("provider.max_tokens must be 128..16384.");
         if (string.IsNullOrWhiteSpace(Provider.Model) || Provider.TimeoutSeconds is < 1 or > 120
-            || Provider.MaxTokens is < 128 or > 16000 || !double.IsFinite(Provider.Temperature)
+            || !double.IsFinite(Provider.Temperature)
             || Provider.Temperature is < 0 or > 2 || Provider.MaxResponseBytes is < 1024 or > 1048576
             || Provider.TokenLimitParameter is not ("max_tokens" or "max_completion_tokens")
             || Provider.ApiKey is null || Provider.ApiKeyEnvironmentVariable is null)

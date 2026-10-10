@@ -9,6 +9,8 @@ namespace Forge.Mod;
 
 internal static class GeneratedEffectPreview
 {
+    internal static bool CanResolve(NeowGeneratedCard card, int index) => index < card.ActiveForm.Immediate.Length
+        && card.Owner?.PlayerCombatState is not null && card.Pile?.Type is PileType.Hand or PileType.Play;
     // Listener rewards come from a power, even when a Skill installed the listener.
     internal static ValueProp BlockProps(bool triggered) => triggered ? ValueProp.Unpowered : ValueProp.Move;
     internal static ValueProp DamageProps(CardEffect effect) => ValueProp.Move;

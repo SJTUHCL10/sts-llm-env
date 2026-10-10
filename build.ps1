@@ -9,9 +9,28 @@ if ([string]::IsNullOrWhiteSpace($GameDir) -or !(Test-Path -LiteralPath (Join-Pa
 }
 $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
 $env:DOTNET_CLI_HOME = Join-Path $PSScriptRoot '.dotnet'
+if ($env:OS -eq 'Windows_NT' -and $null -eq ('Forge.Build.ErrorMode' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+namespace Forge.Build {
+    public static class ErrorMode {
+        [DllImport("kernel32.dll")] public static extern uint GetErrorMode();
+        [DllImport("kernel32.dll")] public static extern uint SetErrorMode(uint mode);
+    }
+}
+'@
+}
 function Invoke-Dotnet([string[]]$TaskArguments) {
-    & $DotnetExe @TaskArguments
-    if ($LASTEXITCODE -ne 0) { throw "dotnet failed with exit code $LASTEXITCODE" }
+    $previousErrorMode = if ($env:OS -eq 'Windows_NT') { [Forge.Build.ErrorMode]::GetErrorMode() } else { $null }
+    try {
+        # Child processes inherit this mode; diagnostics still go to the console and exit code.
+        if ($null -ne $previousErrorMode) { [Forge.Build.ErrorMode]::SetErrorMode($previousErrorMode -bor 0x0003) | Out-Null }
+        & $DotnetExe @TaskArguments
+        if ($LASTEXITCODE -ne 0) { throw "dotnet failed with exit code $LASTEXITCODE" }
+    }
+    finally {
+        if ($null -ne $previousErrorMode) { [Forge.Build.ErrorMode]::SetErrorMode($previousErrorMode) | Out-Null }
+    }
 }
 Push-Location $PSScriptRoot
 try {
@@ -27,16 +46,15 @@ try {
     Copy-Item -LiteralPath 'src\Forge.Mod\mod_manifest.json' -Destination (Join-Path $package 'NeowsCompany.json')
     Copy-Item -LiteralPath 'config.example.json' -Destination $package
     Copy-Item -LiteralPath 'README.md' -Destination $package
-    $packagedDocs = Join-Path $package 'docs'
-    if (Test-Path -LiteralPath $packagedDocs) {
-        $resolvedDocs = (Resolve-Path -LiteralPath $packagedDocs).Path
-        $expectedDocs = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'build\NeowsCompany\docs'))
-        if ($resolvedDocs -ne $expectedDocs) { throw 'Packaged docs resolved outside the expected workspace path.' }
-        Remove-Item -LiteralPath $packagedDocs -Recurse -Force
+    foreach ($directory in @('docs', 'examples')) {
+        $packagedDirectory = Join-Path $package $directory
+        if (Test-Path -LiteralPath $packagedDirectory) {
+            $resolvedDirectory = (Resolve-Path -LiteralPath $packagedDirectory).Path
+            $expectedDirectory = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "build\NeowsCompany\$directory"))
+            if ($resolvedDirectory -ne $expectedDirectory) { throw 'Packaged directory resolved outside the expected workspace path.' }
+            Remove-Item -LiteralPath $packagedDirectory -Recurse -Force
+        }
     }
-    Copy-Item -LiteralPath 'docs' -Destination $package -Recurse
-    New-Item -ItemType Directory -Force -Path (Join-Path $package 'examples') | Out-Null
-    Get-ChildItem -LiteralPath 'examples' -Filter '*.json' | Copy-Item -Destination (Join-Path $package 'examples')
     Compress-Archive -LiteralPath $package -DestinationPath (Join-Path $PSScriptRoot 'build\NeowsCompany-0.1.0.zip') -Force
     Write-Output "Built package: $package"
 }

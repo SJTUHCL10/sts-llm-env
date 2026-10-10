@@ -16,15 +16,17 @@
 | `active_style` | `"balanced"` | 使用 `styles` 中的哪个配置 |
 | `styles.<name>.system_prompt` | 见示例 | 风格系统提示词；Mod 会追加固定的效果协议 |
 | `styles.<name>.instructions` | 见示例 | 风格、叙事、构筑偏好提示；可新增任意命名风格 |
-| `prompt_event_limit` | `60` | 最多把最近多少条战斗事件传给 LLM；本地日志仍记录全部事件 |
+| `prompt_event_limit` | `60` | 内存中保留的近期战斗事件数量，用于生成观测；累计战斗摘要独立保留 |
 | `max_prompt_characters` | `60000` | 提示词总字符上限；超限优先移除较早事件，并标注省略数量 |
-| `record_combat` | `true` | 在 `data/combats` 记录完整战斗事件和状态快照 |
-| `record_generation` | `true` | 在 `data/generation` 独立记录 LLM 调用和奖励审计，不依赖 `record_combat` |
+| `record_combat` | 已移除 | 仅兼容读取旧配置，值为 `true` 也不会写入战斗日志；新示例配置省略此字段 |
+| `record_generation` | `true` | 在 `data/generation` 记录 LLM 调用和奖励审计 |
 | `record_generation_prompts` | `true` | 在调用日志中保存提示词；关闭后仍记录调用次数、耗时、结果和失败原因，需开启 `record_generation` |
 | `record_generation_reasoning` | `true` | 保存服务端 reasoning_content；需开启 record_generation |
 | `provider.reasoning_effort` | `null` | 不传参数，使用服务默认；可设置思考强度或关闭思考，见下方说明 |
 
 `prefetch_initial_card_plays` 仅用于读取旧配置，不控制当前调用时机。首次预生成在敌方首回合结束后；第一轮内胜利则使用最终摘要。候选池与奖励冻结规则见 [LLM_PROTOCOL.md](LLM_PROTOCOL.md#候选池和时机)。
+
+最后一幕的 Boss 战斗没有原生卡牌奖励，因此不会创建生成会话或请求 LLM，包括进阶 10 的两场 Boss。判断与游戏奖励逻辑一致，使用当前幕索引、幕列表和遭遇的 Boss 类型，不依赖层数；前两幕 Boss 与第三幕普通/精英战斗照常生成。
 
 ## Provider
 
@@ -57,10 +59,10 @@
 | --- | --- |
 | `data/runs/*.json` | 本局候选池、历史与冻结奖励；需要恢复当前局奖励时必须保留 |
 | `data/rewards/` | 旧版奖励缓存，仅作为当前局的兼容导入来源 |
-| `data/combats/*.jsonl` | 完整战斗事件及状态快照；退出游戏后可删除 |
+| `data/combats/*.jsonl` | 旧版完整战斗日志，已停止写入；退出游戏后可删除，不参与生成或读档 |
 | `data/generation/*.jsonl` | 请求、响应诊断与奖励审计；退出游戏后可删除 |
 
-日志暂无自动清理。每个战斗事件附带状态快照，单场日志可能达到数 MB；后台写入队列在异常退出时可能丢失末尾记录。只需诊断时，可关闭 `record_combat`、`record_generation_prompts` 和 `record_generation_reasoning`，保留 `record_generation`。
+生成日志暂无自动清理，后台写入队列在异常退出时可能丢失末尾记录。可关闭 `record_generation_prompts` 和 `record_generation_reasoning`，保留 `record_generation` 以诊断调用结果。战斗事件和累计摘要仅保留在内存中，不再逐事件写入完整状态快照。
 
 游戏信息与自定义提示词会发送至你配置的服务。API key 通过 Authorization 请求头发送，不作为提示词字段。日志不主动记录请求头、HTTP 错误体或任意异常消息；reasoning 中匹配到的已知密钥及服务地址会被替换。这不等于对任意模型文本的全面脱敏，分享日志前仍需检查内容。
 

@@ -59,6 +59,15 @@ assert.ok(snapshot.text().includes('共享基础文本。'));
 assert.ok(snapshot.text().includes('共享升级文本。'));
 assert.ok(!snapshot.text().includes('造成7点伤害。'));
 assert.ok(run(`formText({effects:[],rules:[{trigger:{event:'turn_start'},lifetime:'turn',turns:2,effects:[{kind:'draw',amount:1}]}]},'skill')`).includes('接下来的2个回合'));
+for (const [cost,stat] of [[{energy_x:true},'paid_energy'],[{stars_x:true},'paid_stars']]) {
+  context.xForm = {cost,effects:[
+    {kind:'draw',amount:{stat}},
+    {kind:'damage',target:'enemy',amount:5,repeat:{add:[{stat},1]}},
+    {kind:'create_card',card:{id:'shiv'},count:{stat},to:'hand'}
+  ]};
+  assert.equal(run(`formText(xForm,'skill')`),'抽X张牌。\n重复以下效果(X + 1)次：造成5点伤害。\n将X张小刀添加到你的手牌。');
+}
+assert.equal(run(`ruleText({trigger:{event:'card_generated'},effects:[{kind:'block',amount:2}]},'power')`),'每当你生成一张牌，获得2点格挡。');
 
 elements.get('status').value = 'all';
 run(`current = {summary:{file:'fixture.jsonl'},requests:[{revision:1,status:'failed',response:{content:raw},result:{reason:'completion_token_limit'}}],events:[]}; renderDetail();`);

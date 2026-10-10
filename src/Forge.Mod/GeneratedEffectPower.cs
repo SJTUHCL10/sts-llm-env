@@ -93,9 +93,9 @@ public sealed class GeneratedEffectPower : PowerModel
                 {
                     string amount = effect.Amount?.Value is not null ? _snapshot.Amounts[index].ToString(System.Globalization.CultureInfo.InvariantCulture) : CardText.Number(effect.Amount, chinese, resource: (kind, value) => CardText.ResourceText(kind, value, prefix));
                     index++;
-                    return CardText.RenderEffect(effect, chinese, amount, (kind, value) => CardText.ResourceText(kind, value, prefix));
+                    return CardText.RenderEffect(effect, chinese, amount, (kind, value) => CardText.ResourceText(kind, value, prefix), Form.Cost);
                 }, combatIsImplicit: true,
-                    resource: (kind, value) => CardText.ResourceText(kind, value, prefix)));
+                    resource: (kind, value) => CardText.ResourceText(kind, value, prefix), cost: Form.Cost));
             offset += rule.Effects.Length;
         }
         return string.Join("\n", lines);
