@@ -70,7 +70,7 @@
 
 先检查 Mod 已启用、配置有效、服务可访问且模型名正确。默认模式只展示打开奖励时已经完成并通过校验的结果；慢请求可能到后续战斗才出现。奖励首次打开即冻结，空结果也会保存，读档不会重新生成。
 
-在 `data/generation` 中查找 `generation_request`、`generation_ready`、`generation_failed`；失败条目包含 `stage`、`reason`、`elapsed_ms` 和可用的 `http_status`。
+在 `data/generation` 中查找 `generation_request`、`generation_ready`、`generation_failed`；失败条目包含 `stage`、`reason`、`elapsed_ms` 和可用的 `http_status`。连接异常另记录安全枚举 `http_request_error`（例如 NameResolutionError、ConnectionError、SecureConnectionError）；不记录异常消息、服务地址或任意 HTTP 错误正文。旧日志缺少此字段时，只有 HttpRequestException 与空 http_status 无法区分 DNS、连接和 TLS 失败。
 
 | 原因 | 检查方向 |
 | --- | --- |

@@ -60,7 +60,7 @@ public sealed record CharacterMechanics(bool Poison, bool Stars, bool Necrobinde
         if (number is null) return;
         if (number.Of == "osty" && !Necrobinder || number.Stat == "power" && !AllowsPower(number.Id!)
             || number.Stat is "stars" or "paid_stars" && !Stars || number.Stat is "orb_count" or "orb_capacity" && !Defect) Unavailable();
-        foreach (var child in number.Add ?? number.Mul ?? number.Div ?? []) CheckNumber(child);
+        foreach (var child in number.Add ?? number.Sub ?? number.Mul ?? number.Div ?? []) CheckNumber(child);
     }
     private void CheckCondition(EffectCondition? condition)
     {

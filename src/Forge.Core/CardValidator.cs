@@ -140,7 +140,7 @@ public static class CardValidator
     public static void ValidateNumber(NumberExpression expression, bool triggered = false, bool signed = true, int depth = 0)
     {
         Require(expression is not null && depth <= 6, "Expression nesting exceeds six.");
-        int choices = (expression.Value is not null ? 1 : 0) + (expression.Stat is not null ? 1 : 0) + (expression.Add is not null ? 1 : 0) + (expression.Mul is not null ? 1 : 0) + (expression.Div is not null ? 1 : 0);
+        int choices = (expression.Value is not null ? 1 : 0) + (expression.Stat is not null ? 1 : 0) + (expression.Add is not null ? 1 : 0) + (expression.Sub is not null ? 1 : 0) + (expression.Mul is not null ? 1 : 0) + (expression.Div is not null ? 1 : 0);
         Require(choices == 1, "Numeric expression needs exactly one operation.");
         if (expression.Value is int value) Require((signed || value >= 0) && expression.Of is null && expression.Id is null, "Invalid literal.");
         else if (expression.Stat is { } stat)
@@ -153,8 +153,8 @@ public static class CardValidator
         else
         {
             Require(expression.Of is null && expression.Id is null, "Arithmetic cannot specify a subject.");
-            var children = expression.Add ?? expression.Mul ?? expression.Div!;
-            Require(children.Length is >= 2 and <= 4 && (expression.Div is null || children.Length == 2), "Invalid expression arity.");
+            var children = expression.Add ?? expression.Sub ?? expression.Mul ?? expression.Div!;
+            Require(children.Length is >= 2 and <= 4 && (expression.Sub is null && expression.Div is null || children.Length == 2), "Invalid expression arity.");
             foreach (var child in children) ValidateNumber(child, triggered, true, depth + 1);
             Require(expression.Div is null || expression.Div[1].Value != 0, "Division by zero.");
         }

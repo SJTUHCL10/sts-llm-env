@@ -220,7 +220,7 @@
     // renderer for those records; new journals use the shared renderer's saved text.
     const textNames = {...types,...kinds, frail:'脆弱',doom:'灾厄',focus:'集中',vigor:'活力',thorns:'荆棘',plating:'覆甲',intangible:'无实体',artifact:'人工制品',buffer:'缓冲',retain_block:'保留格挡',
       soul:'灵魂',shiv:'小刀',wound:'伤口',dazed:'晕眩',burn:'灼伤',void:'虚空',slimed:'黏液',fuel:'燃料',debris:'碎屑',minion_strike:'仆从打击',minion_sacrifice:'仆从捐躯',minion_dive:'仆从俯冲',sovereign_blade:'君王之剑',
-      lightning:'闪电',frost:'冰霜',dark:'黑暗',plasma:'等离子',glass:'玻璃',random:'随机',hp:'生命',max_hp:'最大生命',hand_size:'手牌数',draw_size:'抽牌堆牌数',discard_size:'弃牌堆牌数',exhaust_size:'消耗堆牌数',orb_count:'充能球数',orb_capacity:'球槽数',event_amount:'事件数值',damage_dealt:'上次攻击实际伤害',status:'状态',curse:'诅咒',sly:'奇巧'};
+      lightning:'闪电',frost:'冰霜',dark:'黑暗',plasma:'等离子',glass:'玻璃',random:'随机',hp:'生命',max_hp:'最大生命',hand_size:'手牌数',draw_size:'抽牌堆牌数',discard_size:'弃牌堆牌数',exhaust_size:'消耗堆牌数',orb_count:'充能球数',orb_capacity:'充能球栏位数',event_amount:'事件数值',damage_dealt:'上次攻击实际伤害',status:'状态',curse:'诅咒',sly:'奇巧'};
     const textName = id => textNames[id] ?? id;
     const powerUnit = id => ['strength','dexterity','focus','vigor','thorns','plating'].includes(id) ? '点' : '层';
     const pileText = pile => ({hand:'手牌',draw:'抽牌堆',discard:'弃牌堆',exhaust:'消耗堆'}[pile] ?? pile);
@@ -232,8 +232,10 @@
         if (['paid_energy','paid_stars'].includes(value.stat)) return '本次消耗的'+(value.stat === 'paid_energy' ? '能量' : '星')+'数量';
         return ({osty:'奥斯提的',target:'目标的'}[value.of] ?? '你的')+textName(value.stat === 'power' ? value.id : value.stat)+(value.stat === 'power' ? powerUnit(value.id)+'数' : '');
       }
-      const terms = value.add ?? value.mul ?? value.div;
-      return Array.isArray(terms) ? '('+terms.map(term => numberText(term,cost)).join(value.add ? ' + ' : value.mul ? ' × ' : ' ÷ ')+')'+(value.div ? '向下取整' : '') : json(value);
+      const factors = value.add?.length === 2 ? value.add[1]?.mul : null;
+      if (factors?.length === 2 && factors.includes(-1)) return numberText({sub:[value.add[0],factors[factors[0] === -1 ? 1 : 0]]},cost);
+      const terms = value.add ?? value.sub ?? value.mul ?? value.div;
+      return Array.isArray(terms) ? '('+terms.map(term => numberText(term,cost)).join(value.add ? ' + ' : value.sub ? ' - ' : value.mul ? ' × ' : ' ÷ ')+')'+(value.div ? '向下取整' : '') : json(value);
     }
     function conditionText(condition,cost={}) {
       if (condition.not) return '不满足 '+conditionText(condition.not,cost);
@@ -285,7 +287,7 @@
         case 'channel': text = '生成'+n+'个'+textName(effect.orb)+'充能球。'; break;
         case 'evoke': text = '激发'+target+(effect.remove === false ? '，但不移除它' : '')+'。'; break;
         case 'orb_passive': text = '触发'+target+'的被动效果。'; break;
-        case 'orb_slots': text = '改变'+n+'个充能球槽位。'; break;
+        case 'orb_slots': text = typeof effect.amount === 'number' ? (effect.amount < 0 ? '失去' : '获得')+String(Math.abs(effect.amount))+'个充能球栏位。' : '充能球栏位增加'+n+'个（负数表示失去）。'; break;
         case 'heal': text = (self ? '' : target)+'回复'+n+'点生命。'; break;
         case 'lose_hp': text = (self ? '' : target)+'失去'+n+'点生命。'; break;
         default: text = '未知效果：'+json(effect);
@@ -313,10 +315,32 @@
         when = o.every != null ? scope+'，每'+verb+o.every+'张'+card+'时' : scope+(o.first != null ? o.first === 1 ? '首次' : '前'+o.first+'次' : '第'+o.nth+'次')+verb+'一张'+card+'时';
       }
       const quota = trigger.limit ? '（'+(trigger.limit.within === 'combat' ? '本场战斗' : '每回合')+'最多生效'+trigger.limit.count+'次）' : '';
-      return lifetime+when+quota+'，'+(rule.condition ? '若'+conditionText(rule.condition,cost)+'，' : '')+(rule.effects ?? []).map(e => effectText(e,cost).replace(/。+$/,'')).join('，')+'。';
+      return lifetime+when+quota+'，'+(rule.condition ? '若'+conditionText(rule.condition,cost)+'，' : '')+effectsText(rule.effects ?? [],cost).map(text => text.replace(/。+$/,'')).join('，')+'。';
+    }
+    function readsStat(value,stat) {
+      if (!value || typeof value !== 'object') return false;
+      if (value.stat === stat) return true;
+      return Object.values(value).some(child => Array.isArray(child) ? child.some(item => readsStat(item,stat)) : readsStat(child,stat));
+    }
+    function effectsText(effects,cost={}) {
+      const lines = [];
+      for (let i=0;i<effects.length;) {
+        const effect = effects[i], condition = effect.condition;
+        let end = i+1;
+        if (condition && effect.repeat == null && (effect.target == null || effect.target === 'self')) {
+          while (end < effects.length && effects[end].repeat == null && (effects[end].target == null || effects[end].target === 'self') && effects[end].condition && JSON.stringify(condition) === JSON.stringify(effects[end].condition)) {
+            const previous = effects[end-1], stat = {gain_energy:'energy',gain_stars:'stars'}[previous.kind];
+            if (!stat || readsStat(condition,stat)) break;
+            end++;
+          }
+        }
+        lines.push(end === i+1 ? effectText(effect,cost) : '若'+conditionText(condition,cost)+'，'+effects.slice(i,end).map(e => effectText({...e,condition:undefined},cost).replace(/。+$/,'')).join('，')+'。');
+        i = end;
+      }
+      return lines;
     }
     function formText(form,cardType) {
-      return [...(form.effects ?? []).map(effect => effectText(effect,form.cost)),...(form.rules ?? []).map(rule => ruleText(rule,cardType,form.cost))].join('\n') || '无效果。';
+      return [...effectsText(form.effects ?? [],form.cost),...(form.rules ?? []).map(rule => ruleText(rule,cardType,form.cost))].join('\n') || '无效果。';
     }
     function renderModernCard(card, texts=[]) {
       const node = el('article',undefined,'card');

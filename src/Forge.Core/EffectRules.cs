@@ -8,6 +8,7 @@ public static class EffectRules
         if (value.Value is int literal) return literal;
         if (value.Stat is not null) return read(value);
         if (value.Add is { } add) return add.Aggregate(0, (total, node) => checked(total + Evaluate(node, read)));
+        if (value.Sub is { } sub) return checked(Evaluate(sub[0], read) - Evaluate(sub[1], read));
         if (value.Mul is { } mul) return mul.Aggregate(1, (total, node) => checked(total * Evaluate(node, read)));
         var div = value.Div ?? throw new FormatException("Invalid expression.");
         int denominator = Evaluate(div[1], read);

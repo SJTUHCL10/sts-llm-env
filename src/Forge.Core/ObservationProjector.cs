@@ -66,11 +66,13 @@ public static class ObservationProjector
             result["history"] = new JsonArray(context.GenerationHistory.TakeLast(historyLimit).Select(entry =>
             {
                 var history = JsonNode.Parse(entry.GetRawText()) as JsonObject ?? new();
-                var item = Pick(history, "name", "status");
+                var item = Pick(history, "name", "status", "type", "rarity", "cost", "text");
                 if (history["card"] is JsonObject definition && definition["forms"] is JsonArray)
                 {
                     var card = Wire.Decode<CardDefinition>(definition.ToJsonString());
                     item["name"] = card.Name; item["cost"] = JsonSerializer.SerializeToNode(card.Forms[0].Cost, Wire.Json);
+                    item["type"] = JsonSerializer.SerializeToNode(card.Type, Wire.Json);
+                    item["rarity"] = JsonSerializer.SerializeToNode(card.Rarity, Wire.Json);
                     item["text"] = Clean(CardText.Render(card, true));
                 }
                 return (JsonNode)item;

@@ -80,7 +80,7 @@
 {"op":"lt","left":{"mul":[{"stat":"hp"},2]},"right":{"stat":"max_hp"}}
 ```
 
-表达式为整数、stat、add、mul、div 之一；add/mul 有 2～4 个操作数，div 恰好两个并向下取整，嵌套最多六层。字面分母不能为零；运行时零分母、溢出会中止效果并报告执行失败。普通数量小于零按零执行；apply_power 与 orb_slots 支持有符号数。没有强度预算或缩放上限。
+表达式为整数、stat、add、sub、mul、div 之一；add/mul 有 2～4 个操作数，sub/div 恰好两个。`{"sub":[a,b]}` 表示 a 减 b；div 向下取整，嵌套最多六层。字面分母不能为零；运行时零分母、溢出会中止效果并报告执行失败。普通数量小于零按零执行；apply_power 与 orb_slots 支持有符号数。没有强度预算或缩放上限。旧定义中的 add 与负数乘积仍可执行，描述会将两项相加中的第二项乘 -1 显示为减法；此扩展不改变 v5 存档版本。
 
 生物数值：hp/max_hp/block/power，of 默认 self，可为 target/osty；power 必须带 id。玩家数值：energy/stars/hand_size/draw_size/discard_size/exhaust_size/orb_count/orb_capacity。上下文数值：paid_energy/paid_stars（本次打出实付资源快照）、event_amount、damage_dealt（最近一个伤害动作的 TotalDamage）。状态在动作执行时读取。
 

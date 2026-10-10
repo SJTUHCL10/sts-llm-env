@@ -49,6 +49,8 @@ public sealed record NumberExpression
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public NumberExpression[]? Add { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public NumberExpression[]? Sub { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public NumberExpression[]? Mul { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public NumberExpression[]? Div { get; init; }
@@ -62,7 +64,7 @@ internal sealed class NumberExpressionConverter : JsonConverter<NumberExpression
         using var document = JsonDocument.ParseValue(ref reader);
         if (document.RootElement.ValueKind != JsonValueKind.Object) throw new JsonException("Expected integer or expression.");
         string? stat = null, of = null, id = null;
-        NumberExpression[]? add = null, mul = null, div = null;
+        NumberExpression[]? add = null, sub = null, mul = null, div = null;
         var seen = new HashSet<string>();
         foreach (var p in document.RootElement.EnumerateObject())
         {
@@ -73,12 +75,13 @@ internal sealed class NumberExpressionConverter : JsonConverter<NumberExpression
                 case "of": of = p.Value.GetString(); break;
                 case "id": id = p.Value.GetString(); break;
                 case "add": add = p.Value.Deserialize<NumberExpression[]>(options); break;
+                case "sub": sub = p.Value.Deserialize<NumberExpression[]>(options); break;
                 case "mul": mul = p.Value.Deserialize<NumberExpression[]>(options); break;
                 case "div": div = p.Value.Deserialize<NumberExpression[]>(options); break;
                 default: throw new JsonException("Unknown expression field.");
             }
         }
-        return new() { Stat = stat, Of = of, Id = id, Add = add, Mul = mul, Div = div };
+        return new() { Stat = stat, Of = of, Id = id, Add = add, Sub = sub, Mul = mul, Div = div };
     }
     public override void Write(Utf8JsonWriter writer, NumberExpression value, JsonSerializerOptions options)
     {
@@ -87,7 +90,7 @@ internal sealed class NumberExpressionConverter : JsonConverter<NumberExpression
         if (value.Stat is not null) writer.WriteString("stat", value.Stat);
         if (value.Of is not null) writer.WriteString("of", value.Of);
         if (value.Id is not null) writer.WriteString("id", value.Id);
-        foreach (var pair in new[] { ("add", value.Add), ("mul", value.Mul), ("div", value.Div) })
+        foreach (var pair in new[] { ("add", value.Add), ("sub", value.Sub), ("mul", value.Mul), ("div", value.Div) })
             if (pair.Item2 is not null) { writer.WritePropertyName(pair.Item1); JsonSerializer.Serialize(writer, pair.Item2, options); }
         writer.WriteEndObject();
     }

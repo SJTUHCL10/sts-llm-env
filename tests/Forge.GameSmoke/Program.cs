@@ -231,6 +231,24 @@ static class Smoke
             var energyX = xForm with { Cost = new() { EnergyX = true }, Effects = [new() { Kind = EffectKind.Draw, Amount = new() { Stat = "paid_energy" } }] };
             card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "蓄势", Type = ForgeCardType.Skill, Rarity = ForgeRarity.Common, Forms = [energyX, energyX] });
             Check(card.RuntimeDescriptionText(true) == "抽X张牌。");
+            var slots = new CardForm { Cost = new(), Effects = [new() { Kind = EffectKind.OrbSlots, Amount = -1 }] };
+            card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "球槽压缩", Type = ForgeCardType.Skill, Rarity = ForgeRarity.Uncommon,
+                Forms = [slots, slots with { Effects = [new() { Kind = EffectKind.OrbSlots, Amount = -2 }] }] });
+            card.UpdateDynamicVarPreview(CardPreviewMode.Normal, null, card.DynamicVars);
+            string slotText = card.GetDescriptionForPile(PileType.Hand);
+            Check(slotText.Contains("失去") && slotText.Contains("充能球栏位") && !slotText.Contains("-1"));
+            card.UpgradeInternal(); card.FinalizeUpgradeInternal();
+            card.UpdateDynamicVarPreview(CardPreviewMode.Normal, null, card.DynamicVars);
+            slotText = card.GetDescriptionForPile(PileType.Hand);
+            Check(slotText.Contains("失去") && slotText.Contains("2") && !slotText.Contains("-2"));
+            var subtraction = slots with { Effects = [new() { Kind = EffectKind.OrbSlots, Amount = new() { Sub = [2, new() { Stat = "stars" }] } }] };
+            card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "动态栏位", Type = ForgeCardType.Skill, Rarity = ForgeRarity.Uncommon, Forms = [subtraction, subtraction] });
+            card.UpdateDynamicVarPreview(CardPreviewMode.Normal, null, card.DynamicVars);
+            slotText = card.GetDescriptionForPile(PileType.Hand);
+            Check(card.DynamicVars["E0"].PreviewValue == -3 && slotText.Contains("失去") && slotText.Contains("3") && !slotText.Contains("-3"));
+            var savedSlots = (NeowGeneratedCard)CardModel.FromSerializable(card.ToSerializable());
+            Check(savedSlots.DefinitionPayload == card.DefinitionPayload);
+            Console.WriteLine("PASS signed orb-slot wording and subtraction preview survive upgrade and native serialization");
             Console.WriteLine("PASS expression preview includes payment/Strength/Weak/Vulnerable without mutating state or base values");
             Console.WriteLine("PASS X-energy/X-star descriptions retain symbols in hand/draw piles and through upgrade/save/load");
             CheckBlockContracts(card, owner, guard);

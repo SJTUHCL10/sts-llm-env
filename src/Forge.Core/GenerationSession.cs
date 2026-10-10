@@ -89,7 +89,9 @@ public sealed class GenerationSession : IDisposable
                 : ex is OperationCanceledException ? (_lifetime.IsCancellationRequested ? "reward_frozen_or_session_ended" : "provider_timeout")
                 : stage == "prompt" && ex is FormatException ? "prompt_size_limit" : "unspecified_failure";
             _audit("generation_failed", new { revision, category = ex.GetType().Name, stage, reason,
-                http_status = ex is HttpRequestException http ? (int?)http.StatusCode : null, elapsed_ms = timer.ElapsedMilliseconds });
+                http_status = ex is HttpRequestException http ? (int?)http.StatusCode : null,
+                http_request_error = ex is HttpRequestException transport ? transport.HttpRequestError.ToString() : null,
+                elapsed_ms = timer.ElapsedMilliseconds });
         }
     }
 

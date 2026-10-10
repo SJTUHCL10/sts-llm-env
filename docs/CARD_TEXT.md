@@ -27,7 +27,7 @@ dotnet run --project src/Forge.Tool -- audit-text examples '.dotnet\card-text-ex
 | create_card / copy / move | 使用“添加到你的手牌”等原版措辞；明确张数、牌堆、顶部／底部／随机位置和复制品 |
 | select / discard / exhaust / upgrade / transform / play | 保留选择或随机、至多、全部、筛选条件及自动打出；选择来源需要明确选项数与执行次数 |
 | add_keyword / remove_keyword / apply_power | 关键词与状态名称统一；区分点／层、目标、临时持续时间和移除全部状态 |
-| summon / forge / channel / evoke / orb_passive / orb_slots | 保留召唤、铸造、球种、球数量、激发目标与“不移除”；正负槽位变化必须可辨认 |
+| summon / forge / channel / evoke / orb_passive / orb_slots | 保留召唤、铸造、球种、球数量、激发目标与“不移除”；球栏位用获得/失去描述已知正负数量；符号未知的表达式注明负数表示失去 |
 | 卡牌事件与回合事件 | 使用“每当你打出一张……”与“在你的回合开始时”；区别首次、前 N 次、第 N 次、每 N 张以及成功生效额度 |
 | 规则生命周期 | 能力牌的整场战斗效果省略“本场战斗”；技能／攻击牌保留；本回合、下回合、有限回合以及战斗范围计数不能省略 |
 

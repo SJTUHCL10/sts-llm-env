@@ -68,6 +68,13 @@ for (const [cost,stat] of [[{energy_x:true},'paid_energy'],[{stars_x:true},'paid
   assert.equal(run(`formText(xForm,'skill')`),'抽X张牌。\n重复以下效果(X + 1)次：造成5点伤害。\n将X张小刀添加到你的手牌。');
 }
 assert.equal(run(`ruleText({trigger:{event:'card_generated'},effects:[{kind:'block',amount:2}]},'power')`),'每当你生成一张牌，获得2点格挡。');
+assert.equal(run(`numberText({sub:[{stat:'orb_capacity'},{stat:'orb_count'}]})`),'(你的充能球栏位数 - 你的充能球数)');
+assert.equal(run(`numberText({add:[{stat:'orb_capacity'},{mul:[{stat:'orb_count'},-1]}]})`),'(你的充能球栏位数 - 你的充能球数)');
+assert.equal(run(`effectText({kind:'orb_slots',amount:-1})`),'失去1个充能球栏位。');
+assert.equal(run(`effectText({kind:'orb_slots',amount:2})`),'获得2个充能球栏位。');
+context.sameCondition = {op:'ge',left:{stat:'orb_count'},right:{stat:'orb_capacity'}};
+assert.equal(run(`formText({effects:[{kind:'gain_energy',amount:2,condition:sameCondition},{kind:'draw',amount:2,condition:sameCondition}]},'skill')`),'若你的充能球数 ≥ 你的充能球栏位数，获得2点能量，抽2张牌。');
+assert.equal(run(`formText({effects:[{kind:'gain_energy',amount:2,condition:{op:'ge',left:{stat:'energy'},right:2}},{kind:'draw',amount:2,condition:{op:'ge',left:{stat:'energy'},right:2}}]},'skill').split('若').length`),3);
 
 elements.get('status').value = 'all';
 run(`current = {summary:{file:'fixture.jsonl'},requests:[{revision:1,status:'failed',response:{content:raw},result:{reason:'completion_token_limit'}}],events:[]}; renderDetail();`);

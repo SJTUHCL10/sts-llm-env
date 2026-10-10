@@ -163,6 +163,61 @@ await Test("numeric expressions and conditions use current state and floor divis
     for (int i = 0; i < 8; i++) deep = new() { Add = [deep, 1] };
     return Reject(() => CardValidator.ValidateNumber(deep));
 });
+await Test("subtraction round trips, checks arithmetic and preserves character gates", async () =>
+{
+    var difference = Wire.Decode<NumberExpression>("{\"sub\":[{\"stat\":\"orb_capacity\"},{\"stat\":\"orb_count\"}]}");
+    CardValidator.ValidateNumber(difference);
+    Check(Wire.Encode(Wire.Decode<NumberExpression>(Wire.Encode(difference))) == Wire.Encode(difference));
+    Check(EffectRules.Evaluate(difference, n => n.Stat == "orb_capacity" ? 5 : 2) == 3);
+    Check(EffectRules.Evaluate(difference, n => n.Stat == "orb_capacity" ? 1 : 2) == -1);
+    Check(CardText.Number(difference, true) == "(你的充能球栏位数 - 你的充能球数)");
+    var legacy = new NumberExpression { Add = [difference.Sub![0], new() { Mul = [difference.Sub[1], -1] }] };
+    Check(CardText.Number(legacy, true) == CardText.Number(difference, true));
+    Check(EffectRules.Evaluate(legacy, n => n.Stat == "orb_capacity" ? 5 : 2) == 3);
+    var card = valid with { Forms = valid.Forms.Select(f => f with { Effects = [new() { Kind = EffectKind.Damage, Target = "enemy", Amount = difference }] }).ToArray() };
+    CharacterMechanics.FromRun(JsonSerializer.SerializeToElement(new { character = "DEFECT" })).Validate(card);
+    await Reject(() => CharacterMechanics.FromRun(context.Run).Validate(card));
+    foreach (var number in new NumberExpression[] { new() { Sub = [1] }, new() { Sub = [1, 2, 3] }, new() { Sub = [1, 2], Add = [1, 2] }, new() { Sub = [1, null!] } })
+        await Reject(() => CardValidator.ValidateNumber(number));
+    Throws<OverflowException>(() => EffectRules.Evaluate(new() { Sub = [int.MinValue, 1] }, _ => 0));
+    var x = new NumberExpression { Sub = [new() { Stat = "paid_energy" }, 1] };
+    Check(CardText.RenderEffect(new() { Kind = EffectKind.Draw, Amount = x }, true, "99", cost: new() { EnergyX = true }) == "抽(X - 1)张牌。");
+});
+await Test("orb slots use gain and loss wording with signed highlighted previews", () =>
+{
+    var effect = new CardEffect { Kind = EffectKind.OrbSlots, Amount = -1 };
+    Check(CardText.RenderEffect(effect, true) == "失去1个充能球栏位。");
+    Check(CardText.RenderEffect(effect with { Amount = 2 }, true) == "获得2个充能球栏位。");
+    Check(CardText.RenderEffect(effect, true, "[gold]-2[/gold]") == "失去[gold]2[/gold]个充能球栏位。");
+    Check(CardText.RenderEffect(effect, false) == "Lose 1 orb slot.");
+    Check(CardText.RenderEffect(effect with { Amount = new() { Sub = [1, new() { Stat = "orb_count" }] } }, true).Contains("负数表示失去"));
+    return Task.CompletedTask;
+});
+await Test("adjacent conditions share text only across actions that preserve the tested state", () =>
+{
+    var condition = new EffectCondition { Op = Comparison.Ge, Left = new() { Stat = "orb_count" }, Right = new() { Stat = "orb_capacity" } };
+    var energy = new CardEffect { Kind = EffectKind.GainEnergy, Amount = 2, Condition = condition };
+    var draw = new CardEffect { Kind = EffectKind.Draw, Amount = 2, Condition = Wire.Decode<EffectCondition>(Wire.Encode(condition)) };
+    var form = new CardForm { Cost = new(), Effects = [energy, draw, new() { Kind = EffectKind.Block, Amount = 1 }] };
+    string expected = "若你的充能球数 ≥ 你的充能球栏位数，获得2点能量，抽2张牌。\n获得1点格挡。";
+    string original = Wire.Encode(form);
+    Check(CardText.Render(form, true) == expected && Wire.Encode(form) == original);
+    var indices = new List<int>();
+    Check(CardText.Render(form, true, i => { indices.Add(i); return (10 + i).ToString(); }).Contains("获得10点能量，抽11张牌。\n获得12点格挡。"));
+    Check(indices.SequenceEqual(new[] { 0, 1, 2 }));
+    Check(CardText.Render(form, false).Contains("Gain 2 Energy. Draw 2 cards."));
+    foreach (var effects in new CardEffect[][]
+    {
+        [energy with { Condition = condition with { Left = new() { Stat = "energy" } } }, draw with { Condition = condition with { Left = new() { Stat = "energy" } } }],
+        [draw, energy], [energy with { Repeat = 2 }, draw], [energy, draw with { Repeat = 2 }],
+        [energy, draw with { Condition = condition with { Op = Comparison.Gt } }],
+        [energy, new() { Kind = EffectKind.Damage, Target = "enemy", Amount = 2, Condition = condition }]
+    }) Check(CardText.Render(form with { Effects = effects }, true).Count(c => c == '若') == 2);
+    var rule = new CardRule { Trigger = new() { Event = RuleEvent.TurnStart, Limit = new() { Count = 1 } }, Effects = [energy, draw] };
+    Check(CardText.RenderRule(rule, true).Count(c => c == '若') == 1);
+    Check(CardText.RenderRule(rule, true).Contains("最多生效1次"));
+    return Task.CompletedTask;
+});
 await Test("rule group quotas count successful conditions once and reset only their scope", () =>
 {
     var rule = new CardRule { Trigger = new() { Event = RuleEvent.CardDiscarded, Limit = new() { Count = 1 } }, Effects = [new() { Kind = EffectKind.Draw, Amount = 1 }, new() { Kind = EffectKind.Block, Amount = 2 }] };
@@ -232,6 +287,8 @@ await Test("design projection groups cards, preserves useful mechanics and omits
     string text = projected.GetRawText();
     foreach (string removed in new[] { "combat_key", "schema_version", "instance", "piles", "generated_definition", "seed", "[gold]" }) Check(!text.Contains(removed));
     Check(projected.GetProperty("history")[0].GetProperty("text").GetString()!.Contains("伤害"));
+    Check(projected.GetProperty("history")[0].GetProperty("type").GetString() == "attack");
+    Check(projected.GetProperty("history")[0].GetProperty("rarity").GetString() == "common");
     Check(PromptBuilder.Build(config, observed).System.StartsWith(PromptBuilder.Contract));
     return Task.CompletedTask;
 });
@@ -458,7 +515,8 @@ await Test("generation diagnostics without prompts distinguish provider, validat
     {
         (new FakeGenerator((_, _) => Task.FromException<CardBatch>(new GenerationFailureException("completion_token_limit"))), "completion_token_limit", "provider", null),
         (new FakeGenerator((_, _) => Task.FromResult(new CardBatch { Cards = [valid with { Forms = [valid.Forms[0] with { Cost = new() { Energy = -1 } }, valid.Forms[1]] }] })), "Negative cost.", "validation", null),
-        (new FakeGenerator((_, _) => Task.FromException<CardBatch>(new HttpRequestException("SECRET", null, HttpStatusCode.TooManyRequests))), "unspecified_failure", "provider", 429)
+        (new FakeGenerator((_, _) => Task.FromException<CardBatch>(new HttpRequestException("SECRET", null, HttpStatusCode.TooManyRequests))), "unspecified_failure", "provider", 429),
+        (new FakeGenerator((_, _) => Task.FromException<CardBatch>(new HttpRequestException(HttpRequestError.NameResolutionError, "SECRET"))), "unspecified_failure", "provider", null)
     })
     {
         var entries = new List<(string Kind, JsonElement Payload)>();
@@ -475,6 +533,8 @@ await Test("generation diagnostics without prompts distinguish provider, validat
         Check(status is null ? failure.GetProperty("http_status").ValueKind == JsonValueKind.Null
             : failure.GetProperty("http_status").GetInt32() == status);
         Check(failure.GetProperty("elapsed_ms").GetInt64() >= 0 && !failure.GetRawText().Contains("SECRET"));
+        if (reason == "unspecified_failure")
+            Check(failure.GetProperty("http_request_error").GetString() == (status is null ? "NameResolutionError" : "Unknown"));
     }
 });
 await Test("provider format diagnostics do not expose response text", async () =>
