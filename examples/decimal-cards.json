@@ -1,0 +1,25 @@
+{
+  "cards": [
+    {
+      "name": "背水一战",
+      "type": "attack",
+      "rarity": "common",
+      "forms": [
+        {
+          "cost": {"energy": 1},
+          "effects": [
+            {"kind": "damage", "target": "enemy", "amount": 4},
+            {"kind": "damage", "target": "enemy", "amount": 4, "condition": {"op": "lt", "left": {"stat": "hp"}, "right": {"mul": [{"stat": "max_hp"}, 0.5]}}}
+          ]
+        },
+        {
+          "cost": {"energy": 1},
+          "effects": [
+            {"kind": "damage", "target": "enemy", "amount": 6},
+            {"kind": "damage", "target": "enemy", "amount": 6, "condition": {"op": "lt", "left": {"stat": "hp"}, "right": {"div": [{"stat": "max_hp"}, 2]}}}
+          ]
+        }
+      ]
+    }
+  ]
+}

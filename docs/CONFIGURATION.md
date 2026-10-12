@@ -17,7 +17,8 @@
 | `styles.<name>.system_prompt` | 见示例 | 风格系统提示词；Mod 会追加固定的效果协议 |
 | `styles.<name>.instructions` | 见示例 | 风格、叙事、构筑偏好提示；可新增任意命名风格 |
 | `prompt_event_limit` | `60` | 内存中保留的近期战斗事件数量，用于生成观测；累计战斗摘要独立保留 |
-| `max_prompt_characters` | `60000` | 提示词总字符上限；超限优先移除较早事件，并标注省略数量 |
+| `prompt_history_limit` | `100` | 生成历史最多取最新 k 张，范围 0–1000；按生成顺序，不区分状态；0 不发送历史 |
+| `max_prompt_characters` | `60000` | 提示词总字符上限；超限时从生成历史移除最早记录，保留最新记录；必要观测仍超限则报错 |
 | `record_combat` | 已移除 | 仅兼容读取旧配置，值为 `true` 也不会写入战斗日志；新示例配置省略此字段 |
 | `record_generation` | `true` | 在 `data/generation` 记录 LLM 调用和奖励审计 |
 | `record_generation_prompts` | `true` | 在调用日志中保存提示词；关闭后仍记录调用次数、耗时、结果和失败原因，需开启 `record_generation` |

@@ -21,7 +21,7 @@ internal sealed class GeneratedExecutionContext
     internal CardModel? EventCard { get; init; }
     internal CardModel? OriginCard { get; init; }
     internal Creature? EventTarget { get; init; }
-    internal int EventAmount { get; init; }
+    internal decimal EventAmount { get; init; }
     internal bool Triggered { get; init; }
     internal int DamageDealt { get; set; }
     internal decimal[] Amounts { get; }
@@ -34,14 +34,14 @@ internal sealed class GeneratedExecutionContext
         PaidEnergy = play?.Resources.EnergySpent ?? 0; PaidStars = play?.Resources.StarsSpent ?? 0;
         Amounts = amounts ?? source.ActiveForm.AllEffects.Select((_, i) => source.DynamicVars[$"E{i}"].BaseValue).ToArray();
     }
-    internal int Read(NumberExpression n, Creature? target = null)
+    internal decimal Read(NumberExpression n, Creature? target = null)
     {
         var owner = Source.Owner;
         var creature = n.Of switch { "osty" => owner.Osty, "target" => target ?? EventTarget ?? Play?.Target, _ => owner.Creature };
         return n.Stat switch
         {
             "hp" => creature?.CurrentHp ?? 0, "max_hp" => creature?.MaxHp ?? 0, "block" => creature?.Block ?? 0,
-            "power" => checked((int)(creature?.Powers.FirstOrDefault(p => p.Id == NativeMechanics.Power(n.Id!).Id)?.Amount ?? 0)),
+            "power" => creature?.Powers.FirstOrDefault(p => p.Id == NativeMechanics.Power(n.Id!).Id)?.Amount ?? 0,
             "energy" => owner.PlayerCombatState?.Energy ?? 0, "stars" => owner.PlayerCombatState?.Stars ?? 0,
             "hand_size" => PileType.Hand.GetPile(owner).Cards.Count, "draw_size" => PileType.Draw.GetPile(owner).Cards.Count,
             "discard_size" => PileType.Discard.GetPile(owner).Cards.Count, "exhaust_size" => PileType.Exhaust.GetPile(owner).Cards.Count,
@@ -50,7 +50,8 @@ internal sealed class GeneratedExecutionContext
             _ => throw new FormatException("Unknown stat.")
         };
     }
-    internal int Number(NumberExpression? value, int fallback = 0, Creature? target = null) => EffectRules.Evaluate(value, n => Read(n, target), fallback);
+    internal decimal Number(NumberExpression? value, decimal fallback = 0, Creature? target = null) => EffectRules.Evaluate(value, n => Read(n, target), fallback);
+    internal int Count(NumberExpression? value, int fallback = 1) => EffectRules.Count(Number(value, fallback));
     internal bool Matches(EffectCondition? condition, Creature? target = null) => EffectRules.Matches(condition, n => Read(n, target));
     internal decimal Amount(CardEffect effect, int index, Creature? target = null) => effect.Amount?.Value is not null ? Amounts[index] : Amounts[index] + Number(effect.Amount, target: target);
 }
@@ -72,7 +73,7 @@ internal static class GeneratedEffectExecutor
             for (int i = 0; i < effects.Length; i++)
             {
                 var effect = effects[i];
-                int repetitions = Math.Max(0, context.Number(effect.Repeat, 1));
+                int repetitions = context.Count(effect.Repeat);
                 for (int r = 0; r < repetitions; r++)
                 {
                     Step();
@@ -121,7 +122,7 @@ internal static class GeneratedEffectExecutor
                     case EffectKind.Move: await CardPileCmd.Add(card, NativeMechanics.Pile(e.To!.Value), Position(e)); break;
                     case EffectKind.Upgrade: if (card.IsUpgradable) CardCmd.Upgrade(card); break;
                     case EffectKind.Copy:
-                        for (int n = 0; n < Math.Max(0, c.Number(e.Count, 1)); n++)
+                        for (int n = 0, count = c.Count(e.Count); n < count; n++)
                         {
                             Step();
                             await CardPileCmd.AddGeneratedCardToCombat(card.CreateClone(), NativeMechanics.Pile(e.To!.Value), owner, Position(e));
@@ -135,7 +136,7 @@ internal static class GeneratedEffectExecutor
                         break;
                     case EffectKind.RemoveKeyword: CardCmd.RemoveKeyword(card, NeowGeneratedCard.NativeKeyword(e.Keyword!.Value)); break;
                     case EffectKind.SetCost:
-                        int cost = Math.Max(0, c.Number(e.Amount));
+                        int cost = c.Count(e.Amount, 0);
                         if (e.Until == LifetimeKind.Turn) card.EnergyCost.SetThisTurn(cost); else card.EnergyCost.SetThisCombat(cost);
                         break;
                 }
@@ -188,15 +189,15 @@ internal static class GeneratedEffectExecutor
                     await PowerCmd.Apply(c.Choice, power.ToMutable(), target, e.Until == LifetimeKind.Turn ? Math.Abs(amount) : amount, owner.Creature, source);
                     break;
                 case EffectKind.Summon: await OstyCmd.Summon(c.Choice, owner, amount, source); break;
-                case EffectKind.Forge: await ForgeCmd.Forge((int)amount, owner, source); break;
+                case EffectKind.Forge: await ForgeCmd.Forge(EffectRules.Count(amount), owner, source); break;
                 case EffectKind.Channel:
-                    for (int n = 0; n < amount; n++) { Step(); await NativeMechanics.Channel(c.Choice, owner, e.Orb!); }
+                    for (int n = 0, count = EffectRules.Count(amount); n < count; n++) { Step(); await NativeMechanics.Channel(c.Choice, owner, e.Orb!); }
                     break;
-                case EffectKind.OrbSlots: if (amount >= 0) await OrbCmd.AddSlots(owner, (int)amount); else OrbCmd.RemoveSlots(owner, -(int)amount); break;
+                case EffectKind.OrbSlots: if (amount >= 0) await OrbCmd.AddSlots(owner, EffectRules.Integer(amount)); else OrbCmd.RemoveSlots(owner, -EffectRules.Integer(amount)); break;
                 case EffectKind.Heal: await CreatureCmd.Heal(target, amount); break;
                 case EffectKind.LoseHp: await CreatureCmd.Damage(c.Choice, target, amount, ValueProp.Unblockable | ValueProp.Unpowered, owner.Creature, source, c.Play); break;
                 case EffectKind.CreateCard:
-                    for (int n = 0; n < Math.Max(0, c.Number(e.Count, 1)); n++)
+                    for (int n = 0, count = c.Count(e.Count); n < count; n++)
                     {
                         Step();
                         var generated = await Create(c, e.Card!);
@@ -236,7 +237,7 @@ internal static class GeneratedEffectExecutor
         bool Filter(CardModel card) => card != c.Source && NativeMechanics.Matches(card, target.Filter)
             && (kind != EffectKind.Upgrade || card.IsUpgradable) && (kind != EffectKind.Transform || card.IsTransformable);
         var candidates = pile.Cards.Where(Filter).ToArray();
-        int count = Math.Min(candidates.Length, Math.Max(0, c.Number(target.Count, 1)));
+        int count = Math.Min(candidates.Length, c.Count(target.Count));
         if (target.Pick == SelectionMode.All) return candidates;
         if (count == 0) return [];
         if (target.Pick == SelectionMode.First) return candidates.Take(count).ToArray();

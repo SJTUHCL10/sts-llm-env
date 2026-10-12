@@ -199,7 +199,7 @@ internal sealed class ForgeRuntime(string root, ForgeConfig config)
         string key = AtomicStore.Key($"pool-v1|{RunStartTime()}|{run.Rng.StringSeed}|{run.AscensionLevel}|{player.Character.Id.Entry}");
         if (_pool?.RunKey == key) return;
         _pool?.Close();
-        _pool = new CandidatePool(Path.Combine(root, "data", "runs", key + ".json"), key, config.CandidatePoolCapacity);
+        _pool = new CandidatePool(Path.Combine(root, "data", "runs", key + ".json"), key, config.CandidatePoolCapacity, config.PromptHistoryLimit);
     }
     internal void StopRun()
     {

@@ -17,6 +17,7 @@ using MegaCrit.Sts2.Core.Models.Characters;
 using MegaCrit.Sts2.Core.Models.Acts;
 using MegaCrit.Sts2.Core.Models.Encounters;
 using MegaCrit.Sts2.Core.Models.Powers;
+using MegaCrit.Sts2.Core.Models.Monsters;
 using MegaCrit.Sts2.Core.Models.Relics;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves;
@@ -28,6 +29,8 @@ using MegaCrit.Sts2.Core.Hooks;
 using MegaCrit.Sts2.Core.Localization.DynamicVars;
 using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.ValueProps;
+using MegaCrit.Sts2.Core.Rooms;
+using MegaCrit.Sts2.Core.Models.Events;
 
 try
 {
@@ -158,7 +161,11 @@ static class Smoke
         {
             run.CurrentActIndex = act;
             foreach (var boss in bosses)
-                Check(ForgeRuntime.HasCombatCardReward(new CombatState(boss, run)) == (act < 2));
+            {
+                var state = new CombatState(boss, run);
+                Check(ForgeRuntime.HasCombatCardReward(state) == (act < 2));
+                Check(new StateCapture().Detach(StateCapture.CaptureEncounter(state, run)).GetProperty("type").GetString() == "boss");
+            }
             Check(ForgeRuntime.HasCombatCardReward(new CombatState(ModelDb.Encounter<AxebotsNormal>().ToMutable(), run)));
             Check(ForgeRuntime.HasCombatCardReward(new CombatState(ModelDb.Encounter<MechaKnightElite>().ToMutable(), run)));
         }
@@ -166,6 +173,18 @@ static class Smoke
         var shortRun = RunState.CreateForTest([Player.CreateForNewRun<Regent>(UnlockState.all, 4)],
             acts: [ModelDb.Act<Underdocks>()], seed: "SHORT");
         Check(!ForgeRuntime.HasCombatCardReward(new CombatState(bosses[0], shortRun)));
+        foreach (var (encounter, type) in new (EncounterModel, string)[] { (ModelDb.Encounter<AxebotsNormal>().ToMutable(), "monster"), (ModelDb.Encounter<MechaKnightElite>().ToMutable(), "elite") })
+        {
+            var state = new CombatState(encounter, run);
+            var capture = new StateCapture();
+            Check(capture.Detach(StateCapture.CaptureEncounter(state, run)).GetProperty("type").GetString() == type);
+            run.PushRoom(new EventRoom(ModelDb.Event<WoodCarvings>()));
+            run.PushRoom(new CombatRoom(state));
+            var info = capture.Detach(StateCapture.CaptureEncounter(state, run));
+            Check(info.GetProperty("source").GetString() == "event" && info.GetProperty("event_id").GetString() == "WOOD_CARVINGS");
+            run.PopCurrentRoom(); run.PopCurrentRoom();
+            Check(capture.Detach(StateCapture.CaptureEncounter(state, run)).GetProperty("source").GetString() == "map");
+        }
         Console.WriteLine("PASS final-act bosses skip generation, earlier bosses and normal/elite combats remain eligible");
     }
 
@@ -253,6 +272,7 @@ static class Smoke
             Console.WriteLine("PASS X-energy/X-star descriptions retain symbols in hand/draw piles and through upgrade/save/load");
             CheckBlockContracts(card, owner, guard);
             CheckTextContracts();
+            CheckOstyContracts(card, owner, other, combat);
             var effect = new CardEffect { Kind = EffectKind.Damage, Target = "all_enemies", Amount = 7 };
             var ruleForm = new CardForm { Cost = new() { Energy = 1 }, Rules = [new() { Trigger = new() { Event = RuleEvent.TurnEnd }, Effects = [effect] }] };
             card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "星幕", Type = ForgeCardType.Power, Rarity = ForgeRarity.Rare, Forms = [ruleForm, ruleForm] });
@@ -270,10 +290,116 @@ static class Smoke
             Check(NativeMechanics.Matches(NativeMechanics.Card("soul"), new() { Id = "soul", Type = "skill" }));
             Console.WriteLine("PASS native event ordinals include earlier events and snapshot filter properties before later upgrades");
             CheckCombatRewardEligibility(Player.CreateForNewRun<Regent>(UnlockState.all, 3));
+            CheckQuantityAndDecimalContracts(owner, other, combat);
         }
         finally { CombatManager.Instance.History.Clear(); turnField.SetValue(CombatManager.Instance, previous); guard.UnpatchAll(guard.Id); }
     }
     private static bool SkipSaveManager(ref SaveManager? __result) { __result = null; return false; }
+    private static void CheckQuantityAndDecimalContracts(Player owner, Player other, CombatState combat)
+    {
+        var card = combat.CreateCard<NeowGeneratedCard>(owner);
+        CardForm Form(int count) => new()
+        {
+            Cost = new() { Energy = 1 }, Effects =
+            [
+                new() { Kind = EffectKind.Damage, Target = "enemy", Amount = 6, Repeat = count },
+                new() { Kind = EffectKind.CreateCard, Card = new() { Id = "shiv" }, To = CardPileName.Hand, Count = count },
+                new() { Kind = EffectKind.Exhaust, Target = new() { Pile = CardPileName.Hand, Pick = SelectionMode.Random, Count = count } }
+            ]
+        };
+        card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "暗影飞刃", Type = ForgeCardType.Attack, Rarity = ForgeRarity.Common, Forms = [Form(1), Form(2)] });
+        Check(card.GetDescriptionForUpgradePreview().Contains("1张小刀"));
+        card.UpgradeInternal(); card.FinalizeUpgradeInternal();
+        var flags = card.BeginUpgradePreview();
+        try
+        {
+            string text = card.GetDescriptionForUpgradePreview();
+            Check(text.Contains("[green]2[/green]张小刀") && text.Contains("[green]2[/green]次") && text.Contains("随机[green]2[/green]张牌"));
+            Check(!text.Contains("[green]6[/green]"));
+        }
+        finally { card.EndUpgradePreview(flags); }
+        Check(card.DynamicVars.Values.All(v => !v.WasJustUpgraded));
+        var restored = (NeowGeneratedCard)CardModel.FromSerializable(card.ToSerializable()); restored.Owner = owner;
+        flags = restored.BeginUpgradePreview();
+        try { Check(restored.GetDescriptionForUpgradePreview().Contains("[green]2[/green]张小刀")); }
+        finally { restored.EndUpgradePreview(flags); }
+        var capture = new StateCapture();
+        Check(capture.Detach(capture.Card(card)).GetProperty("origin").GetString() == "generated");
+        Check(capture.Detach(capture.Card(NativeMechanics.Card("shiv"))).GetProperty("origin").GetString() == "native");
+        var summary = new CombatSummary();
+        // Capture the real card; keep the actor detached so headless tests avoid Godot icon assets on its powers.
+        summary.Add(ObservationProjector.CompactEvent(System.Text.Json.JsonSerializer.SerializeToElement(new { detail = new { type = "CardPlayFinishedEntry",
+            fields = new { Actor = new { id = owner.Character.Id.Entry }, CardPlay = new { card = capture.Detach(capture.Card(card)) } } } })), owner.Character.Id.Entry);
+        Check(summary.Snapshot().GetProperty("cards_played")[0].GetProperty("origin").GetString() == "generated");
+
+        owner.Creature.SetMaxHpInternal(79); owner.Creature.SetCurrentHpInternal(39);
+        var half = new NumberExpression { Div = [new() { Stat = "max_hp" }, 2] };
+        var execution = new GeneratedExecutionContext(card, new BlockingPlayerChoiceContext());
+        Check(execution.Number(half) == 39.5m && execution.Matches(new() { Op = Comparison.Lt, Left = new() { Stat = "hp" }, Right = half }));
+        var form = new CardForm { Cost = new(), Effects = [new() { Kind = EffectKind.Damage, Target = "enemy", Amount = new() { Mul = [new() { Stat = "max_hp" }, 0.5m] } }, new() { Kind = EffectKind.Draw, Amount = 1.5m }] };
+        card.DowngradeInternal();
+        card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "小数试炼", Type = ForgeCardType.Attack, Rarity = ForgeRarity.Common, Forms = [form, form] });
+        Check(card.GetDescriptionForPile(PileType.Deck).Contains("抽2张牌"));
+        owner.PlayerCombatState!.Hand.AddInternal(card);
+        card.UpdateDynamicVarPreview(CardPreviewMode.Normal, other.Creature, card.DynamicVars);
+        Check(new GeneratedExecutionContext(card, new BlockingPlayerChoiceContext()).Amount(form.Immediate[0], 0) == 39.5m);
+        Check(card.DynamicVars["E1"].PreviewValue == 2 && card.GetDescriptionForPile(PileType.Hand).Contains("抽2张牌"));
+        owner.PlayerCombatState.Hand.RemoveInternal(card);
+        Console.WriteLine("PASS quantity upgrade highlights and reload, generated origins, decimal HP comparisons and native draw preview");
+    }
+    private static void CheckOstyContracts(NeowGeneratedCard card, Player owner, Player attacker, CombatState combat)
+    {
+        var osty = combat.CreateCreature(ModelDb.Monster<Osty>().ToMutable(), CombatSide.Player, null);
+        combat.AddCreature(osty); owner.PlayerCombatState!.AddPetInternal(osty);
+        osty.SetMaxHpInternal(30); osty.SetCurrentHpInternal(30);
+        ((DieForYouPower)ModelDb.Power<DieForYouPower>().ToMutable()).ApplyInternal(osty, 1, silent: true);
+        osty.GainBlockInternal(100);
+        var thorns = (ThornsPower)ModelDb.Power<ThornsPower>().ToMutable(); thorns.ApplyInternal(osty, 3, silent: true);
+        var vulnerable = (VulnerablePower)ModelDb.Power<VulnerablePower>().ToMutable(); vulnerable.ApplyInternal(osty, 1, silent: true);
+        // Native order: damage modifiers / thorns / player's block, then redirect and HP-loss hooks.
+        decimal damage = Hook.ModifyDamage(owner.RunState, combat, owner.Creature, attacker.Creature, 10,
+            ValueProp.Move, null, null, ModifyDamageHookType.All, CardPreviewMode.None, out _);
+        Check(damage == 10); // Osty's Vulnerable does not modify a hit aimed at the player.
+        int attackerHp = attacker.Creature.CurrentHp;
+        thorns.BeforeDamageReceived(new BlockingPlayerChoiceContext(), owner.Creature, damage, ValueProp.Move, attacker.Creature, null).GetAwaiter().GetResult();
+        Check(attacker.Creature.CurrentHp == attackerHp);
+        Check(Hook.ModifyUnblockedDamageTarget(combat, owner.Creature, 10, ValueProp.Move, attacker.Creature) == osty);
+        Check(Hook.ModifyUnblockedDamageTarget(combat, owner.Creature, 10, ValueProp.Unpowered, attacker.Creature) == owner.Creature);
+        Check(Hook.ModifyHpLost(owner.RunState, combat, osty, 10, ValueProp.Move, attacker.Creature, null, HpLossHookPhase.AfterOsty, out _) == 10);
+        Check(osty.Block == 100);
+        var buffer = (BufferPower)ModelDb.Power<BufferPower>().ToMutable(); buffer.ApplyInternal(osty, 1, silent: true);
+        Check(Hook.ModifyHpLost(owner.RunState, combat, osty, 10, ValueProp.Move, attacker.Creature, null, HpLossHookPhase.AfterOsty, out _) == 0);
+        osty.RemovePowerInternal(buffer);
+        var intangible = (IntangiblePower)ModelDb.Power<IntangiblePower>().ToMutable(); intangible.ApplyInternal(osty, 1, silent: true);
+        Check(Hook.ModifyHpLost(owner.RunState, combat, osty, 10, ValueProp.Move, attacker.Creature, null, HpLossHookPhase.AfterOsty, out _) == 1);
+        var artifact = (ArtifactPower)ModelDb.Power<ArtifactPower>().ToMutable(); artifact.ApplyInternal(osty, 1, silent: true);
+        Check(artifact.TryModifyPowerAmountReceived(ModelDb.Power<WeakPower>(), osty, 1, null, out decimal blockedPower) && blockedPower == 0);
+        Check(!artifact.TryModifyPowerAmountReceived(ModelDb.Power<StrengthPower>(), osty, 1, null, out _));
+        var strength = (StrengthPower)ModelDb.Power<StrengthPower>().ToMutable(); strength.ApplyInternal(osty, 2, silent: true);
+        var vigor = (VigorPower)ModelDb.Power<VigorPower>().ToMutable(); vigor.ApplyInternal(osty, 3, silent: true);
+        var weak = (WeakPower)ModelDb.Power<WeakPower>().ToMutable(); weak.ApplyInternal(osty, 1, silent: true);
+        Check(strength.ModifyDamageAdditive(attacker.Creature, 10, ValueProp.Move, osty, card, null) == 2);
+        Check(vigor.ModifyDamageAdditive(attacker.Creature, 10, ValueProp.Move, osty, card, null) == 3);
+        Check(weak.ModifyDamageMultiplicative(attacker.Creature, 10, ValueProp.Move, osty, card, null) == 0.75m);
+        Check(strength.ModifyDamageAdditive(attacker.Creature, 10, ValueProp.Unpowered, osty, card, null) == 0);
+        Check(vigor.ModifyDamageAdditive(attacker.Creature, 10, ValueProp.Unpowered, osty, card, null) == 0);
+        Check(weak.ModifyDamageMultiplicative(attacker.Creature, 10, ValueProp.Unpowered, osty, card, null) == 1);
+        // Reward text retains the expression; a hand preview still displays the resolved number.
+        var form = new CardForm { Cost = new() { Energy = 1 }, Effects = [new() { Kind = EffectKind.Block, Amount = new() { Stat = "hp", Of = "osty" } }] };
+        var description = (NeowGeneratedCard)ModelDb.Card<NeowGeneratedCard>().ToMutable(); description.Owner = owner;
+        description.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "缚魂护壁", Type = ForgeCardType.Skill, Rarity = ForgeRarity.Uncommon, Forms = [form, form] });
+        Check(description.RuntimeDescriptionText(true) == "获得等量于奥斯提的当前生命值的格挡。");
+        PileType.Hand.GetPile(owner).AddInternal(description);
+        description.UpdateDynamicVarPreview(CardPreviewMode.Normal, null, description.DynamicVars);
+        Check(description.GetDescriptionForPile(PileType.Hand).Contains("点格挡"));
+        var ruleForm = form with { Effects = null, Rules = [new() { Trigger = new() { Event = RuleEvent.Summoned }, Effects = [new() { Kind = EffectKind.Damage, Actor = "osty", Target = "random_enemy", Amount = new() { Stat = "event_amount" } }] }] };
+        description.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "噬魂回响", Type = ForgeCardType.Power, Rarity = ForgeRarity.Uncommon, Forms = [ruleForm, ruleForm] });
+        Check(description.RuntimeDescriptionText(true) == "召唤后，奥斯提对随机敌人造成等量于本次召唤量的伤害。");
+        var restored = (NeowGeneratedCard)CardModel.FromSerializable(description.ToSerializable());
+        Check(restored.RuntimeDescriptionText(true) == description.RuntimeDescriptionText(true));
+        combat.RemoveCreature(osty);
+        Console.WriteLine("PASS native Osty redirection, ineffective block/thorns/vulnerable, effective powers and symbolic text/save contracts");
+    }
     private static void CheckBlockContracts(NeowGeneratedCard card, Player owner, Harmony guard)
     {
         // Keep the native block hooks and rounding; bypass only audiovisual command work.

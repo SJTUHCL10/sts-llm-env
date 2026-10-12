@@ -39,7 +39,7 @@ public enum Comparison { Eq, Ne, Gt, Ge, Lt, Le }
 [JsonConverter(typeof(NumberExpressionConverter))]
 public sealed record NumberExpression
 {
-    [JsonIgnore] public int? Value { get; init; }
+    [JsonIgnore] public decimal? Value { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Stat { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -55,14 +55,15 @@ public sealed record NumberExpression
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public NumberExpression[]? Div { get; init; }
     public static implicit operator NumberExpression(int value) => new() { Value = value };
+    public static implicit operator NumberExpression(decimal value) => new() { Value = value };
 }
 internal sealed class NumberExpressionConverter : JsonConverter<NumberExpression>
 {
     public override NumberExpression Read(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options)
     {
-        if (reader.TokenType == JsonTokenType.Number) return new() { Value = reader.GetInt32() };
+        if (reader.TokenType == JsonTokenType.Number) return new() { Value = reader.GetDecimal() };
         using var document = JsonDocument.ParseValue(ref reader);
-        if (document.RootElement.ValueKind != JsonValueKind.Object) throw new JsonException("Expected integer or expression.");
+        if (document.RootElement.ValueKind != JsonValueKind.Object) throw new JsonException("Expected decimal number or expression.");
         string? stat = null, of = null, id = null;
         NumberExpression[]? add = null, sub = null, mul = null, div = null;
         var seen = new HashSet<string>();
@@ -85,7 +86,7 @@ internal sealed class NumberExpressionConverter : JsonConverter<NumberExpression
     }
     public override void Write(Utf8JsonWriter writer, NumberExpression value, JsonSerializerOptions options)
     {
-        if (value.Value is int n) { writer.WriteNumberValue(n); return; }
+        if (value.Value is decimal n) { writer.WriteNumberValue(n); return; }
         writer.WriteStartObject();
         if (value.Stat is not null) writer.WriteString("stat", value.Stat);
         if (value.Of is not null) writer.WriteString("of", value.Of);

@@ -40,7 +40,7 @@ public static class ObservationProjector
         return result;
     }
     // A design view, not a combat/session serialization. Unknown fields are omitted, never replaced with zero.
-    public static JsonElement Project(GenerationContext context, int historyLimit = 12)
+    public static JsonElement Project(GenerationContext context, int historyLimit = 100)
     {
         var run = JsonNode.Parse(context.Run.GetRawText()) as JsonObject ?? new();
         var state = JsonNode.Parse(context.State.GetRawText()) as JsonObject ?? new();
@@ -77,7 +77,10 @@ public static class ObservationProjector
                 }
                 return (JsonNode)item;
             }).ToArray());
-        var combat = Pick(state, "round");
+        var combat = Pick(state, "round", "encounter");
+        // Older/offline captures may only have the resolved room type.
+        if (!combat.ContainsKey("encounter") && run["room_type"] is { } roomType)
+            combat["encounter"] = new JsonObject { ["type"] = roomType.ToString().ToLowerInvariant() };
         if (state["player"] is JsonObject player) combat["player"] = Creature(player);
         else foreach (string key in new[] { "hp", "max_hp" }) if (state[key] is { } field) combat[key] = field.DeepClone();
         if (state["player_combat"] is JsonObject pcs)
@@ -116,7 +119,7 @@ public static class ObservationProjector
             if (node is JsonArray array) return new JsonArray(array.Select(Compact).ToArray());
             if (node is not JsonObject obj) return node?.DeepClone();
             if (obj.ContainsKey("hp") && obj.ContainsKey("side")) return Pick(obj, "id", "hp", "block", "alive");
-            if (obj.ContainsKey("rarity") && obj.ContainsKey("cost")) return Pick(obj, "id", "title", "type");
+            if (obj.ContainsKey("rarity") && obj.ContainsKey("cost")) return Pick(obj, "id", "title", "type", "origin");
             var result = new JsonObject();
             foreach (var p in obj) if (p.Key is not ("state" or "powers" or "description" or "generated_definition" or "FollowUpState" or "FollowUpStateId")) result[p.Key] = Compact(p.Value);
             return result;
@@ -144,7 +147,8 @@ public sealed class CombatSummary
             string key = cardId + "|" + title;
             var old = _plays.GetValueOrDefault(key);
             _plays[key] = (title, card.TryGetProperty("type", out var type) ? type.GetString() ?? "" : "",
-                card.TryGetProperty("origin", out var origin) ? origin.GetString() ?? "native" : "native", old.Count + 1);
+                card.TryGetProperty("origin", out var origin) ? origin.GetString() ?? "native"
+                    : cardId == "NEOW_GENERATED_CARD" ? "generated" : "native", old.Count + 1);
             if (play.TryGetProperty("resources", out var resources))
             { _starsSpent += Number(resources, "StarsSpent"); _energySpent += Number(resources, "EnergySpent"); }
         }

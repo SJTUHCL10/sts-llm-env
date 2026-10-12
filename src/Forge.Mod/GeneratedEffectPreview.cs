@@ -34,7 +34,14 @@ internal static class GeneratedEffectPreview
             if (!triggered) amount = EnchantBlock(card, amount);
             if (hooks) amount = Hook.ModifyBlock(card.CombatState!, card.Owner.Creature, amount, BlockProps(triggered), triggered ? null : card, null, out _);
         }
-        return effect.Kind is EffectKind.ApplyPower or EffectKind.OrbSlots ? amount : Math.Max(0, amount);
+        return effect.Kind switch
+        {
+            EffectKind.Draw => decimal.Ceiling(Math.Max(0, amount)),
+            EffectKind.Forge or EffectKind.Channel or EffectKind.SetCost => EffectRules.Count(amount),
+            EffectKind.OrbSlots => EffectRules.Integer(amount),
+            EffectKind.ApplyPower => amount,
+            _ => Math.Max(0, amount)
+        };
     }
     internal static void Update(NeowGeneratedCard card, int index, DynamicVar variable, CardPreviewMode mode, Creature? target, bool runGlobalHooks)
     {
@@ -46,7 +53,7 @@ internal static class GeneratedEffectPreview
         variable.PreviewValue = Modify(card, effect, amount, target, mode, runGlobalHooks, triggered);
     }
     // Deterministic preceding resource effects only. Do not consume RNG, choose cards, channel or apply powers in previews.
-    private static decimal Resolve(NeowGeneratedCard card, int index, Creature? target, CardPreviewMode mode)
+    internal static decimal Resolve(NeowGeneratedCard card, int index, Creature? target, CardPreviewMode mode, NumberExpression? quantity = null)
     {
         var owner = card.Owner;
         var state = owner.PlayerCombatState!;
@@ -57,11 +64,11 @@ internal static class GeneratedEffectPreview
         int paidStars = card.HasStarCostX ? stars : Math.Min(stars, Math.Max(0, card.GetStarCostWithModifiers()));
         if (inHand) { hand--; stars -= paidStars; energy -= paidEnergy; }
         var context = new GeneratedExecutionContext(card, new MegaCrit.Sts2.Core.GameActions.Multiplayer.BlockingPlayerChoiceContext());
-        int Read(NumberExpression n) => n.Stat switch
+        decimal Read(NumberExpression n) => n.Stat switch
         {
             "hand_size" => hand, "stars" => stars, "energy" => energy,
             "paid_energy" => paidEnergy, "paid_stars" => paidStars,
-            "block" when n.Of is null or "self" => (int)block,
+            "block" when n.Of is null or "self" => block,
             _ => context.Read(n, target)
         };
         decimal Amount(CardEffect effect, int slot) => effect.Amount?.Value is not null ? card.DynamicVars[$"E{slot}"].BaseValue
@@ -71,7 +78,7 @@ internal static class GeneratedEffectPreview
             {
                 var preceding = card.ActiveForm.Immediate[i];
                 if (!EffectRules.Matches(preceding.Condition, Read)) continue;
-                int repetitions = Math.Max(0, EffectRules.Evaluate(preceding.Repeat, Read, 1));
+                int repetitions = EffectRules.Count(EffectRules.Evaluate(preceding.Repeat, Read, 1));
                 if (repetitions > 4096) break;
                 for (int r = 0; r < repetitions; r++)
                 {
@@ -80,11 +87,11 @@ internal static class GeneratedEffectPreview
                     {
                         case EffectKind.Block when preceding.Target?.Ref is null or "self": block = Math.Min(999999999m, block + decimal.Floor(Modify(card, preceding, amount, target, mode, true, false))); break;
                         case EffectKind.GainStars: stars = (int)Math.Min(int.MaxValue, stars + amount); break;
-                        case EffectKind.GainEnergy: energy = (int)Math.Min(int.MaxValue, energy + amount); break;
+                        case EffectKind.GainEnergy: energy = (int)Math.Min(999999999m, energy + amount); break;
                     }
                 }
             }
-        return Amount(card.ActiveForm.AllEffects[index], index);
+        return quantity is null ? Amount(card.ActiveForm.AllEffects[index], index) : EffectRules.Evaluate(quantity, Read, 1);
     }
 }
 internal interface IGeneratedPreviewVar { void SetUpgradeHighlight(bool value); }
@@ -101,5 +108,16 @@ internal sealed class GeneratedBlockVar(string name, decimal amount, int index, 
 internal sealed class GeneratedAmountVar(string name, decimal amount, int index) : DynamicVar(name, amount), IGeneratedPreviewVar
 {
     public override void UpdateCardPreview(CardModel card, CardPreviewMode previewMode, Creature? target, bool runGlobalHooks) => GeneratedEffectPreview.Update((NeowGeneratedCard)card, index, this, previewMode, target, runGlobalHooks);
+    public void SetUpgradeHighlight(bool value) => WasJustUpgraded = value;
+}
+internal sealed class GeneratedCountVar(string name, NumberExpression? expression, int index) : DynamicVar(name, expression?.Value is decimal value ? EffectRules.Count(value) : expression is null ? 1 : 0), IGeneratedPreviewVar
+{
+    public override void UpdateCardPreview(CardModel card, CardPreviewMode previewMode, Creature? target, bool runGlobalHooks)
+    {
+        var generated = (NeowGeneratedCard)card;
+        PreviewValue = runGlobalHooks && expression is not null && GeneratedEffectPreview.CanResolve(generated, index)
+            ? EffectRules.Count(GeneratedEffectPreview.Resolve(generated, index, target, previewMode, expression)) : BaseValue;
+        EnchantedValue = BaseValue;
+    }
     public void SetUpgradeHighlight(bool value) => WasJustUpgraded = value;
 }

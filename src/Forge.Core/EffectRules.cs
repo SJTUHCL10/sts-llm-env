@@ -2,26 +2,29 @@ namespace Forge.Core;
 
 public static class EffectRules
 {
-    public static int Evaluate(NumberExpression? value, Func<NumberExpression, int> read, int fallback = 0)
+    public static decimal Evaluate(NumberExpression? value, Func<NumberExpression, decimal> read, decimal fallback = 0)
     {
         if (value is null) return fallback;
-        if (value.Value is int literal) return literal;
+        if (value.Value is decimal literal) return literal;
         if (value.Stat is not null) return read(value);
-        if (value.Add is { } add) return add.Aggregate(0, (total, node) => checked(total + Evaluate(node, read)));
+        if (value.Add is { } add) return add.Aggregate(0m, (total, node) => checked(total + Evaluate(node, read)));
         if (value.Sub is { } sub) return checked(Evaluate(sub[0], read) - Evaluate(sub[1], read));
-        if (value.Mul is { } mul) return mul.Aggregate(1, (total, node) => checked(total * Evaluate(node, read)));
+        if (value.Mul is { } mul) return mul.Aggregate(1m, (total, node) => checked(total * Evaluate(node, read)));
         var div = value.Div ?? throw new FormatException("Invalid expression.");
-        int denominator = Evaluate(div[1], read);
+        decimal denominator = Evaluate(div[1], read);
         if (denominator == 0) throw new InvalidOperationException("Dynamic division by zero.");
-        return checked((int)decimal.Floor((decimal)Evaluate(div[0], read) / denominator));
+        return Evaluate(div[0], read) / denominator;
     }
-    public static bool Matches(EffectCondition? condition, Func<NumberExpression, int> read)
+    // Counts are discrete; rounding happens at their use site, after the complete expression.
+    public static int Count(decimal value) => checked((int)decimal.Truncate(Math.Max(0, value)));
+    public static int Integer(decimal value) => checked((int)decimal.Truncate(value));
+    public static bool Matches(EffectCondition? condition, Func<NumberExpression, decimal> read)
     {
         if (condition is null) return true;
         if (condition.All is { } all) return all.All(c => Matches(c, read));
         if (condition.Any is { } any) return any.Any(c => Matches(c, read));
         if (condition.Not is { } not) return !Matches(not, read);
-        int left = Evaluate(condition.Left, read), right = Evaluate(condition.Right, read);
+        decimal left = Evaluate(condition.Left, read), right = Evaluate(condition.Right, read);
         return condition.Op switch
         {
             Comparison.Eq => left == right, Comparison.Ne => left != right,

@@ -67,12 +67,38 @@ public sealed class NeowGeneratedCard : CardModel
     public override IEnumerable<CardKeyword> CanonicalKeywords => ActiveForm.Tags.Select(NativeKeyword);
     protected override HashSet<CardTag> CanonicalTags => ActiveForm.AllEffects.Any(e => e.Actor == "osty") ? [CardTag.OstyAttack] : [];
     internal static CardKeyword NativeKeyword(ForgeKeyword keyword) => Enum.Parse<CardKeyword>(keyword.ToString());
-    protected override IEnumerable<DynamicVar> CanonicalVars => ActiveForm.AllEffects.Select((e, i) => e.Kind switch
+    protected override IEnumerable<DynamicVar> CanonicalVars => CreateVars();
+    private IEnumerable<DynamicVar> CreateVars()
     {
-        EffectKind.Damage => (DynamicVar)new GeneratedDamageVar($"E{i}", e.Amount?.Value ?? 0, e, i),
-        EffectKind.Block => new GeneratedBlockVar($"E{i}", e.Amount?.Value ?? 0, i, i >= ActiveForm.Immediate.Length),
-        _ => new GeneratedAmountVar($"E{i}", e.Amount?.Value ?? 0, i)
-    });
+        for (int i = 0; i < ActiveForm.AllEffects.Length; i++)
+        {
+            var e = ActiveForm.AllEffects[i];
+            yield return e.Kind switch
+            {
+                EffectKind.Damage => (DynamicVar)new GeneratedDamageVar($"E{i}", e.Amount?.Value ?? 0, e, i),
+                EffectKind.Block => new GeneratedBlockVar($"E{i}", e.Amount?.Value ?? 0, i, i >= ActiveForm.Immediate.Length),
+                _ => new GeneratedAmountVar($"E{i}", e.Amount?.Value ?? 0, i)
+            };
+            if (e.Kind is EffectKind.CreateCard or EffectKind.Copy) yield return new GeneratedCountVar($"C{i}", e.Count, i);
+            if (e.Repeat is not null) yield return new GeneratedCountVar($"R{i}", e.Repeat, i);
+            if (e.Target?.Pile is not null && e.Target.Pick != SelectionMode.All) yield return new GeneratedCountVar($"T{i}", e.Target.Count, i);
+        }
+    }
+    internal static NumberExpression? NumericSlot(CardEffect effect, char slot) => slot switch
+    {
+        'C' => effect.Count, 'R' => effect.Repeat, 'T' => effect.Target?.Count, _ => effect.Amount
+    };
+    private bool ChangedNumericSlot(string name)
+    {
+        int index = int.Parse(name[1..], System.Globalization.CultureInfo.InvariantCulture);
+        var before = _definition.Forms[0].AllEffects;
+        if (index >= before.Length) return true;
+        var current = ActiveForm.AllEffects[index];
+        var old = before[index];
+        var left = NumericSlot(old, name[0]); var right = NumericSlot(current, name[0]);
+        return old.Kind != current.Kind || Wire.Encode(left ?? (NumberExpression)(name[0] == 'E' ? 0 : 1))
+            != Wire.Encode(right ?? (NumberExpression)(name[0] == 'E' ? 0 : 1));
+    }
     private void RebuildForm(bool preserveCost)
     {
         CardEnergyCost? oldCost = preserveCost ? EnergyCost : null;
@@ -123,9 +149,8 @@ public sealed class NeowGeneratedCard : CardModel
         RebuildForm(true);
         foreach (var keyword in extras) AddKeyword(keyword);
         foreach (var keyword in removed) RemoveKeyword(keyword);
-        for (int i = 0; i < ActiveForm.AllEffects.Length; i++)
-            if (i >= old.AllEffects.Length || Wire.Encode(old.AllEffects[i]) != Wire.Encode(ActiveForm.AllEffects[i]))
-                ((IGeneratedPreviewVar)DynamicVars[$"E{i}"]).SetUpgradeHighlight(true);
+        foreach (var variable in DynamicVars)
+            ((IGeneratedPreviewVar)variable.Value).SetUpgradeHighlight(ChangedNumericSlot(variable.Key));
     }
     protected override void AfterDowngraded() => RebuildForm(true);
     internal LocString RuntimeDescription()
@@ -139,8 +164,19 @@ public sealed class NeowGeneratedCard : CardModel
     }
     internal string RuntimeDescriptionText(bool chinese) => CardText.Render(ActiveForm, chinese,
         i => ActiveForm.AllEffects[i].Amount?.Value is null && !GeneratedEffectPreview.CanResolve(this, i) ? CardText.Number(ActiveForm.AllEffects[i].Amount, chinese, resource: (kind, value) => CardText.ResourceText(kind, value, EnergyIconHelper.GetPrefix(this)))
+            : ActiveForm.AllEffects[i].Kind == EffectKind.Draw ? DrawAmountText(DynamicVars[$"E{i}"])
             : ActiveForm.AllEffects[i].Kind is EffectKind.GainEnergy or EffectKind.GainStars or EffectKind.SetCost or EffectKind.OrbSlots ? DynamicVars[$"E{i}"].ToHighlightedString(false) : $"{{E{i}:diff()}}",
-        _definition.Type, (kind, value) => CardText.ResourceText(kind, value, EnergyIconHelper.GetPrefix(this)));
+        _definition.Type, (kind, value) => CardText.ResourceText(kind, value, EnergyIconHelper.GetPrefix(this)),
+        (i, slot, value, fallback) => value?.Value is null && value is not null && !GeneratedEffectPreview.CanResolve(this, i)
+            ? CardText.Number(value, chinese, fallback, cost: ActiveForm.Cost)
+            : $"{{{(slot == "count" ? 'C' : slot == "repeat" ? 'R' : 'T')}{i}:diff()}}");
+    private static string DrawAmountText(DynamicVar variable)
+    {
+        decimal value = decimal.Ceiling(Math.Max(0, variable.PreviewValue));
+        decimal baseline = decimal.Ceiling(Math.Max(0, variable.EnchantedValue));
+        return MegaCrit.Sts2.Core.TextEffects.StsTextUtilities.HighlightChangeText(
+            value.ToString(System.Globalization.CultureInfo.InvariantCulture), variable.WasJustUpgraded ? 1 : value.CompareTo(baseline));
+    }
     internal LocString RuntimeTitle()
     {
         string key = "NEOWS_COMPANY." + AtomicStore.Key(_payload) + ".title";
@@ -150,14 +186,14 @@ public sealed class NeowGeneratedCard : CardModel
     internal bool[] BeginUpgradePreview()
     {
         var previous = DynamicVars.Values.Select(v => v.WasJustUpgraded).ToArray();
-        var before = _definition.Forms[0].AllEffects;
-        for (int i = 0; i < ActiveForm.AllEffects.Length; i++)
-            ((IGeneratedPreviewVar)DynamicVars[$"E{i}"]).SetUpgradeHighlight(IsUpgraded && (i >= before.Length || Wire.Encode(before[i]) != Wire.Encode(ActiveForm.AllEffects[i])));
+        foreach (var variable in DynamicVars)
+            ((IGeneratedPreviewVar)variable.Value).SetUpgradeHighlight(IsUpgraded && ChangedNumericSlot(variable.Key));
         return previous;
     }
     internal void EndUpgradePreview(bool[] previous)
     {
-        for (int i = 0; i < previous.Length; i++) ((IGeneratedPreviewVar)DynamicVars[$"E{i}"]).SetUpgradeHighlight(previous[i]);
+        int index = 0;
+        foreach (var variable in DynamicVars.Values) ((IGeneratedPreviewVar)variable).SetUpgradeHighlight(previous[index++]);
     }
 }
 [HarmonyPatch(typeof(CardModel), nameof(CardModel.GetDescriptionForUpgradePreview))]

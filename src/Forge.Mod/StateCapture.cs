@@ -11,6 +11,7 @@ using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.MonsterMoves.Intents;
 using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Rooms;
 
 namespace Forge.Mod;
 
@@ -43,6 +44,7 @@ internal sealed class StateCapture
         var pcs = player.PlayerCombatState;
         return new
         {
+            encounter = CaptureEncounter(combat, player.RunState),
             round = combat.RoundNumber, side = combat.CurrentSide.ToString(), player = Creature(player.Creature),
             player_combat = pcs is null ? null : new
             {
@@ -59,6 +61,7 @@ internal sealed class StateCapture
 
     public object Card(CardModel card) => new
     {
+        origin = card is NeowGeneratedCard ? "generated" : "native",
         instance = _cardIds.GetValue(card, _ => new Identity(++_nextId)).Id,
         id = card.Id.Entry, pool = card.Pool.Id.Entry, title = Safe(() => card.Title), type = card.Type.ToString(), rarity = card.Rarity.ToString(),
         cost = card.EnergyCost.Canonical, current_cost = Safe(() => card.EnergyCost.GetWithModifiers(CostModifiers.All)),
@@ -71,6 +74,18 @@ internal sealed class StateCapture
         affliction = card.Affliction is { } af ? new { id = af.Id.Entry, af.Amount } : null,
         generated_definition = card is NeowGeneratedCard generated ? generated.Definition : null
     };
+
+    internal static object CaptureEncounter(ICombatState combat, IRunState run)
+    {
+        string? eventId = (run.BaseRoom as EventRoom)?.ModelId.Entry ?? (run.CurrentRoom as CombatRoom)?.ParentEventId?.Entry;
+        return new
+        {
+            type = combat.Encounter?.RoomType.ToString().ToLowerInvariant(),
+            id = combat.Encounter?.Id.Entry,
+            source = eventId is null ? "map" : "event",
+            event_id = eventId
+        };
+    }
 
     public object Creature(Creature creature) => new
     {

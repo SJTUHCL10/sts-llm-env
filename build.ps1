@@ -46,6 +46,7 @@ try {
     Copy-Item -LiteralPath 'src\Forge.Mod\mod_manifest.json' -Destination (Join-Path $package 'NeowsCompany.json')
     Copy-Item -LiteralPath 'config.example.json' -Destination $package
     Copy-Item -LiteralPath 'README.md' -Destination $package
+    Copy-Item -LiteralPath 'README.zh-CN.md' -Destination $package
     foreach ($directory in @('docs', 'examples')) {
         $packagedDirectory = Join-Path $package $directory
         if (Test-Path -LiteralPath $packagedDirectory) {

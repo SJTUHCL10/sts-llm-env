@@ -18,13 +18,15 @@ public sealed class CandidatePool
     private readonly object _gate = new();
     private readonly string _path;
     private readonly int _capacity;
+    private readonly int _historyCapacity;
     private CandidatePoolSnapshot _snapshot;
     private bool _closed;
     public string RunKey => _snapshot.RunKey;
 
-    public CandidatePool(string path, string runKey, int capacity)
+    public CandidatePool(string path, string runKey, int capacity, int historyLimit = 100)
     {
         _path = path; _capacity = capacity;
+        _historyCapacity = Math.Max(100, historyLimit);
         _snapshot = File.Exists(path) ? Wire.Decode<CandidatePoolSnapshot>(File.ReadAllText(path))
             : new() { RunKey = runKey };
         if (_snapshot.SchemaVersion != 2 || _snapshot.CardProtocol != MechanicCatalog.ProtocolVersion || _snapshot.RunKey != runKey || _snapshot.Candidates is null
@@ -45,7 +47,13 @@ public sealed class CandidatePool
     private static T Copy<T>(T value) => Wire.Decode<T>(Wire.Encode(value));
     public GeneratedCandidate[] History()
     {
-        lock (_gate) return Copy(_snapshot.History.TakeLast(16).Concat(_snapshot.Candidates).DistinctBy(c => c.Id).ToArray());
+        lock (_gate)
+        {
+            // Apply the prompt limit once, after collecting the chronological history.
+            // Candidates older than the persisted window precede it, preserving creation order.
+            var recorded = _snapshot.History.Select(c => c.Id).ToHashSet(StringComparer.Ordinal);
+            return Copy(_snapshot.Candidates.Where(c => !recorded.Contains(c.Id)).Concat(_snapshot.History).ToArray());
+        }
     }
     public bool HasReward(string key) { lock (_gate) return _snapshot.Rewards.ContainsKey(key); }
     public bool HasCandidates { get { lock (_gate) return _snapshot.Candidates.Length > 0; } }
@@ -73,7 +81,7 @@ public sealed class CandidatePool
                 var expired = candidates[0]; candidates.RemoveAt(0);
                 history = history.Select(c => c.Id == expired.Id ? c with { Status = "expired" } : c).ToList();
             }
-            Save(_snapshot with { Candidates = candidates.ToArray(), History = history.TakeLast(64).ToArray(), Seen = seen.ToArray() });
+            Save(_snapshot with { Candidates = candidates.ToArray(), History = history.TakeLast(_historyCapacity).ToArray(), Seen = seen.ToArray() });
             return added;
         }
     }

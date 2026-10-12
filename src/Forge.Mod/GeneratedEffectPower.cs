@@ -129,10 +129,10 @@ public sealed class GeneratedEffectPower : PowerModel
     public override Task AfterCardGeneratedForCombat(CardModel card, Player? creator) => creator?.Creature == Owner ? Fire(new BlockingPlayerChoiceContext(), RuleEvent.CardGenerated, card) : Task.CompletedTask;
     public override Task AfterDamageReceived(PlayerChoiceContext choiceContext, Creature target, DamageResult result, ValueProp props, Creature? dealer, CardModel? cardSource) => target == Owner ? Fire(choiceContext, RuleEvent.DamageReceived, target: dealer, amount: result.UnblockedDamage) : Task.CompletedTask;
     public override Task AfterAttack(PlayerChoiceContext choiceContext, AttackCommand command) => command.Attacker == Owner || command.Attacker == Owner.Player?.Osty ? Fire(choiceContext, RuleEvent.AttackCompleted, command.CardPlay?.Card, command.Results.SelectMany(r => r).Select(r => r.Receiver).FirstOrDefault(), (int)command.Results.SelectMany(r => r).Sum(r => r.TotalDamage)) : Task.CompletedTask;
-    public override Task AfterSummon(PlayerChoiceContext choiceContext, Player summoner, decimal amount) => summoner.Creature == Owner ? Fire(choiceContext, RuleEvent.Summoned, amount: (int)amount) : Task.CompletedTask;
+    public override Task AfterSummon(PlayerChoiceContext choiceContext, Player summoner, decimal amount) => summoner.Creature == Owner ? Fire(choiceContext, RuleEvent.Summoned, amount: amount) : Task.CompletedTask;
     public override Task AfterOrbChanneled(PlayerChoiceContext choiceContext, Player player, OrbModel orb) => player.Creature == Owner ? Fire(choiceContext, RuleEvent.OrbChanneled) : Task.CompletedTask;
     public override Task AfterOrbEvoked(PlayerChoiceContext choiceContext, OrbModel orb, IEnumerable<Creature> targets) => orb.Owner.Creature == Owner ? Fire(choiceContext, RuleEvent.OrbEvoked, target: targets.FirstOrDefault()) : Task.CompletedTask;
-    private async Task Fire(PlayerChoiceContext choice, RuleEvent fired, CardModel? eventCard = null, Creature? target = null, int amount = 0)
+    private async Task Fire(PlayerChoiceContext choice, RuleEvent fired, CardModel? eventCard = null, Creature? target = null, decimal amount = 0)
     {
         if (_snapshot is null || _firing || TriggerDepth.Value >= 8 || !Owner.IsAlive || CombatManager.Instance.IsEnding || Owner.Player is null) return;
         var snapshot = _snapshot; var form = Form;

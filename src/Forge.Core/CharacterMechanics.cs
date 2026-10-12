@@ -35,6 +35,12 @@ public sealed record CharacterMechanics(bool Poison, bool Stars, bool Necrobinde
             if (!Poison && form.Tags.Contains(ForgeKeyword.Sly)) Unavailable();
             foreach (var effect in form.AllEffects)
             {
+                if (effect.Target?.Ref == "osty")
+                {
+                    if (effect.Kind == EffectKind.Block) throw new FormatException("Osty's block cannot absorb redirected attack damage.");
+                    if (effect.Kind == EffectKind.ApplyPower && !MechanicCatalog.OstyPowers.Contains(effect.Power!))
+                        throw new FormatException("Native power has no supported effect on Osty.");
+                }
                 if (effect.Power is { } power && !AllowsPower(power) || effect.Card?.Id is { } id && !AllowsCard(id)
                     || effect.Kind is EffectKind.GainStars or EffectKind.Forge && !Stars
                     || (effect.Kind == EffectKind.Summon || effect.Actor == "osty" || effect.Target?.Ref == "osty") && !Necrobinder

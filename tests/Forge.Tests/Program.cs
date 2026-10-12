@@ -62,7 +62,7 @@ await Test("X descriptions retain symbols across amounts, counts, selectors, rep
             == "将X张小刀添加到你的手牌。");
         Check(CardText.Target(new() { Pile = CardPileName.Hand, Pick = SelectionMode.Choose, Count = x }, true, cost: cost) == "你的手牌中的X张牌");
         Check(CardText.Condition(new() { Op = Comparison.Ge, Left = plusOne, Right = 2 }, true, cost: cost) == "(X + 1) ≥ 2");
-        Check(CardText.Number(new() { Div = [new() { Mul = [5, x] }, 2] }, true, cost: cost) == "((5 × X) ÷ 2)向下取整");
+        Check(CardText.Number(new() { Div = [new() { Mul = [5, x] }, 2] }, true, cost: cost) == "((5 × X) ÷ 2)");
         Check(!CardText.Number(x, true, cost: new()).Contains("X"));
         Check(!CardText.Number(new() { Stat = stat == "paid_energy" ? "paid_stars" : "paid_energy" }, true, cost: cost).Contains("X"));
         var rule = new CardRule { Trigger = new() { Event = RuleEvent.TurnEnd }, Condition = new() { Op = Comparison.Ge, Left = x, Right = 2 }, Effects = [new() { Kind = EffectKind.Draw, Amount = x }] };
@@ -148,20 +148,48 @@ await Test("reject null nested nodes and ignored subjects; temporary powers use 
     CardValidator.Validate(With(new() { Kind = EffectKind.ApplyPower, Power = "focus", Amount = -2, Until = LifetimeKind.Turn }));
     Check(CardText.Render(With(new() { Kind = EffectKind.ApplyPower, Power = "strength", Amount = 3, Until = LifetimeKind.Turn }), false).Contains("Until the end"));
     Throws<InvalidOperationException>(() => EffectRules.Evaluate(new() { Div = [1, new() { Stat = "energy" }] }, _ => 0));
-    Throws<OverflowException>(() => EffectRules.Evaluate(new() { Add = [int.MaxValue, 1] }, _ => 0));
+    Throws<OverflowException>(() => EffectRules.Evaluate(new() { Add = [decimal.MaxValue, 1] }, _ => 0));
     return Task.CompletedTask;
 });
 
-await Test("numeric expressions and conditions use current state and floor division", () =>
+await Test("numeric expressions and conditions use current state and decimal division", () =>
 {
     var number = Wire.Decode<NumberExpression>("{\"add\":[4,{\"mul\":[2,{\"stat\":\"power\",\"of\":\"target\",\"id\":\"poison\"}]}]}");
     CardValidator.ValidateNumber(number);
     Check(EffectRules.Evaluate(number, _ => 3) == 10 && EffectRules.Evaluate(number, _ => 5) == 14);
-    Check(EffectRules.Evaluate(new NumberExpression { Div = [-5, 2] }, _ => 0) == -3);
+    Check(EffectRules.Evaluate(new NumberExpression { Div = [-5, 2] }, _ => 0) == -2.5m);
     Check(EffectRules.Matches(new() { Op = Comparison.Gt, Left = number, Right = 9 }, _ => 3));
     var deep = (NumberExpression)1;
     for (int i = 0; i < 8; i++) deep = new() { Add = [deep, 1] };
     return Reject(() => CardValidator.ValidateNumber(deep));
+});
+await Test("decimal ratios preserve intermediate precision, HP boundaries and discrete count conversion", () =>
+{
+    var half = Wire.Decode<NumberExpression>("{\"mul\":[{\"stat\":\"max_hp\"},0.5]}");
+    CardValidator.ValidateNumber(half);
+    Check(Wire.Decode<NumberExpression>(Wire.Encode(half)).Mul![1].Value == 0.5m);
+    Check(EffectRules.Evaluate(half, _ => 79) == 39.5m);
+    var condition = new EffectCondition { Op = Comparison.Lt, Left = new() { Stat = "hp" }, Right = half };
+    Check(EffectRules.Matches(condition, n => n.Stat == "hp" ? 39 : 79));
+    Check(!EffectRules.Matches(condition, n => n.Stat == "hp" ? 40 : 80));
+    condition = condition with { Right = new() { Div = [new() { Stat = "max_hp" }, 2] } };
+    Check(EffectRules.Matches(condition, n => n.Stat == "hp" ? 39 : 79));
+    Check(EffectRules.Evaluate(new() { Mul = [new() { Div = [5, 2] }, 2] }, _ => 0) == 5);
+    Check(EffectRules.Evaluate(new() { Add = [0.1m, 0.2m] }, _ => 0) == 0.3m);
+    Check(EffectRules.Count(2.9m) == 2 && EffectRules.Count(-0.5m) == 0 && EffectRules.Integer(-2.9m) == -2);
+    Throws<OverflowException>(() => EffectRules.Count(decimal.MaxValue));
+    Throws<InvalidOperationException>(() => EffectRules.Evaluate(new() { Div = [1, new() { Sub = [0.5m, 0.5m] }] }, _ => 0));
+    Check(CardText.Number(half, true).Contains("0.5") && !CardText.Number(condition.Right, true).Contains("向下取整"));
+    Check(CardText.RenderEffect(new() { Kind = EffectKind.Draw, Amount = 1.5m }, true) == "抽2张牌。");
+    Check(CardText.RenderEffect(new() { Kind = EffectKind.CreateCard, Card = new() { Id = "shiv" }, To = CardPileName.Hand, Count = 1.5m }, true) == "将1张小刀添加到你的手牌。");
+    var previousCulture = System.Globalization.CultureInfo.CurrentCulture;
+    try
+    {
+        System.Globalization.CultureInfo.CurrentCulture = System.Globalization.CultureInfo.GetCultureInfo("fr-FR");
+        Check(CardText.Number((NumberExpression)0.5m, true) == "0.5");
+    }
+    finally { System.Globalization.CultureInfo.CurrentCulture = previousCulture; }
+    return Task.CompletedTask;
 });
 await Test("subtraction round trips, checks arithmetic and preserves character gates", async () =>
 {
@@ -179,7 +207,7 @@ await Test("subtraction round trips, checks arithmetic and preserves character g
     await Reject(() => CharacterMechanics.FromRun(context.Run).Validate(card));
     foreach (var number in new NumberExpression[] { new() { Sub = [1] }, new() { Sub = [1, 2, 3] }, new() { Sub = [1, 2], Add = [1, 2] }, new() { Sub = [1, null!] } })
         await Reject(() => CardValidator.ValidateNumber(number));
-    Throws<OverflowException>(() => EffectRules.Evaluate(new() { Sub = [int.MinValue, 1] }, _ => 0));
+    Throws<OverflowException>(() => EffectRules.Evaluate(new() { Sub = [decimal.MinValue, 1] }, _ => 0));
     var x = new NumberExpression { Sub = [new() { Stat = "paid_energy" }, 1] };
     Check(CardText.RenderEffect(new() { Kind = EffectKind.Draw, Amount = x }, true, "99", cost: new() { EnergyX = true }) == "抽(X - 1)张牌。");
 });
@@ -256,6 +284,64 @@ await Test("next-turn and finite lifetimes expire even when conditions fail", ()
     Check(EffectTriggerRuntime.IsExpired(state));
     state.Activations[0] = -1; return Reject(() => EffectTriggerRuntime.Validate(form, state));
 });
+await Test("symbolic damage and block use equal amounts while numeric previews retain units", () =>
+{
+    var hp = new NumberExpression { Stat = "hp", Of = "osty" };
+    var block = new CardEffect { Kind = EffectKind.Block, Amount = hp };
+    Check(CardText.RenderEffect(block, true) == "获得等量于奥斯提的当前生命值的格挡。");
+    Check(CardText.RenderEffect(block, true, "[green]12[/green]") == "获得[green]12[/green]点格挡。");
+    Check(CardText.RenderEffect(block, true, "{E0:diff()}") == "获得{E0:diff()}点格挡。");
+    Check(CardText.RenderEffect(block with { Amount = 6 }, true) == "获得6点格挡。");
+    var damage = new CardEffect { Kind = EffectKind.Damage, Target = "random_enemy", Actor = "osty", Amount = new() { Stat = "event_amount" } };
+    var rule = new CardRule { Trigger = new() { Event = RuleEvent.Summoned }, Effects = [damage] };
+    Check(CardText.RenderRule(rule, true, combatIsImplicit: true) == "召唤后，奥斯提对随机敌人造成等量于本次召唤量的伤害。");
+    Check(CardText.RenderRule(rule with { Effects = [damage with { Amount = new() { Add = [damage.Amount!, 2] } }] }, true).Contains("造成等量于(本次召唤量 + 2)的伤害"));
+    Check(CardText.RenderRule(rule with { Trigger = new() { Event = RuleEvent.DamageReceived } }, true).Contains("等量于本次受到的未格挡伤害的伤害"));
+    Check(CardText.RenderRule(rule with { Trigger = new() { Event = RuleEvent.AttackCompleted } }, true).Contains("等量于本次攻击造成的总伤害的伤害"));
+    Check(CardText.RenderRule(rule, false).Contains("the amount summoned"));
+    Check(CardText.RenderEffect(damage with { Amount = hp, Target = "all_enemies" }, true) == "奥斯提对所有敌人造成等量于奥斯提的当前生命值的伤害。");
+    Check(CardText.RenderEffect(damage with { Amount = new() { Stat = "paid_energy" } }, true, cost: new() { EnergyX = true }).Contains("造成X点伤害"));
+    Check(CardText.RenderEffect(new() { Kind = EffectKind.LoseHp, Target = "osty", Amount = hp }, true) == "奥斯提失去等量于奥斯提的当前生命值的生命。");
+    Check(CardText.RenderEffect(new() { Kind = EffectKind.ApplyPower, Power = "strength", Amount = hp }, true) == "获得等量于奥斯提的当前生命值的力量。");
+    Check(CardText.Number(new() { Stat = "damage_dealt" }, true) == "上次攻击实际造成的伤害");
+    return Task.CompletedTask;
+});
+await Test("Osty generation restricts ineffective powers and block without rejecting saved definitions", async () =>
+{
+    var mechanics = new CharacterMechanics(true, true, true, true);
+    CardDefinition With(CardEffect effect) => valid with { Type = ForgeCardType.Skill, Forms = valid.Forms.Select(f => f with { Effects = [effect] }).ToArray() };
+    foreach (string power in MechanicCatalog.Powers)
+    {
+        var effect = new CardEffect { Kind = EffectKind.ApplyPower, Target = "osty", Power = power, Amount = 1 };
+        var card = With(effect);
+        // Structural validation remains compatible with all v5 saved cards.
+        CardValidator.Validate(Wire.Decode<CardDefinition>(Wire.Encode(card)));
+        if (MechanicCatalog.OstyPowers.Contains(power)) mechanics.Validate(card);
+        else
+        {
+            await Reject(() => mechanics.Validate(card));
+            await Reject(() => mechanics.Validate(card with { Forms = [With(effect with { Target = "self" }).Forms[0], card.Forms[1]] }));
+            var rule = new CardRule { Trigger = new() { Event = RuleEvent.TurnStart }, Effects = [effect] };
+            await Reject(() => mechanics.Validate(card with { Forms = card.Forms.Select(f => f with { Effects = [new() { Kind = EffectKind.Draw, Amount = 1 }], Rules = [rule] }).ToArray() }));
+        }
+        mechanics.Validate(With(effect with { Target = "self" }));
+        mechanics.Validate(With(effect with { Target = "enemy" }));
+    }
+    var block = With(new() { Kind = EffectKind.Block, Target = "osty", Amount = 5 });
+    CardValidator.Validate(block);
+    await Reject(() => mechanics.Validate(block));
+    var poison = With(new() { Kind = EffectKind.ApplyPower, Target = "osty", Power = "poison", Amount = 1 });
+    await Reject(() => new CharacterMechanics(false, false, true).Validate(poison));
+    var necroContext = context with { Run = JsonSerializer.SerializeToElement(new { character = "NECROBINDER" }) };
+    string prompt = PromptBuilder.Build(config, necroContext).System;
+    Check(prompt.Contains("block targets the player") && prompt.Contains("Osty power targets support: strength,weak,doom,vigor,intangible,artifact,buffer"));
+    var failures = new List<string>(); bool published = false;
+    using var session = new GenerationSession(context.CombatKey, config,
+        new FakeGenerator((_, _) => Task.FromResult(new CardBatch { Cards = [block] })),
+        (kind, _) => failures.Add(kind), _ => published = true);
+    Check(session.TryPrefetch(necroContext, DateTimeOffset.UtcNow)); await session.WaitForPendingAsync();
+    Check(failures.Contains("generation_failed") && !failures.Contains("generation_ready") && !published);
+});
 await Test("all four role extensions gate both forms, filters, rules and nested expressions", async () =>
 {
     foreach (var (role, action) in new (string, CardEffect)[]
@@ -289,20 +375,28 @@ await Test("design projection groups cards, preserves useful mechanics and omits
     Check(projected.GetProperty("history")[0].GetProperty("text").GetString()!.Contains("伤害"));
     Check(projected.GetProperty("history")[0].GetProperty("type").GetString() == "attack");
     Check(projected.GetProperty("history")[0].GetProperty("rarity").GetString() == "common");
-    Check(PromptBuilder.Build(config, observed).System.StartsWith(PromptBuilder.Contract));
+    Check(PromptBuilder.Build(config, observed).System.Contains("NUMBERS AND CONDITIONS"));
     return Task.CompletedTask;
 });
 await Test("prompt trims only optional history and rejects an insufficient budget", async () =>
 {
-    var history = context with { GenerationHistory = Enumerable.Range(0, 12).Select(_ => JsonSerializer.SerializeToElement(new { card = complex, status = "shown" }, Wire.Json)).ToArray() };
+    var history = context with { GenerationHistory = Enumerable.Range(0, 12).Select(i => JsonSerializer.SerializeToElement(new { card = complex with { Name = "预算历史" + i }, status = "shown" }, Wire.Json)).ToArray() };
     var basePrompt = PromptBuilder.Build(config, context);
     var bounded = PromptBuilder.Build(config with { MaxPromptCharacters = basePrompt.System.Length + basePrompt.User.Length + 32 }, history);
     Check(bounded.System.Length + bounded.User.Length <= basePrompt.System.Length + basePrompt.User.Length + 32);
+    var two = PromptBuilder.Build(config with { PromptHistoryLimit = 2 }, history);
+    var trimmed = PromptBuilder.Build(config with { MaxPromptCharacters = two.System.Length + two.User.Length }, history);
+    Check(trimmed.User == two.User && trimmed.User.Contains("预算历史10") && trimmed.User.Contains("预算历史11") && !trimmed.User.Contains("预算历史9"));
     await Reject(() => PromptBuilder.Build(config with { MaxPromptCharacters = 1 }, context));
 });
 await Test("configuration bounds", async () =>
 {
     config.Validate();
+    Check(Wire.Decode<ForgeConfig>("{}").PromptHistoryLimit == 100);
+    Check(Wire.Decode<ForgeConfig>("{\"prompt_history_limit\":120}").PromptHistoryLimit == 120);
+    Check(Wire.Encode(new ForgeConfig()).Contains("\"prompt_history_limit\":100"));
+    foreach (int limit in new[] { 0, 100, 1000 }) (config with { PromptHistoryLimit = limit }).Validate();
+    foreach (int limit in new[] { -1, 1001 }) await Reject(() => (config with { PromptHistoryLimit = limit }).Validate());
     foreach (int maxTokens in new[] { 128, 16000, 16384 })
         (config with { Provider = new() { MaxTokens = maxTokens } }).Validate();
     foreach (int maxTokens in new[] { 127, 16385 })
@@ -738,6 +832,47 @@ await Test("combat summaries retain opening card sequence counts and enemy damag
         && snapshot.GetProperty("energy_spent").GetInt32() == 1);
     return Task.CompletedTask;
 });
+await Test("combat projection preserves encounter type and event source; generated play origins survive compaction", () =>
+{
+    var summary = new CombatSummary();
+    foreach (bool explicitOrigin in new[] { false, true })
+    {
+        var card = new System.Text.Json.Nodes.JsonObject { ["id"] = "NEOW_GENERATED_CARD", ["title"] = explicitOrigin ? "暗影飞刃" : "背水一战", ["type"] = "Attack", ["rarity"] = "Common", ["cost"] = 1 };
+        if (explicitOrigin) card["origin"] = "generated";
+        var entry = JsonSerializer.SerializeToElement(new { detail = new { type = "CardPlayFinishedEntry", fields = new { Actor = new { id = "SILENT" }, CardPlay = new { card } } } });
+        summary.Add(ObservationProjector.CompactEvent(entry), "SILENT");
+    }
+    Check(summary.Snapshot().GetProperty("cards_played").EnumerateArray().All(p => p.GetProperty("origin").GetString() == "generated"));
+    var observed = context with
+    {
+        State = JsonSerializer.SerializeToElement(new { round = 2, encounter = new { type = "elite", id = "TEST_ELITE", source = "event", event_id = "TEST_EVENT" } }),
+        CombatSummary = summary.Snapshot(true, true)
+    };
+    var combat = ObservationProjector.Project(observed).GetProperty("combat");
+    Check(combat.GetProperty("encounter").GetProperty("type").GetString() == "elite"
+        && combat.GetProperty("encounter").GetProperty("source").GetString() == "event"
+        && combat.GetProperty("encounter").GetProperty("event_id").GetString() == "TEST_EVENT"
+        && combat.GetProperty("summary").GetProperty("complete").GetBoolean());
+    observed = context with { Run = JsonSerializer.SerializeToElement(new { character = "IRONCLAD", room_type = "Boss" }) };
+    Check(ObservationProjector.Project(observed).GetProperty("combat").GetProperty("encounter").GetProperty("type").GetString() == "boss");
+    return Task.CompletedTask;
+});
+await Test("prompts integrate only available capabilities and explain decimal arithmetic and turn timing", () =>
+{
+    var legacyConfig = config with { Styles = new() { [config.ActiveStyle] = new() { SystemPrompt = StyleConfig.LegacySystemPrompt } } };
+    foreach (string role in new[] { "IRONCLAD", "SILENT", "REGENT", "NECROBINDER", "DEFECT" })
+    {
+        string system = PromptBuilder.Build(legacyConfig, context with { Run = JsonSerializer.SerializeToElement(new { character = role }) }).System;
+        Check(!system.Contains("if enabled") && !system.Contains("Optional ") && !system.Contains("Never change core game rules"));
+        Check(system.Contains("div is ordinary division") && system.Contains("after the player's turn draw") && system.Contains("forms:[base,upgraded]"));
+        Check(system.Contains("stars?:integer") == (role == "REGENT"));
+        Check(system.Contains("summon(amount)") == (role == "NECROBINDER"));
+        Check(system.Contains("channel(amount") == (role == "DEFECT"));
+        Check(system.Contains("innate,sly") == (role == "SILENT"));
+        if (role == "IRONCLAD") foreach (string disabled in new[] { "stars_x", "paid_stars", "orb_count", "orb_slots", "summoned", "osty", "id:focus", ",channel", ",forge" }) Check(!system.Contains(disabled));
+    }
+    return Task.CompletedTask;
+});
 await Test("candidate pool retains multiple batches, deduplicates mechanics and restores frozen rewards", () =>
 {
     string directory = TestDirectory();
@@ -757,6 +892,71 @@ await Test("candidate pool retains multiple batches, deduplicates mechanics and 
     Check(pool.History().Any(c => c.Status == "selected"));
     Directory.Delete(directory, true);
     return Task.CompletedTask;
+});
+await Test("prompt history selects latest generated cards regardless of status and preserves order after reload", () =>
+{
+    string directory = TestDirectory(); string path = Path.Combine(directory, "pool.json");
+    var pool = new CandidatePool(path, "history-run", 24);
+    CardDefinition Card(int i) => valid with { Name = "历史牌" + i, Forms = valid.Forms.Select(f => f with
+        { Effects = [new() { Kind = EffectKind.Damage, Target = "enemy", Amount = 10 + i }] }).ToArray() };
+    var owned = new List<CardDefinition>();
+    for (int i = 0; i < 8; i++)
+    {
+        pool.Add("combat" + i, [Card(i)]);
+        var reward = pool.FreezeReward("reward" + i, 1);
+        if (i % 2 == 0) owned.Add(reward.Single());
+        pool.RecordChoice("reward" + i, owned);
+    }
+    pool.Add("pending", [Card(8)]); pool.FreezeReward("pending", 1);
+    pool.Add("later", Enumerable.Range(9, 15).Select(Card).ToArray());
+    JsonElement[] History() => pool.History().Select(c => JsonSerializer.SerializeToElement(new { card = c.Card, status = c.Status }, Wire.Json)).ToArray();
+    var original = History();
+    Check(original.Count(e => e.GetProperty("status").GetString() == "selected") == 4);
+    Check(original.Count(e => e.GetProperty("status").GetString() == "skipped") == 4);
+    var observed = context with { GenerationHistory = original };
+    var projected = ObservationProjector.Project(observed).GetProperty("history");
+    Check(projected.GetArrayLength() == 24);
+    foreach (string status in new[] { "selected", "skipped", "shown", "candidate" })
+        Check(projected.EnumerateArray().Any(e => e.GetProperty("status").GetString() == status));
+    Check(projected.EnumerateArray().Select(e => e.GetProperty("name").GetString()).SequenceEqual(Enumerable.Range(0, 24).Select(i => "历史牌" + i)));
+    var latest = ObservationProjector.Project(observed, 12).GetProperty("history");
+    Check(latest.EnumerateArray().Select(e => e.GetProperty("name").GetString()).SequenceEqual(Enumerable.Range(12, 12).Select(i => "历史牌" + i)));
+    Check(latest.EnumerateArray().All(e => e.GetProperty("status").GetString() == "candidate"));
+    var prompt = PromptBuilder.Build(config, observed);
+    Check(prompt.User.Contains("\"status\":\"selected\"") && prompt.User.Contains("\"status\":\"skipped\""));
+    pool = new CandidatePool(path, "history-run", 24);
+    Check(Wire.Encode(History()) == Wire.Encode(original));
+    Check(ObservationProjector.Project(context with { GenerationHistory = History() }).GetProperty("history").GetRawText() == projected.GetRawText());
+    Check(ObservationProjector.Project(observed, 3).GetProperty("history").EnumerateArray().Select(e => e.GetProperty("name").GetString())
+        .SequenceEqual(new[] { "历史牌21", "历史牌22", "历史牌23" }));
+    Check(PromptBuilder.Build(config with { PromptHistoryLimit = 3 }, observed).User.Contains("历史牌21"));
+    Check(!PromptBuilder.Build(config with { PromptHistoryLimit = 3 }, observed).User.Contains("历史牌20"));
+    Check(!ObservationProjector.Project(observed, 0).TryGetProperty("history", out _));
+    Check(!PromptBuilder.Build(config with { PromptHistoryLimit = 0 }, observed).User.Contains("\"history\""));
+    Directory.Delete(directory, true); return Task.CompletedTask;
+});
+await Test("history persists 100 cards by default and larger configured windows through expiry and reload", () =>
+{
+    string directory = TestDirectory();
+    foreach (var (limit, total) in new[] { (100, 110), (120, 135) })
+    {
+        string path = Path.Combine(directory, "history-" + limit + ".json");
+        var pool = limit == 100 ? new CandidatePool(path, "run", 24) : new CandidatePool(path, "run", 24, limit);
+        var cards = Enumerable.Range(0, total).Select(i => valid with { Name = "窗口牌" + i, Forms = valid.Forms.Select(f => f with
+            { Effects = [new() { Kind = EffectKind.Damage, Target = "enemy", Amount = 10 + i }] }).ToArray() }).ToArray();
+        Check(pool.Add("combat", cards) == total);
+        Check(pool.History().Length == limit && pool.History()[0].Card.Name == "窗口牌" + (total - limit));
+        pool = new CandidatePool(path, "run", 24, limit);
+        var observed = context with { GenerationHistory = pool.History().Select(c => JsonSerializer.SerializeToElement(new { card = c.Card, status = c.Status }, Wire.Json)).ToArray() };
+        var prompt = PromptBuilder.Build(config with { PromptHistoryLimit = limit }, observed);
+        using var document = JsonDocument.Parse(prompt.User.Split("OBSERVATION_JSON:\n")[1]);
+        var history = document.RootElement.GetProperty("history");
+        Check(history.GetArrayLength() == limit);
+        Check(history.EnumerateArray().Select(e => e.GetProperty("name").GetString()).SequenceEqual(Enumerable.Range(total - limit, limit).Select(i => "窗口牌" + i)));
+        Check(history.EnumerateArray().Count(e => e.GetProperty("status").GetString() == "candidate") == 24);
+        Check(history.EnumerateArray().Count(e => e.GetProperty("status").GetString() == "expired") == limit - 24);
+    }
+    Directory.Delete(directory, true); return Task.CompletedTask;
 });
 await Test("reward freeze keeps pending requests alive and late results enter the next reward", async () =>
 {

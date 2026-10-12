@@ -6,7 +6,7 @@ $source = Join-Path $PSScriptRoot 'build\NeowsCompany'
 if (!(Test-Path -LiteralPath (Join-Path $source 'NeowsCompany.dll'))) { throw 'Run build.ps1 first, or unpack the prebuilt package manually.' }
 $destination = Join-Path ([IO.Path]::GetFullPath($GameDir)) 'mods\NeowsCompany'
 New-Item -ItemType Directory -Force -Path $destination | Out-Null
-foreach ($name in @('NeowsCompany.dll', 'NeowsCompany.json', 'config.example.json', 'README.md')) {
+foreach ($name in @('NeowsCompany.dll', 'NeowsCompany.json', 'config.example.json', 'README.md', 'README.zh-CN.md')) {
     Copy-Item -LiteralPath (Join-Path $source $name) -Destination (Join-Path $destination $name)
 }
 $configuration = Join-Path $destination 'config.json'

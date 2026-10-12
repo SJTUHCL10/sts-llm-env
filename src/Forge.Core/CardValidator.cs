@@ -2,8 +2,10 @@ namespace Forge.Core;
 
 public static class MechanicCatalog
 {
-    public const int ProtocolVersion = 5;
+    public const int ProtocolVersion = 6;
     public static readonly string[] Powers = ["strength", "dexterity", "weak", "vulnerable", "frail", "poison", "doom", "focus", "vigor", "thorns", "plating", "intangible", "artifact", "buffer", "retain_block"];
+    // Generation policy only: keep the full catalog for existing saved definitions.
+    public static readonly string[] OstyPowers = ["strength", "weak", "poison", "doom", "vigor", "intangible", "artifact", "buffer"];
     public static readonly string[] Cards = ["soul", "shiv", "wound", "dazed", "burn", "void", "slimed", "fuel", "debris", "minion_strike", "minion_sacrifice", "minion_dive", "sovereign_blade"];
     public static readonly string[] Orbs = ["lightning", "frost", "dark", "plasma", "glass", "random"];
     public static readonly string[] Stats = ["hp", "max_hp", "block", "power", "energy", "stars", "hand_size", "draw_size", "discard_size", "exhaust_size", "orb_count", "orb_capacity", "paid_energy", "paid_stars", "event_amount", "damage_dealt"];
@@ -142,7 +144,7 @@ public static class CardValidator
         Require(expression is not null && depth <= 6, "Expression nesting exceeds six.");
         int choices = (expression.Value is not null ? 1 : 0) + (expression.Stat is not null ? 1 : 0) + (expression.Add is not null ? 1 : 0) + (expression.Sub is not null ? 1 : 0) + (expression.Mul is not null ? 1 : 0) + (expression.Div is not null ? 1 : 0);
         Require(choices == 1, "Numeric expression needs exactly one operation.");
-        if (expression.Value is int value) Require((signed || value >= 0) && expression.Of is null && expression.Id is null, "Invalid literal.");
+        if (expression.Value is decimal value) Require((signed || value >= 0) && expression.Of is null && expression.Id is null, "Invalid literal.");
         else if (expression.Stat is { } stat)
         {
             Require(MechanicCatalog.Stats.Contains(stat) && expression.Of is null or "self" or "target" or "osty", "Invalid stat reference.");

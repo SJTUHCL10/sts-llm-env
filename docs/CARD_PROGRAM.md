@@ -1,4 +1,4 @@
-# 卡牌协议 v5
+# 卡牌协议 v6
 
 卡牌是受校验的数据程序，由游戏侧通过原生命令执行。LLM 返回 `{"cards":[...]}`；文本由程序生成，不参与执行。此轮直接替换旧协议，不提供旧定义迁移。
 
@@ -42,6 +42,20 @@
 
 生物目标：`self/enemy/all_enemies/random_enemy/osty/event.target`。规则没有玩家当前选定的 `enemy`，应使用随机、全体或事件目标。即时攻击使用原生攻击修正；规则和技能中的直接伤害使用 Unpowered。`lose_hp` 绕过格挡并触发原生伤害流程。
 
+### 奥斯提的生成限制
+
+本机 v0.111.0 中，攻击先对原始目标计算伤害修正、荆棘和角色格挡，再由 `DieForYouPower` 将未格挡的攻击伤害转给奥斯提，最后对实际承伤者计算生命损失修正。因此奥斯提自己的格挡不会抵挡转移伤害；荆棘和易伤也不会在转移后重新计算。新生成卡禁止 `block(target:osty)`，`apply_power(target:osty)` 只允许下列别名，并继续受当前局角色机制开关限制：
+
+| power | 奥斯提上的实际用途 |
+| --- | --- |
+| strength / vigor | 增加奥斯提的原生攻击伤害；技能伤害及规则触发伤害使用 Unpowered，不享受这些加成 |
+| weak | 降低奥斯提的原生攻击伤害；属于负面效果 |
+| buffer / intangible | 在转移后免除一次生命损失／将生命损失限制为 1 |
+| artifact | 阻止直接施加给奥斯提的减益；不会代替角色阻止角色收到的减益 |
+| poison / doom | 中毒扣血／灾厄达到生命值时死亡，属于负面效果；中毒仍需启用静默机制 |
+
+禁止给奥斯提施加 dexterity/vulnerable/frail/focus/thorns/plating/retain_block：分别依赖自身格挡、原始受击目标、充能球或格挡保留，无法改善它的常规攻击与抵挡流程。该限制只约束新生成，不删除全局状态目录，也不自动重写已保存卡的无效效果。旧定义的读取与数值语义见下方 v6 说明；旧候选池不迁移。
+
 卡牌目标：`this_card`、`event.card`、`selected:名称`，或统一选择器：
 
 ```json
@@ -72,15 +86,19 @@
 
 ## 数值与条件
 
-普通数值直接写整数，动态数值使用小型表达式：
+普通数值允许整数和小数，动态数值使用小型表达式：
 
 ```json
 {"add":[5,{"mul":[{"stat":"power","of":"target","id":"poison"},2]}]}
 {"div":[{"stat":"max_hp","of":"osty"},2]}
-{"op":"lt","left":{"mul":[{"stat":"hp"},2]},"right":{"stat":"max_hp"}}
+{"op":"lt","left":{"stat":"hp"},"right":{"mul":[{"stat":"max_hp"},0.5]}}
 ```
 
-表达式为整数、stat、add、sub、mul、div 之一；add/mul 有 2～4 个操作数，sub/div 恰好两个。`{"sub":[a,b]}` 表示 a 减 b；div 向下取整，嵌套最多六层。字面分母不能为零；运行时零分母、溢出会中止效果并报告执行失败。普通数量小于零按零执行；apply_power 与 orb_slots 支持有符号数。没有强度预算或缩放上限。旧定义中的 add 与负数乘积仍可执行，描述会将两项相加中的第二项乘 -1 显示为减法；此扩展不改变 v5 存档版本。
+表达式为 decimal 字面量、stat、add、sub、mul、div 之一；add/mul 有 2～4 个操作数，sub/div 恰好两个。sub 表示减法；div 使用 decimal 普通除法，中间运算不转成整数，嵌套最多六层。字面分母不能为零；运行时零分母和 decimal 溢出会中止效果。decimal 精度是有限的，不是任意精度有理数。上述半血条件在 39/79 时成立、40/80 时不成立；mul 0.5 与 div 2 等价。旧的 add 与负数乘积仍显示为减法。
+
+表达式的整数化发生在最终使用处：repeat、生成/复制/选牌 count、channel、forge、set_cost 向零截断，非负数量负值按零处理；orb_slots 保留符号后向零截断。伤害、格挡、生命、能量、星、状态层数和召唤量保留 decimal 进入原生命令，由游戏在最终状态变更时处理整数；正数抽牌量沿用原版向上取整（1.5 抽 2 张），预览一致。固定费用、过滤费用、options、turns、occurrence 和 limit 仍为整数。离散效果优先设计成整数量。
+
+v6 直接替换旧 div 语义，旧候选池不迁移；读取已有卡牌时也使用普通除法。新的小数语义不改为伤害倍率钩子：表达式先算出基础效果数值，再进入原生修正流程。
 
 生物数值：hp/max_hp/block/power，of 默认 self，可为 target/osty；power 必须带 id。玩家数值：energy/stars/hand_size/draw_size/discard_size/exhaust_size/orb_count/orb_capacity。上下文数值：paid_energy/paid_stars（本次打出实付资源快照）、event_amount、damage_dealt（最近一个伤害动作的 TotalDamage）。状态在动作执行时读取。
 
