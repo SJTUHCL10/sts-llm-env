@@ -441,6 +441,7 @@ await Test("OpenAI-compatible route, auth, messages, JSON and token options", as
         using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
         Check(body.RootElement.GetProperty("messages")[1].GetProperty("role").GetString() == "user");
         Check(body.RootElement.GetProperty("max_completion_tokens").GetInt32() == 4096);
+        Check(!body.RootElement.TryGetProperty("max_tokens", out _));
         Check(!body.RootElement.TryGetProperty("temperature", out _));
         Check(!body.RootElement.TryGetProperty("reasoning_effort", out _));
         Check(body.RootElement.GetProperty("response_format").GetProperty("type").GetString() == "json_object");
@@ -449,7 +450,7 @@ await Test("OpenAI-compatible route, auth, messages, JSON and token options", as
     using var client = new HttpClient(handler);
     var provider = new OpenAiCardGenerator(client, new()
     { BaseUrl = "http://localhost:1234/v1/", ApiKey = "test-secret", ApiKeyEnvironmentVariable = "",
-        JsonMode = true, TokenLimitParameter = "max_completion_tokens", IncludeTemperature = false });
+        JsonMode = true, MaxTokens = 4096, TokenLimitParameter = "max_completion_tokens", IncludeTemperature = false });
     var result = await provider.GenerateAsync(new("s", "JSON u"), default);
     Check(result.Cards[0].Name == valid.Name);
 });

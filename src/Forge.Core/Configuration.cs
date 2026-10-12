@@ -6,8 +6,8 @@ public sealed record ProviderConfig
     public string ApiKey { get; init; } = "";
     public string ApiKeyEnvironmentVariable { get; init; } = "NEOWS_COMPANY_API_KEY";
     public string Model { get; init; } = "local-model";
-    public int TimeoutSeconds { get; init; } = 30;
-    public int MaxTokens { get; init; } = 4096;
+    public int TimeoutSeconds { get; init; } = 120;
+    public int MaxTokens { get; init; } = 16384;
     public string TokenLimitParameter { get; init; } = "max_tokens";
     public string? ReasoningEffort { get; init; }
     public double Temperature { get; init; } = 0.8;
@@ -31,7 +31,7 @@ public sealed record ForgeConfig
     public bool Enabled { get; init; } = true;
     public int GeneratedCardsPerReward { get; init; } = 1;
     public GenerationTiming GenerationTiming { get; init; } = GenerationTiming.Prefetch;
-    public int MaxRequestsPerCombat { get; init; } = 3;
+    public int MaxRequestsPerCombat { get; init; } = 2;
     public int PrefetchMinimumIntervalSeconds { get; init; } = 15;
     public int PrefetchInitialCardPlays { get; init; } = 2;
     // Opening-play setting is retained for old configs; initial prefetch now waits for the enemy turn.
