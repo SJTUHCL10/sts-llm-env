@@ -18,7 +18,7 @@ Store your key in the local `provider.api_key` field or the `NEOWS_COMPANY_API_K
 
 ## Gameplay
 
-By default, generation starts after the first enemy turn ends, with up to three requests per combat and at least 15 seconds between requests. Valid cards enter the current run's candidate pool. When a reward opens, one available candidate is added alongside the original options. If no candidate is ready, the original reward appears immediately. Rewards never wait for the network or change while you are choosing. Late results can appear after later combats.
+By default, generation starts immediately on entering the run's first combat; later combats start after the first enemy turn ends, with up to three requests per combat and at least 15 seconds between requests. Valid cards enter the current run's candidate pool. When a reward opens, one available candidate is added alongside the original options. If no candidate is ready, the original reward appears immediately. Rewards never wait for the network or change while you are choosing. Late results can appear after later combats.
 
 New cards use protocol v6: two complete upgrade forms, general card selection and creation/transformation, rule groups, and dynamic expressions. Supported character mechanics include Osty/Souls/Doom, Orbs/Focus, Forge/Stars, and Shivs/Sly. The LLM can combine implemented effects but cannot return executable code. There is no power budget; balance needs to be evaluated through play. Earlier protocols have no migration path, so start a new run when testing.
 
@@ -65,7 +65,7 @@ The local viewer requires Python 3.10+ and no third-party packages. The Windows 
 python tools/view_generation.py 'C:\Games\Slay the Spire 2\mods\NeowsCompany\data\generation'
 ```
 
-Without a path, the launcher uses `STS2_GAME_DIR`, falling back to the repository's `data/generation` directory. The page groups records by combat and request number. Search by card name, model, or failure reason, and filter successful or failed requests. Each record shows base and upgraded card text, effect structures, prompts, reasoning, raw model content, timing, token usage, cache hits, and reward audit events.
+Without a path, the launcher uses `STS2_GAME_DIR`, falling back to the repository's `data/generation` directory. The page groups records by combat and request number. The run selector defaults to the most recent run; choose another run or all runs to browse older records. Search, status filters, and statistics follow the selected run, which is preserved during refresh. Logs without a run key appear under a separate option. Search by card name, model, or failure reason, and filter successful or failed requests. Each record shows base and upgraded card text, effect structures, prompts, reasoning, raw model content, timing, token usage, cache hits, and reward audit events.
 
 New logs include effect text from the shared CardText renderer; the viewer reconstructs text from definitions in older logs. Opening a JSON block expands nested objects and lists, which can still be collapsed manually. The Copy button copies the full contents regardless of their collapsed state. `OBSERVATION_JSON` has its own view; reasoning and raw output start collapsed. Raw output preserves whitespace and code fences, with known credentials and service URLs redacted. Content missing from old logs cannot be recovered. Times use your browser's local timezone, and requests with no completion record are marked pending.
 

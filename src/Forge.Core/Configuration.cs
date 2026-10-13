@@ -34,7 +34,7 @@ public sealed record ForgeConfig
     public int MaxRequestsPerCombat { get; init; } = 2;
     public int PrefetchMinimumIntervalSeconds { get; init; } = 15;
     public int PrefetchInitialCardPlays { get; init; } = 2;
-    // Opening-play setting is retained for old configs; initial prefetch now waits for the enemy turn.
+    // Retained for old configs; initial prefetch starts at the first combat's entry, otherwise after the enemy turn.
     public int CandidatePoolCapacity { get; init; } = 24;
     public int PromptEventLimit { get; init; } = 60;
     public int PromptHistoryLimit { get; init; } = 100;

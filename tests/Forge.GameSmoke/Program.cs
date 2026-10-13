@@ -30,6 +30,8 @@ using MegaCrit.Sts2.Core.Localization.DynamicVars;
 using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.ValueProps;
 using MegaCrit.Sts2.Core.Rooms;
+using MegaCrit.Sts2.Core.Map;
+using MegaCrit.Sts2.Core.Runs.History;
 using MegaCrit.Sts2.Core.Models.Events;
 
 try
@@ -290,11 +292,36 @@ static class Smoke
             Check(NativeMechanics.Matches(NativeMechanics.Card("soul"), new() { Id = "soul", Type = "skill" }));
             Console.WriteLine("PASS native event ordinals include earlier events and snapshot filter properties before later upgrades");
             CheckCombatRewardEligibility(Player.CreateForNewRun<Regent>(UnlockState.all, 3));
+            CheckFirstCombatTiming();
             CheckQuantityAndDecimalContracts(owner, other, combat);
         }
         finally { CombatManager.Instance.History.Clear(); turnField.SetValue(CombatManager.Instance, previous); guard.UnpatchAll(guard.Id); }
     }
     private static bool SkipSaveManager(ref SaveManager? __result) { __result = null; return false; }
+    private static void CheckFirstCombatTiming()
+    {
+        foreach (var roomType in new[] { RoomType.Monster, RoomType.Elite, RoomType.Boss })
+        {
+            var run = RunState.CreateForTest([Player.CreateForNewRun<Regent>(UnlockState.all, 5)],
+                acts: [ModelDb.Act<Underdocks>(), ModelDb.Act<Overgrowth>()], seed: "FIRST_COMBAT");
+            run.AppendToMapPointHistory(MapPointType.Unknown, RoomType.Event, null);
+            run.AppendToMapPointHistory(MapPointType.RestSite, RoomType.RestSite, null);
+            run.AppendToMapPointHistory(MapPointType.Unknown, roomType, null);
+            Check(run.TotalFloor == 3 && ForgeRuntime.IsFirstCombat(run));
+            run.AppendToMapPointHistory(MapPointType.Monster, RoomType.Monster, null);
+            Check(!ForgeRuntime.IsFirstCombat(run));
+            run.CurrentActIndex = 1;
+            run.AppendToMapPointHistory(MapPointType.Monster, RoomType.Monster, null);
+            Check(!ForgeRuntime.IsFirstCombat(run));
+        }
+        var eventRun = RunState.CreateForTest([Player.CreateForNewRun<Regent>(UnlockState.all, 6)], seed: "EVENT_COMBAT");
+        eventRun.AppendToMapPointHistory(MapPointType.Unknown, RoomType.Event, null);
+        eventRun.CurrentMapPointHistoryEntry!.Rooms.Add(new MapPointRoomHistoryEntry { RoomType = RoomType.Monster });
+        Check(ForgeRuntime.IsFirstCombat(eventRun));
+        eventRun.CurrentMapPointHistoryEntry.Rooms.Add(new MapPointRoomHistoryEntry { RoomType = RoomType.Elite });
+        Check(!ForgeRuntime.IsFirstCombat(eventRun));
+        Console.WriteLine("PASS first-combat timing uses native room history across floors, event combats and acts");
+    }
     private static void CheckQuantityAndDecimalContracts(Player owner, Player other, CombatState combat)
     {
         var card = combat.CreateCard<NeowGeneratedCard>(owner);

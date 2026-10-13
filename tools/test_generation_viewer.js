@@ -5,7 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 class Element {
-  constructor(tag) { this.tag = tag; this.children = []; this.textContent = ''; this.handlers = {}; this.open = false; }
+  constructor(tag) { this.tag = tag; this.children = []; this.textContent = ''; this.value = ''; this.handlers = {}; this.open = false; }
   append(...children) { this.children.push(...children); }
   replaceChildren(...children) { this.children = children; }
   addEventListener(event, handler) { this.handlers[event] = handler; }
@@ -93,3 +93,78 @@ if (process.argv[2]) {
   console.log(`PASS historical text matches Core/CardText for ${fixtures.length} definitions`);
 }
 console.log('PASS nested JSON expansion, manual collapse, raw content, snapshots and historical rendering');
+
+async function testRunFilters() {
+  const session = (file,run_key,timestamp_utc,ready=1,failed=0) => ({
+    file,key:file,run_key,timestamp_utc,floor:7,cards:[file],models:[],reasons:[],
+    requests:ready+failed,ready,failed,pending:0,discarded:0,warning_count:0
+  });
+  const newest = session('new-2.jsonl','new','2026-10-13T02:00:00Z');
+  const oldest = session('old.jsonl','old','2026-10-12T01:00:00Z',0,1);
+  context.sessions = [newest,session('new-1.jsonl','new','2026-10-13T01:00:00Z'),oldest,
+    session('legacy.jsonl',null,null),session('legacy-empty.jsonl','',null)];
+  let detailsRead = [];
+  context.fetch = async url => ({ok:true,json:async () => {
+    if (url === '/api/sessions') return {directory:'fixture',sessions:context.sessions,errors:[]};
+    const file = decodeURIComponent(url.split('file=')[1]);
+    detailsRead.push(file);
+    return {summary:context.sessions.find(s => s.file === file),requests:[],events:[]};
+  }});
+  run(`index = []; activeRun = null; activeFile = null; current = null; updateRuns();`);
+  assert.equal(run('activeRun'),null,'empty logs must not prevent choosing the latest run later');
+  await run('refresh()');
+  assert.equal(run('activeRun'),'run:new');
+  assert.equal(run('activeFile'),'new-2.jsonl');
+  assert.equal(elements.get('sessions').children.length,2);
+  assert.ok(elements.get('stats').text().includes('2 场战斗 · 2 次请求 · 成功 2 · 失败 0'));
+  assert.equal(elements.get('run').children.length,4,'one option per run plus all and unknown');
+  assert.ok(elements.get('run').children[1].text().includes(run(`time('2026-10-13T01:00:00Z')`)));
+  assert.ok(elements.get('run').children[3].text().includes('未记录局号（2 场战斗）'));
+
+  elements.get('run').value = 'run:old';
+  await elements.get('run').onchange();
+  assert.equal(run('activeFile'),'old.jsonl');
+  assert.equal(run('current.summary.run_key'),'old');
+  assert.equal(elements.get('sessions').children.length,1);
+  assert.ok(elements.get('stats').text().includes('1 场战斗 · 1 次请求 · 成功 0 · 失败 1'));
+  elements.get('status').value = 'ready';
+  await elements.get('status').onchange();
+  assert.equal(run('activeFile'),null);
+  assert.ok(elements.get('detail').text().includes('没有匹配的记录'));
+  await run('refresh()');
+  assert.equal(run('activeFile'),null,'refresh must not open a record outside the filters');
+  assert.equal(elements.get('run').children.length,4,'status filters must not remove run options');
+  elements.get('status').value = 'failed';
+  await elements.get('status').onchange();
+  assert.equal(run('activeFile'),'old.jsonl');
+
+  context.sessions.unshift(session('latest.jsonl','latest','2026-10-13T03:00:00Z'));
+  await run('refresh()');
+  assert.equal(run('activeRun'),'run:old','auto refresh must preserve the chosen run');
+  assert.equal(elements.get('run').value,'run:old');
+  elements.get('search').value = 'new-1';
+  elements.get('status').value = 'all';
+  elements.get('run').value = 'run:new';
+  await elements.get('run').onchange();
+  assert.equal(run('activeFile'),'new-1.jsonl','search and run filters must combine');
+  elements.get('search').value = '';
+  elements.get('run').value = 'unknown';
+  await elements.get('run').onchange();
+  assert.equal(elements.get('sessions').children.length,2);
+  assert.equal(run('activeFile'),'legacy.jsonl');
+  elements.get('run').value = '';
+  await elements.get('run').onchange();
+  assert.equal(elements.get('sessions').children.length,6);
+  await run('refresh()');
+  assert.equal(run('activeRun'),'','all runs selection must survive refresh');
+
+  elements.get('run').value = 'run:old';
+  await elements.get('run').onchange();
+  context.sessions = context.sessions.filter(s => s.run_key !== 'old');
+  await run('refresh()');
+  assert.equal(run('activeRun'),'run:latest','deleted run must fall back to the most recent run');
+  assert.equal(run('activeFile'),'latest.jsonl');
+  assert.ok(detailsRead.includes('old.jsonl'));
+  console.log('PASS run grouping, defaults, combined filters, unknown runs, detail selection and refresh');
+}
+testRunFilters().catch(error => { console.error(error); process.exitCode = 1; });

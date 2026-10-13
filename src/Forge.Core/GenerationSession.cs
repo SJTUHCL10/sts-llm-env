@@ -27,16 +27,17 @@ public sealed class GenerationSession : IDisposable
         _publish = publish;
     }
 
-    public bool TryPrefetch(GenerationContext context, DateTimeOffset now, bool firstEnemyTurnEnded = false, bool combatEnded = false)
+    public bool TryPrefetch(GenerationContext context, DateTimeOffset now, bool firstEnemyTurnEnded = false, bool combatEnded = false,
+        bool firstCombatStarted = false)
     {
         lock (_gate)
         {
             if (_closed || _sealed || context.CombatKey != Key || _requests >= _config.MaxRequestsPerCombat
                 || _pending is { IsCompleted: false } || now - _lastStart < TimeSpan.FromSeconds(_config.PrefetchMinimumIntervalSeconds))
                 return false;
-            // Enemy turn completion, not damage received: a fully blocked/non-attacking opening still qualifies.
+            // Start the run's first combat immediately; later combats wait for the enemy opening or a quick win.
             if (_requests == 0 && _config.GenerationTiming == GenerationTiming.Prefetch
-                && !firstEnemyTurnEnded && !combatEnded) return false;
+                && !firstCombatStarted && !firstEnemyTurnEnded && !combatEnded) return false;
             _lastStart = now;
             int revision = ++_requests;
             // Capture the observation on the main thread, move serialization/network off it.

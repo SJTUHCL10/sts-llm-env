@@ -529,7 +529,29 @@ await Test("truncated completion rejected", async () =>
     await RejectAsync(() => new OpenAiCardGenerator(client, new()).GenerateAsync(new("s", "u"), default));
 });
 
-await Test("initial prefetch waits for the enemy turn, not opening plays, without spending budget", async () =>
+await Test("first combat prefetch starts on entry and respects pending, interval and request budget", async () =>
+{
+    var completion = new TaskCompletionSource<CardBatch>(TaskCreationOptions.RunContinuationsAsynchronously);
+    var prompts = new List<Prompt>();
+    using var session = new GenerationSession(context.CombatKey, config with { GenerationTiming = GenerationTiming.Prefetch },
+        new FakeGenerator((prompt, _) => { prompts.Add(prompt); return completion.Task; }), (_, _) => { });
+    var now = DateTimeOffset.UtcNow;
+    var opening = context with { TotalEvents = 0, OmittedEvents = 0, RecentEvents = [], FirstRoundSummary = null };
+    Check(!session.TryPrefetch(opening with { CombatKey = "other" }, now, firstCombatStarted: true));
+    Check(!session.HasRequests);
+    Check(session.TryPrefetch(opening, now, firstCombatStarted: true) && session.HasRequests);
+    Check(!session.TryPrefetch(opening, now.AddSeconds(2), firstEnemyTurnEnded: true));
+    completion.SetResult(new() { Cards = [valid] });
+    await session.WaitForPendingAsync();
+    Check(prompts.Count == 1 && prompts[0].Revision == 1);
+    Check(!session.TryPrefetch(opening, now.AddMilliseconds(500), firstEnemyTurnEnded: true));
+    Check(session.TryPrefetch(context, now.AddSeconds(2), firstEnemyTurnEnded: true));
+    await session.WaitForPendingAsync();
+    Check(prompts.Count == 2 && prompts[1].Revision == 2);
+    Check(!session.TryPrefetch(context, now.AddSeconds(4), firstCombatStarted: true));
+    Check(session.Freeze().Single().Name == valid.Name);
+});
+await Test("later combat initial prefetch waits for the enemy turn, not opening plays, without spending budget", async () =>
 {
     var prompts = new List<Prompt>();
     using var session = new GenerationSession(context.CombatKey, config with { GenerationTiming = GenerationTiming.Prefetch },
@@ -561,7 +583,7 @@ await Test("sealed combat does not schedule another request", () =>
     using var session = new GenerationSession(context.CombatKey, config,
         new FakeGenerator((_, _) => throw new Exception("Should not call provider.")), (_, _) => { });
     session.Seal();
-    Check(!session.TryPrefetch(context, DateTimeOffset.UtcNow, firstEnemyTurnEnded: true, combatEnded: true));
+    Check(!session.TryPrefetch(context, DateTimeOffset.UtcNow, firstEnemyTurnEnded: true, combatEnded: true, firstCombatStarted: true));
     return Task.CompletedTask;
 });
 await Test("prefetch pending deduplication / no wait freeze / late results ignored", async () =>

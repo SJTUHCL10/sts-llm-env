@@ -42,6 +42,11 @@ internal sealed class ForgeRuntime(string root, ForgeConfig config)
     internal static bool HasCombatCardReward(ICombatState combat) => combat.Encounter?.RoomType != RoomType.Boss
         || combat.RunState.CurrentActIndex < combat.RunState.Acts.Count - 1;
 
+    // Native history already includes the current room at CombatBegan, including event-spawned combats.
+    // It also survives loading a run, unlike a flag tracking combats seen by this runtime.
+    internal static bool IsFirstCombat(IRunState run) => run.MapPointHistory.SelectMany(act => act)
+        .SelectMany(point => point.Rooms).Count(room => room.RoomType is RoomType.Monster or RoomType.Elite or RoomType.Boss) <= 1;
+
     public void Subscribe()
     {
         RunManager.Instance.RunStarted += _ => Bootstrap.Safe(StopRun);
@@ -77,9 +82,10 @@ internal sealed class ForgeRuntime(string root, ForgeConfig config)
             });
         if (pool.HasReward(key)) _session.Seal(); // Reloading a shown reward must not farm fresh pool candidates.
         _lastContext = Context(combat);
+        bool firstCombat = IsFirstCombat(combat.RunState);
         Audit("generation_session", new { key, floor = _player.RunState.TotalFloor, timing = config.GenerationTiming,
-            initial_trigger = "first_enemy_turn_ended", run_key = pool.RunKey });
-        // Initial request waits for the complete enemy opening, even when all damage is blocked.
+            initial_trigger = firstCombat ? "combat_began" : "first_enemy_turn_ended", run_key = pool.RunKey });
+        if (firstCombat) MaybePrefetch(_lastContext, firstCombatStarted: true);
     }
 
     private void Boundary(ICombatState combat, string kind)
@@ -118,10 +124,11 @@ internal sealed class ForgeRuntime(string root, ForgeConfig config)
         _lastContext = Context(_combat);
     }
 
-    private void MaybePrefetch(GenerationContext context)
+    private void MaybePrefetch(GenerationContext context, bool firstCombatStarted = false)
     {
         if (Eligible && config.GenerationTiming == GenerationTiming.Prefetch)
-            _session?.TryPrefetch(context, DateTimeOffset.UtcNow, firstEnemyTurnEnded: _firstEnemyTurnEnded);
+            _session?.TryPrefetch(context, DateTimeOffset.UtcNow, firstEnemyTurnEnded: _firstEnemyTurnEnded,
+                firstCombatStarted: firstCombatStarted);
     }
 
     private void End(CombatRoom room, bool won)

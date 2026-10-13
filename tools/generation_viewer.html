@@ -7,8 +7,8 @@
   <style>
     :root { color-scheme: dark; --bg:#141918; --panel:#1c2422; --line:#35413d; --text:#e4eae5; --muted:#a4b4ab; --accent:#bfd9a8; }
     * { box-sizing:border-box; }
-    body { margin:0; font:14px/1.65 "Segoe UI","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--text); }
-    header { padding:22px 28px 16px; border-bottom:1px solid var(--line); }
+    body { margin:0; height:100vh; display:flex; flex-direction:column; font:14px/1.65 "Segoe UI","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--text); }
+    header { flex-shrink:0; padding:22px 28px 16px; border-bottom:1px solid var(--line); }
     h1 { margin:0 0 4px; font-size:23px; font-weight:600; }
     h2 { margin:0 0 12px; font-size:19px; }
     h3 { margin:0 0 8px; font-size:16px; }
@@ -18,13 +18,14 @@
     .toolbar { display:flex; flex-wrap:wrap; gap:10px; margin-top:14px; align-items:center; }
     input,select,button { font:inherit; color:var(--text); background:var(--panel); border:1px solid var(--line); border-radius:7px; padding:7px 11px; }
     input[type=search] { width:340px; max-width:100%; }
+    #run { max-width:min(420px,100%); }
     input[type=checkbox] { accent-color:var(--accent); }
     button { cursor:pointer; }
     button:hover { border-color:var(--accent); }
     button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
     #stats { color:var(--accent); margin-top:12px; }
     #error { color:#f1b2a3; white-space:pre-wrap; }
-    main { display:grid; grid-template-columns:340px minmax(0,1fr); height:calc(100vh - 218px); min-height:460px; }
+    main { display:grid; flex:1; grid-template-columns:340px minmax(0,1fr); min-height:460px; }
     aside { overflow:auto; padding:16px; border-right:1px solid var(--line); }
     #detail { overflow:auto; padding:24px 28px 60px; }
     .session { display:block; text-align:left; width:100%; margin-bottom:9px; padding:12px 14px; }
@@ -68,7 +69,7 @@
     .json-null,.json-index,.json-count { color:var(--muted); }
     .json-count { font:11px "Segoe UI","Microsoft YaHei",sans-serif; margin-left:10px; }
     @media(max-width:850px) { main { grid-template-columns:260px minmax(0,1fr); } #detail { padding:20px 16px; } }
-    @media(max-width:620px) { header { padding:16px; } main { display:block; height:auto; } aside { max-height:220px; border-bottom:1px solid var(--line); border-right:0; } #detail { overflow:visible; } }
+    @media(max-width:620px) { body { height:auto; min-height:100vh; } header { padding:16px; } main { display:block; } aside { max-height:220px; border-bottom:1px solid var(--line); border-right:0; } #detail { overflow:visible; } }
   </style>
 </head>
 <body>
@@ -76,6 +77,8 @@
     <h1>涅奥的陪伴 <span class="muted">/ 生成记录</span></h1>
     <div id="directory" class="muted">正在连接本地日志…</div>
     <div class="toolbar">
+      <label for="run">对局</label>
+      <select id="run" aria-label="筛选对局"><option value="">全部对局</option></select>
       <input id="search" type="search" placeholder="搜索文件、卡名、模型、失败原因" aria-label="搜索生成记录">
       <select id="status" aria-label="筛选状态">
         <option value="all">所有状态</option><option value="ready">成功</option><option value="failed">失败</option>
@@ -98,7 +101,7 @@
     const triggers = {on_play:'打出时',next_turn_start:'下回合开始',turn_start:'回合开始',turn_end:'回合结束',card_played:'打出任意牌后',attack_played:'打出攻击牌后',skill_played:'打出技能牌后',card_drawn:'抽牌后',card_exhausted:'消耗牌后'};
     const conditions = {self_has_block:'自身有格挡',self_hp_below_half:'生命低于一半',target_weak:'目标有虚弱',target_vulnerable:'目标有易伤'};
     const scalings = {self_block:'当前格挡',hand_size:'手牌数',discard_size:'弃牌堆牌数',exhaust_size:'消耗堆牌数',target_poison:'目标中毒层数',self_stars:'当前星数'};
-    let index = [], activeFile = null, activeRevision = null, current = null, lastDetail = '', busy = false;
+    let index = [], activeRun = null, activeFile = null, activeRevision = null, current = null, lastDetail = '', busy = false;
     // Provider text is always inserted as text, including prompts, names and reasoning.
     function el(tag, text, className) {
       const node = document.createElement(tag);
@@ -189,11 +192,37 @@
       if (!response.ok) throw new Error('读取失败（HTTP '+response.status+'），请检查目录或刷新重试。');
       return response.json();
     }
+    function runId(session) {
+      return typeof session.run_key === 'string' && session.run_key.trim() ? 'run:'+session.run_key : 'unknown';
+    }
+    function updateRuns() {
+      // The index is newest first. Group before applying search/status filters so
+      // every run remains available even when it has no matching requests.
+      const runs = new Map();
+      for (const session of index) {
+        const id = runId(session);
+        if (!runs.has(id)) runs.set(id,{key:session.run_key,first:session.timestamp_utc,count:0});
+        const run = runs.get(id);
+        run.count++;
+        if (session.timestamp_utc && (!run.first || session.timestamp_utc < run.first)) run.first = session.timestamp_utc;
+      }
+      // Wait for the first nonempty index before choosing the most recent run.
+      if (activeRun === null || (activeRun && !runs.has(activeRun))) activeRun = runs.keys().next().value ?? null;
+      const select = $('run'), all = el('option','全部对局'); all.value = '';
+      select.replaceChildren(all);
+      for (const [id,run] of runs) {
+        const label = id === 'unknown' ? '未记录局号' : time(run.first)+' · '+run.key;
+        const option = el('option',label+'（'+run.count+' 场战斗）'); option.value = id;
+        select.append(option);
+      }
+      select.value = activeRun ?? '';
+    }
+    function matchesRun(session) { return !activeRun || runId(session) === activeRun; }
     function matches(session) {
       const query = $('search').value.trim().toLowerCase();
       const status = $('status').value;
       const count = status === 'warnings' ? session.warning_count : session[status];
-      return (status === 'all' || count > 0) && (!query || json(session).toLowerCase().includes(query));
+      return matchesRun(session) && (status === 'all' || count > 0) && (!query || json(session).toLowerCase().includes(query));
     }
     function renderList() {
       const sessions = index.filter(matches);
@@ -213,8 +242,9 @@
         };
         $('sessions').append(button);
       }
-      const total = field => index.reduce((sum,item) => sum+item[field],0);
-      $('stats').textContent = `${index.length} 场战斗 · ${total('requests')} 次请求 · 成功 ${total('ready')} · 失败 ${total('failed')} · 待完成 ${total('pending')} · 丢弃 ${total('discarded')}　|　匹配 ${sessions.length} 场`;
+      const runSessions = index.filter(matchesRun);
+      const total = field => runSessions.reduce((sum,item) => sum+item[field],0);
+      $('stats').textContent = `${activeRun ? activeRun === 'unknown' ? '未记录局号' : '所选对局' : '全部对局'}：${runSessions.length} 场战斗 · ${total('requests')} 次请求 · 成功 ${total('ready')} · 失败 ${total('failed')} · 待完成 ${total('pending')} · 丢弃 ${total('discarded')}　|　匹配 ${sessions.length} 场`;
     }
     // Historical journals have no card_texts snapshot. Mirror Core/CardText's Chinese
     // renderer for those records; new journals use the shared renderer's saved text.
@@ -494,9 +524,10 @@
       try {
         const data = await api('/api/sessions');
         index = data.sessions;
+        updateRuns();
         $('directory').textContent = data.directory;
         $('error').textContent = data.errors.map(e => e.file+'：'+e.reason).join('\n');
-        if (!index.some(s => s.file === activeFile)) {
+        if (!index.some(s => s.file === activeFile && matches(s))) {
           activeFile = index.find(matches)?.file ?? null; activeRevision = null; lastDetail = ''; current = null;
           if (!activeFile) $('detail').replaceChildren(el('div','暂无可查看的记录。','empty'));
         }
@@ -506,6 +537,7 @@
       finally { busy = false; }
     }
     $('search').oninput = applyFilters;
+    $('run').onchange = () => { activeRun = $('run').value; return applyFilters(); };
     $('status').onchange = applyFilters;
     $('refresh').onclick = refresh;
     setInterval(() => { if ($('auto').checked && !document.hidden) refresh(); },5000);
