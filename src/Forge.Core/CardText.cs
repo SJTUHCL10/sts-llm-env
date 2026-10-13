@@ -10,7 +10,7 @@ public static class CardText
         ["plating"]="覆甲", ["intangible"]="无实体", ["artifact"]="人工制品", ["buffer"]="缓冲", ["retain_block"]="保留格挡",
         ["soul"]="灵魂", ["shiv"]="小刀", ["wound"]="伤口", ["dazed"]="晕眩", ["burn"]="灼伤", ["void"]="虚空", ["slimed"]="黏液", ["fuel"]="燃料", ["debris"]="碎屑", ["minion_strike"]="仆从打击", ["minion_sacrifice"]="仆从捐躯", ["minion_dive"]="仆从俯冲", ["sovereign_blade"]="君王之剑",
         ["lightning"]="闪电", ["frost"]="冰霜", ["dark"]="黑暗", ["plasma"]="等离子", ["glass"]="玻璃", ["random"]="随机",
-        ["hp"]="当前生命值", ["max_hp"]="最大生命值", ["block"]="格挡", ["energy"]="能量", ["stars"]="星", ["hand_size"]="手牌数", ["draw_size"]="抽牌堆牌数", ["discard_size"]="弃牌堆牌数", ["exhaust_size"]="消耗堆牌数", ["orb_count"]="充能球数", ["orb_capacity"]="充能球栏位数", ["paid_energy"]="本次消耗能量", ["paid_stars"]="本次消耗星", ["event_amount"]="本次事件数值", ["damage_dealt"]="上次攻击实际造成的伤害",
+        ["hp"]="当前生命值", ["max_hp"]="最大生命值", ["gold"]="金币", ["block"]="格挡", ["energy"]="能量", ["stars"]="星", ["hand_size"]="手牌数", ["draw_size"]="抽牌堆牌数", ["discard_size"]="弃牌堆牌数", ["exhaust_size"]="消耗堆牌数", ["orb_count"]="充能球数", ["orb_capacity"]="充能球栏位数", ["paid_energy"]="本次消耗能量", ["paid_stars"]="本次消耗星", ["event_amount"]="本次事件数值", ["damage_dealt"]="上次攻击实际造成的伤害",
         ["attack"]="攻击", ["skill"]="技能", ["power"]="能力", ["status"]="状态", ["curse"]="诅咒",
         ["exhaust"]="消耗", ["ethereal"]="虚无", ["retain"]="保留", ["innate"]="固有", ["sly"]="奇巧"
     };
@@ -89,7 +89,7 @@ public static class CardText
         {
             int slot = index++;
             return RenderEffect(effect, chinese, amount?.Invoke(slot), resource, form.Cost,
-                quantity is null ? null : (name, value, fallback) => quantity(slot, name, value, fallback));
+                quantity is null ? null : (name, value, fallback) => quantity(slot, name, value, fallback), Action);
         }
         var lines = RenderEffects(form.Immediate, chinese, Action, resource, form.Cost).ToList();
         foreach (var rule in form.Listeners) lines.Add(RenderRule(rule, chinese, Action, cardType == ForgeCardType.Power, resource, form.Cost));
@@ -167,7 +167,7 @@ public static class CardText
         };
         return text.Replace(chinese ? "本次事件数值" : "the event amount", eventAmount, StringComparison.Ordinal);
     }
-    public static string RenderEffect(CardEffect e, bool chinese, string? amount = null, Func<string, string, string>? resource = null, CardCost? cost = null, Func<string, NumberExpression?, int, string>? numeric = null)
+    public static string RenderEffect(CardEffect e, bool chinese, string? amount = null, Func<string, string, string>? resource = null, CardCost? cost = null, Func<string, NumberExpression?, int, string>? numeric = null, Func<CardEffect, string>? nested = null)
     {
         string Quantity(string slot, NumberExpression? value, int fallback = 1) => numeric?.Invoke(slot, value, fallback) ?? CountNumber(value, chinese, fallback, resource, cost);
         string n = UsesX(e.Amount, cost) ? Number(e.Amount, chinese, resource: resource, cost: cost) : amount ?? Number(e.Amount, chinese, resource: resource, cost: cost);
@@ -184,11 +184,17 @@ public static class CardText
         string destination = e.To is { } to ? (chinese ? "你的" : "your ") + Pile(to, chinese) + (to == CardPileName.Draw ? e.Position switch { "bottom" => chinese ? "底部" : " bottom", "random" => chinese ? "随机位置" : " randomly", _ => chinese ? "顶部" : " top" } : "") : "";
         string text = chinese ? e.Kind switch
         {
+            EffectKind.GainMaxHp => $"{(e.Target?.Ref is null or "self" ? "" : target)}增加{quantity}最大生命。",
+            EffectKind.LoseMaxHp => $"{(e.Target?.Ref is null or "self" ? "" : target)}减少{quantity}最大生命。",
+            EffectKind.GainGold => $"获得{ChineseQuantity(n, "枚")}金币。",
+            EffectKind.LoseGold => $"失去{ChineseQuantity(n, "枚")}金币。",
             EffectKind.Damage => $"{(e.Actor == "osty" ? "奥斯提" : "")}{(e.Target?.Ref == "enemy" ? "" : "对" + target)}造成{quantity}伤害。", EffectKind.Block => $"{(e.Target?.Ref is null or "self" ? "" : target)}获得{quantity}格挡。", EffectKind.Draw => $"抽{n}张牌。", EffectKind.GainEnergy => $"获得{Resource("energy", n, true, resource)}。", EffectKind.GainStars => $"获得{Resource("stars", n, true, resource)}。", EffectKind.ApplyPower => e.Target?.Ref is null or "self" ? $"获得{ChineseQuantity(n, PowerUnit(e.Power!))}{Name(e.Power!, true)}。" : $"对{target}施加{ChineseQuantity(n, PowerUnit(e.Power!))}{Name(e.Power!, true)}。",
             EffectKind.Discard => $"丢弃{target}。", EffectKind.Exhaust => $"消耗{target}。", EffectKind.Move => $"将{target}移至{destination}。", EffectKind.Select => $"选择{target}。", EffectKind.Upgrade => $"升级{target}。", EffectKind.Copy => $"将{target}的{Quantity("count", e.Count)}张复制品添加到{destination}。", EffectKind.Transform => e.Card?.Pick == SelectionMode.Choose ? $"{source}，将{target}变化为所选的牌。" : $"将{target}变化为{source}。", EffectKind.CreateCard => e.Card?.Pick == SelectionMode.Choose ? (e.Count is null || e.Count.Value == 1 ? "" : $"重复以下操作{Quantity("count", e.Count)}次：") + $"{source}，添加到{destination}。" : $"将{Quantity("count", e.Count)}张{source}添加到{destination}。", EffectKind.Play => $"自动打出{target}。", EffectKind.AddKeyword => $"{target}获得{Name(e.Keyword!.Value.ToString().ToLowerInvariant(), true)}。", EffectKind.RemoveKeyword => $"移除{target}的{Name(e.Keyword!.Value.ToString().ToLowerInvariant(), true)}。", EffectKind.SetCost => $"{target}在{(e.Until == LifetimeKind.Turn ? "本回合" : "本场战斗")}的耗能变为{Resource("energy", n, true, resource)}。",
             EffectKind.Summon => $"召唤{n}。", EffectKind.Forge => $"铸造{n}。", EffectKind.Channel => $"生成{n}个{Name(e.Orb!, true)}充能球。", EffectKind.Evoke => $"激发{target}{(e.Remove == false ? "，但不移除它" : "")}。", EffectKind.OrbPassive => $"触发{target}的被动效果。", EffectKind.OrbSlots => OrbSlots(n, true), EffectKind.Heal => $"{(e.Target?.Ref is null or "self" ? "" : target)}回复{quantity}生命。", EffectKind.LoseHp => $"{(e.Target?.Ref is null or "self" ? "" : target)}失去{quantity}生命。", _ => throw new InvalidOperationException()
         } : e.Kind switch
         {
+            EffectKind.GainMaxHp => $"{target} gains {n} Max HP.", EffectKind.LoseMaxHp => $"{target} loses {n} Max HP.",
+            EffectKind.GainGold => $"Gain {n} Gold.", EffectKind.LoseGold => $"Lose {n} Gold.",
             EffectKind.Damage => $"{(e.Actor == "osty" ? "Osty: " : "")}Deal {n} damage to {target}.", EffectKind.Block => e.Target?.Ref is null or "self" ? $"Gain {n} Block." : $"{target} gains {n} Block.", EffectKind.Draw => $"Draw {n} cards.", EffectKind.GainEnergy => $"Gain {Resource("energy", n, false, resource)}.", EffectKind.GainStars => $"Gain {Resource("stars", n, false, resource)}.", EffectKind.ApplyPower => $"Apply {n} {Name(e.Power!, false)} to {target}.", EffectKind.Discard => $"Discard {target}.", EffectKind.Exhaust => $"Exhaust {target}.", EffectKind.Move => $"Move {target} to {destination}.", EffectKind.Select => $"Select {target}.", EffectKind.Upgrade => $"Upgrade {target}.", EffectKind.Copy => $"Add {Quantity("count", e.Count)} copies of {target} to {destination}.", EffectKind.Transform => $"Transform {target} into {source}.", EffectKind.CreateCard => e.Card?.Pick == SelectionMode.Choose ? $"{source}; add it to {destination}. Repeat {Quantity("count", e.Count)} times." : $"Add {Quantity("count", e.Count)} {source} to {destination}.", EffectKind.Play => $"Auto-play {target}.", EffectKind.AddKeyword => $"Give {target} {e.Keyword}.", EffectKind.RemoveKeyword => $"Remove {e.Keyword} from {target}.", EffectKind.SetCost => $"Set {target}'s cost to {Resource("energy", n, false, resource)} for this {e.Until.ToString()!.ToLowerInvariant()}.", EffectKind.Summon => $"Summon {n}.", EffectKind.Forge => $"Forge {n}.", EffectKind.Channel => $"Channel {n} {Name(e.Orb!, false)} orbs.", EffectKind.Evoke => $"Evoke {target}{(e.Remove == false ? " without removing it" : "")}.", EffectKind.OrbPassive => $"Trigger {target}'s passive.", EffectKind.OrbSlots => OrbSlots(n, false), EffectKind.Heal => $"Heal {target} for {n} HP.", EffectKind.LoseHp => $"{target} loses {n} HP.", _ => throw new InvalidOperationException()
         };
         if (e.Kind == EffectKind.ApplyPower && e.Amount?.Mul is { Length: 2 } factors
@@ -204,6 +210,11 @@ public static class CardText
             bool ownTurn = e.Kind == EffectKind.AddKeyword || e.Target?.Ref is null or "self" or "osty";
             text += ownTurn ? chinese ? "持续至回合结束。" : " Until the end of your turn."
                 : chinese ? "持续至目标的回合结束。" : " Until the end of the target's turn.";
+        }
+        if (e.OnFatal is { } fatal)
+        {
+            var payoff = RenderEffects(fatal, chinese, nested ?? (child => RenderEffect(child, chinese, resource: resource, cost: cost)), resource, cost);
+            text += chinese ? "斩杀：" + string.Join("", payoff) : " Fatal: " + string.Join(" ", payoff);
         }
         if (e.Condition is not null) text = (chinese ? "若" : "If ") + Condition(e.Condition, chinese, resource, cost) + (chinese ? "，" : ": ") + text;
         if (e.Repeat is not null) text = chinese ? $"重复以下效果{Quantity("repeat", e.Repeat)}次：" + text : $"Repeat the following {Quantity("repeat", e.Repeat)} times: " + text;

@@ -26,6 +26,12 @@ const context = vm.createContext({
 vm.runInContext(source.replace(/    refresh\(\);\s*$/, ''),context);
 const run = code => vm.runInContext(code,context);
 const walk = node => [node,...node.children.flatMap(walk)];
+assert.equal(run(`effectText({kind:'damage',target:'enemy',amount:10,on_fatal:[{kind:'gain_max_hp',amount:3},{kind:'gain_gold',amount:20}]})`),
+  '造成10点伤害。斩杀：增加3点最大生命。获得20枚金币。');
+assert.equal(run(`effectText({kind:'damage',target:'enemy',amount:1,on_fatal:[{kind:'damage',target:'random_enemy',amount:2,on_fatal:[{kind:'draw',amount:1}]}]})`),
+  '造成1点伤害。斩杀：对随机敌人造成2点伤害。斩杀：抽1张牌。');
+assert.equal(run(`effectText({kind:'lose_max_hp',amount:2})`),'减少2点最大生命。');
+assert.equal(run(`effectText({kind:'lose_gold',amount:5})`),'失去5枚金币。');
 
 const block = run(`disclosure('JSON',json({cards:[{forms:[{effects:[{kind:'draw',amount:2}]}]}]}))`);
 assert.equal(block.open,false);
@@ -40,11 +46,12 @@ assert.ok(block.text().includes('"amount": 2'));
 
 const raw = '  {"cards": [\n  <script>model text</script>]}  ';
 context.raw = raw;
-const output = run(`disclosure('模型原始输出 / content',raw,false,'',false)`);
+const output = run(`disclosure('模型原始输出 / content',raw)`);
 assert.equal(walk(output).find(node => node.tag === 'pre').textContent,raw);
-const validOutput = run(`disclosure('content','  {"cards":[]}  ',false,'',false)`);
-assert.equal(walk(validOutput).find(node => node.tag === 'pre').textContent,'  {"cards":[]}  ');
-assert.equal(walk(validOutput).filter(node => node.className === 'json-node').length,0);
+const validOutput = run(`disclosure('content','  {"cards":[]}  ')`);
+assert.equal(walk(validOutput).filter(node => node.tag === 'pre').length,0);
+validOutput.open = true; validOutput.handlers.toggle();
+assert.ok(validOutput.text().includes('"cards": []'));
 
 const card = {name:'fixture',type:'attack',rarity:'common',forms:[
   {cost:{energy:1},effects:[{kind:'damage',target:'enemy',amount:7}]},
@@ -79,6 +86,9 @@ assert.equal(run(`formText({effects:[{kind:'gain_energy',amount:2,condition:{op:
 elements.get('status').value = 'all';
 run(`current = {summary:{file:'fixture.jsonl'},requests:[{revision:1,status:'failed',response:{content:raw},result:{reason:'completion_token_limit'}}],events:[]}; renderDetail();`);
 assert.ok(elements.get('detail').text().includes(raw));
+run(`current.requests[0].response.content = '  {"cards":[]}  '; renderDetail();`);
+const contentBlock = elements.get('detail').children.find(node => node.tag === 'details' && node.text().includes('模型原始输出 / content'));
+assert.ok(walk(contentBlock).some(node => node.className === 'json-tree'));
 run(`current.requests[0].response = {}; renderDetail();`);
 assert.ok(elements.get('detail').text().includes('旧版日志未保存'));
 

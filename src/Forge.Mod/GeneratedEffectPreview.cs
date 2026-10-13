@@ -9,7 +9,7 @@ namespace Forge.Mod;
 
 internal static class GeneratedEffectPreview
 {
-    internal static bool CanResolve(NeowGeneratedCard card, int index) => index < card.ActiveForm.Immediate.Length
+    internal static bool CanResolve(NeowGeneratedCard card, int index) => card.ActiveForm.IsImmediateRoot(index)
         && card.Owner?.PlayerCombatState is not null && card.Pile?.Type is PileType.Hand or PileType.Play;
     // Listener rewards come from a power, even when a Skill installed the listener.
     internal static ValueProp BlockProps(bool triggered) => triggered ? ValueProp.Unpowered : ValueProp.Move;
@@ -46,10 +46,10 @@ internal static class GeneratedEffectPreview
     internal static void Update(NeowGeneratedCard card, int index, DynamicVar variable, CardPreviewMode mode, Creature? target, bool runGlobalHooks)
     {
         var effect = card.ActiveForm.AllEffects[index];
-        bool triggered = index >= card.ActiveForm.Immediate.Length;
+        bool triggered = index >= card.ActiveForm.ImmediateEffects.Length;
         variable.EnchantedValue = Modify(card, effect, variable.BaseValue, target, mode, false, triggered);
         decimal amount = variable.BaseValue;
-        if (runGlobalHooks && card.Owner?.PlayerCombatState is not null) amount = Resolve(card, index, target, mode);
+        if (runGlobalHooks && card.Owner?.PlayerCombatState is not null && (card.ActiveForm.IsImmediateRoot(index) || effect.Amount?.Value is not null)) amount = Resolve(card, index, target, mode);
         variable.PreviewValue = Modify(card, effect, amount, target, mode, runGlobalHooks, triggered);
     }
     // Deterministic preceding resource effects only. Do not consume RNG, choose cards, channel or apply powers in previews.
@@ -58,6 +58,8 @@ internal static class GeneratedEffectPreview
         var owner = card.Owner;
         var state = owner.PlayerCombatState!;
         int hand = PileType.Hand.GetPile(owner).Cards.Count, stars = state.Stars, energy = state.Energy;
+        int gold = owner.Gold;
+        decimal hp = owner.Creature.CurrentHp, maxHp = owner.Creature.MaxHp;
         decimal block = owner.Creature.Block;
         bool inHand = card.Pile?.Type == PileType.Hand;
         int paidEnergy = card.EnergyCost.CostsX ? energy : Math.Min(energy, card.EnergyCost.GetWithModifiers(CostModifiers.All));
@@ -67,16 +69,23 @@ internal static class GeneratedEffectPreview
         decimal Read(NumberExpression n) => n.Stat switch
         {
             "hand_size" => hand, "stars" => stars, "energy" => energy,
+            "gold" => gold,
+            "hp" when n.Of is null or "self" => hp,
+            "max_hp" when n.Of is null or "self" => maxHp,
             "paid_energy" => paidEnergy, "paid_stars" => paidStars,
             "block" when n.Of is null or "self" => block,
             _ => context.Read(n, target)
         };
         decimal Amount(CardEffect effect, int slot) => effect.Amount?.Value is not null ? card.DynamicVars[$"E{slot}"].BaseValue
             : card.DynamicVars[$"E{slot}"].BaseValue + EffectRules.Evaluate(effect.Amount, Read);
-        if (inHand && index < card.ActiveForm.Immediate.Length)
-            for (int i = 0; i < index; i++)
+        if (inHand && card.ActiveForm.IsImmediateRoot(index))
+        {
+            int slot = 0;
+            foreach (var preceding in card.ActiveForm.Immediate)
             {
-                var preceding = card.ActiveForm.Immediate[i];
+                int i = slot;
+                if (i >= index) break;
+                slot += CardEffect.Flatten([preceding]).Count();
                 if (!EffectRules.Matches(preceding.Condition, Read)) continue;
                 int repetitions = EffectRules.Count(EffectRules.Evaluate(preceding.Repeat, Read, 1));
                 if (repetitions > 4096) break;
@@ -88,9 +97,23 @@ internal static class GeneratedEffectPreview
                         case EffectKind.Block when preceding.Target?.Ref is null or "self": block = Math.Min(999999999m, block + decimal.Floor(Modify(card, preceding, amount, target, mode, true, false))); break;
                         case EffectKind.GainStars: stars = (int)Math.Min(int.MaxValue, stars + amount); break;
                         case EffectKind.GainEnergy: energy = (int)Math.Min(999999999m, energy + amount); break;
+                        case EffectKind.GainGold:
+                            decimal gained = Hook.ModifyGoldGained(owner.RunState, card.CombatState, amount, owner, out _);
+                            gold += EffectRules.Count(gained);
+                            break;
+                        case EffectKind.LoseGold: gold = Math.Max(0, gold - EffectRules.Count(amount)); break;
+                        case EffectKind.GainMaxHp when preceding.Target?.Ref is null or "self":
+                            decimal increased = Math.Min(999999999m, decimal.Truncate(maxHp + amount));
+                            hp = Math.Min(increased, hp + increased - maxHp); maxHp = increased;
+                            break;
+                        case EffectKind.LoseMaxHp when preceding.Target?.Ref is null or "self":
+                            hp = Math.Max(0, Math.Min(hp, maxHp - amount));
+                            maxHp = Math.Max(1, decimal.Truncate(maxHp - amount)); hp = Math.Min(maxHp, hp);
+                            break;
                     }
                 }
             }
+        }
         return quantity is null ? Amount(card.ActiveForm.AllEffects[index], index) : EffectRules.Evaluate(quantity, Read, 1);
     }
 }

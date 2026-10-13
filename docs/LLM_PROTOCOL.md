@@ -14,7 +14,7 @@ OBSERVATION_JSON:
 
 | 输入 | 发给 LLM 的内容 |
 | --- | --- |
-| 局状态 | 角色、进阶、章节、楼层 |
+| 局状态 | 角色、进阶、章节、楼层、金币 |
 | 牌组 | 合并相同卡牌后的名称、类型、费用、升级状态、效果说明、必要附魔/负面属性及张数 |
 | 遗物 | 名称、说明、有效计数 |
 | 生成历史 | name、status、type（attack/skill/power）、rarity（common/uncommon/rare）、基础 cost 与 text；最多 prompt_history_limit 项，默认 100 |
@@ -41,12 +41,14 @@ history 按生成先后顺序取最新 k 张，再按从旧到新输出；k 为 
 
 ## 客户端元信息与审计
 
-请求修订号、combat_key、协议版本、耗时、候选 ID 等保留在客户端会话和审计中，不进入模型设计数据。generation_request/generation_ready 使用 card_protocol:6；候选池使用自己的 schema_version 和 card_protocol。卡牌的内部实例标识服务于原生保存与规则引用，不由 LLM 生成。
+请求修订号、combat_key、协议版本、耗时、候选 ID 等保留在客户端会话和审计中，不进入模型设计数据。generation_request/generation_ready 使用 card_protocol:7；候选池使用自己的 schema_version 和 card_protocol。卡牌的内部实例标识服务于原生保存与规则引用，不由 LLM 生成。
 
 ProviderDiagnostics 仅提取模型 content、reasoning_content、finish_reason、数值 usage 与缓存使用信息；缺少 content 或 reasoning 时记录 null。content 在去除空白、代码围栏及解析卡牌之前记录，截断或无效卡牌 JSON 也可查看。已知凭据和服务地址在 content 与 reasoning 中脱敏；请求头、完整响应信封、任意 HTTP 错误正文不写入日志。提示词和 reasoning 的记录分别遵守配置开关，content 随 record_generation 保存。generation_ready 的 card_texts 按卡牌、形态顺序保存共享 CardText 渲染器的中文效果文本，不改变卡牌定义或存档格式。
 
 ## 奖励与候选池
 
 每批有效结果进入本局候选池。执行定义忽略名称/风味后计算指纹；近期已展示机制形状影响选择顺序，其中包括目标和触发事件。奖励冻结与候选移除使用同一原子快照，已展示奖励包括空奖励保持固定。迟到结果进入后续奖励，不修改已打开的奖励界面。
+
+v7 增加 gain_max_hp/lose_max_hp、gain_gold/lose_gold、gold 数值与 damage.on_fatal。斩杀组允许全部动作，嵌套动作计入动作预算，沿用原生 Fatal 资格与 DamageResult；最后一击在伤害内部结算收益。详情见 CARD_PROGRAM.md。
 
 v6 将 Number 改为 decimal，div 改为普通除法；条件比较保留小数。旧候选池按协议版本隔离，不提供迁移，使用新局测试。已有原生保存卡牌可以被读取，但其 div 按当前普通除法语义执行，不承诺恢复旧整数除法行为。

@@ -34,7 +34,7 @@ Generation/reward audits use background JsonlJournal writers. The legacy record_
 
 Generated reward cards inherit Silver Crucible upgrades from the vanilla candidates' `ModifyingRelics` provenance, through a registered clone and native upgrade/finalization. The already-consumed relic counter is not consulted and modification hooks are not repeated. Base card definitions remain unchanged in reward sidecars; an upgraded generated card retains its native serialization state.
 
-## Card protocol v6
+## Card protocol v7
 
 Card families hold two complete forms. The native card reads the active form for cost, keywords, targets and dynamic variables; upgrade/downgrade rebuild these caches instead of applying numeric deltas. Runtime-only InstanceKey is a native SavedProperty; new copies receive a new identity, and rule snapshots retain their original source identity. Definitions have no LLM schema or instance metadata. Old definitions are not migrated.
 
@@ -44,7 +44,9 @@ GeneratedEffectPower captures the active form, native amount variables, actual p
 
 Immediate attack damage uses native attack commands; triggered damage uses Unpowered damage commands. Previews evaluate numeric expressions and deterministic resource/pile changes without choosing cards, channeling, consuming RNG or mutating state. Immediate expression amounts in the hand/play pile render native dynamic-variable previews, including target modifiers; elsewhere and in listeners they retain formula text. Random chains and future events are not fully forecast. Literal resource gains use native sprite-font icons.
 
-The provider sees a design projection containing grouped deck descriptions, meaningful resources and compact combat statistics. Session identifiers, schema envelopes, reflection trees, complete piles and raw event logs stay client-side. Generation journals remain available for diagnostics. Candidate snapshots and generation audits record card_protocol:6 outside the LLM request.
+The provider sees a design projection containing grouped deck descriptions, meaningful resources including gold and compact combat statistics. Session identifiers, schema envelopes, reflection trees, complete piles and raw event logs stay client-side. Generation journals remain available for diagnostics. Candidate snapshots and generation audits record card_protocol:7 outside the LLM request.
+
+Maximum HP and gold actions use native permanent-resource commands. A damage action may contain on_fatal actions of any supported kind; native fatal eligibility is captured before damage and matched against the actual DamageResult receiver and kill flag. Each damage invocation pays at most once, including split AoEs; repeats check independently. Fatal groups complete inside the damage action even when the last enemy ends combat, while ordinary subsequent effects retain the ending guard. Nested groups share the operation budget, inherit lexical selections without leaking local bindings, and use preorder slots throughout variables, rendering, upgrades and saved rule snapshots. Conditional fatal expressions remain symbolic in previews.
 
 See CARD_PROGRAM.md, LLM_PROTOCOL.md and MECHANIC_COVERAGE.md for the supported contracts and deliberate boundaries.
 

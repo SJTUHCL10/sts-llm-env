@@ -24,6 +24,7 @@ using MegaCrit.Sts2.Core.Saves;
 using MegaCrit.Sts2.Core.Saves.Runs;
 using MegaCrit.Sts2.Core.Unlocks;
 using MegaCrit.Sts2.Core.Commands;
+using MegaCrit.Sts2.Core.Commands.Builders;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Hooks;
 using MegaCrit.Sts2.Core.Localization.DynamicVars;
@@ -39,7 +40,8 @@ try
     string game = args.FirstOrDefault() ?? Environment.GetEnvironmentVariable("STS2_GAME_DIR") ?? throw new ArgumentException("Provide game directory.");
     string lib = Path.Combine(game, "data_sts2_windows_x86_64");
     AssemblyLoadContext.Default.Resolving += (context, name) => File.Exists(Path.Combine(lib, name.Name + ".dll")) ? context.LoadFromAssemblyPath(Path.Combine(lib, name.Name + ".dll")) : null;
-    Smoke.Run();
+    // Keep native types out of the entry-point JIT until the game resolver is registered.
+    Assembly.GetExecutingAssembly().GetType("Smoke")!.GetMethod("Run")!.Invoke(null, null);
 }
 catch (Exception ex)
 {
@@ -57,6 +59,7 @@ static class Smoke
         var native = (IEnumerable<Type>)(AccessTools.Property(registry, "All")?.GetValue(null) ?? AccessTools.Field(registry, "All").GetValue(null))!;
         var types = native.Concat([typeof(NeowGeneratedCard), typeof(GeneratedEffectPower)]).ToArray();
         AccessTools.Field(typeof(ModelDb), "_allAbstractModelSubtypes").SetValue(null, types); ModelDb.Init(types);
+        CheckNativeConversionContracts();
         Check(ModelDb.Relic<PrismaticGem>().Id.Entry == "PRISMATIC_GEM");
         foreach (string id in MechanicCatalog.Cards) Check(NativeMechanics.Card(id).IsCanonical);
         foreach (string id in MechanicCatalog.Powers) Check(NativeMechanics.Power(id).IsCanonical);
@@ -275,6 +278,7 @@ static class Smoke
             CheckBlockContracts(card, owner, guard);
             CheckTextContracts();
             CheckOstyContracts(card, owner, other, combat);
+            CheckFatalContracts(card, owner, combat);
             var effect = new CardEffect { Kind = EffectKind.Damage, Target = "all_enemies", Amount = 7 };
             var ruleForm = new CardForm { Cost = new() { Energy = 1 }, Rules = [new() { Trigger = new() { Event = RuleEvent.TurnEnd }, Effects = [effect] }] };
             card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "星幕", Type = ForgeCardType.Power, Rarity = ForgeRarity.Rare, Forms = [ruleForm, ruleForm] });
@@ -471,7 +475,190 @@ static class Smoke
         internal static ValueProp Props;
         internal static CardPlay? Play;
     }
-    private static bool KeepCombatOpen(ref bool __result) { __result = false; return false; }
+    private static bool KeepCombatOpen(ref bool __result) { __result = FatalCapture.Ending; return false; }
+    private static void CheckFatalContracts(NeowGeneratedCard card, Player owner, CombatState combat)
+    {
+        // Execute real resource commands and native HP-loss results. Bypass damage animations,
+        // attack orchestration and sound; this harness does not establish live combat/UI correctness.
+        var guard = new Harmony("neowscompany.tests.fatal");
+        guard.Patch(AccessTools.Method(typeof(AttackCommand), nameof(AttackCommand.Execute)), prefix: new HarmonyMethod(typeof(Smoke), nameof(AttackWithoutVisuals)));
+        guard.Patch(AccessTools.Method(typeof(CreatureCmd), nameof(CreatureCmd.Damage),
+            [typeof(PlayerChoiceContext), typeof(IEnumerable<Creature>), typeof(decimal), typeof(ValueProp), typeof(Creature), typeof(CardModel), typeof(CardPlay)]),
+            prefix: new HarmonyMethod(typeof(Smoke), nameof(DamageWithoutVisuals)));
+        guard.Patch(AccessTools.Method(typeof(CreatureCmd), nameof(CreatureCmd.Heal)), prefix: new HarmonyMethod(typeof(Smoke), nameof(HealWithoutAnimation)));
+        guard.Patch(AccessTools.Method(typeof(Cmd), nameof(Cmd.CustomScaledWait)), prefix: new HarmonyMethod(typeof(Smoke), nameof(SkipCommandWait)));
+        guard.Patch(AccessTools.Method(typeof(SfxCmd), nameof(SfxCmd.Play), [typeof(string), typeof(float)]), prefix: new HarmonyMethod(typeof(Smoke), nameof(SkipSound)));
+        var added = new List<Creature>();
+        int oldMaxHp = owner.Creature.MaxHp, oldHp = owner.Creature.CurrentHp, oldGold = owner.Gold;
+        Creature Enemy(int hp)
+        {
+            var enemy = combat.CreateCreature(ModelDb.Monster<Axebot>().ToMutable(), CombatSide.Enemy, null);
+            enemy.SetMaxHpInternal(hp); enemy.SetCurrentHpInternal(hp); combat.AddCreature(enemy); added.Add(enemy);
+            return enemy;
+        }
+        void ResetEnemies()
+        {
+            foreach (var enemy in added) combat.RemoveCreature(enemy);
+            added.Clear(); FatalCapture.Ending = false; FatalCapture.EndAfterKill = false; FatalCapture.Attacks = 0;
+        }
+        void Configure(CardEffect[] effects, ForgeCardType type = ForgeCardType.Attack, CardRule[]? rules = null)
+        {
+            if (card.IsUpgraded) card.DowngradeInternal();
+            var form = new CardForm { Cost = new(), Effects = effects, Rules = rules };
+            card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "斩杀试炼", Type = type, Rarity = ForgeRarity.Rare, Forms = [form, form] });
+        }
+        GeneratedExecutionContext Execute(Creature? target, bool triggered = false, CardEffect[]? effects = null, int offset = 0)
+        {
+            var play = new CardPlay { Card = card, Player = owner, Target = target, Resources = new() { EnergySpent = 0, EnergyValue = 0, StarsSpent = 0, StarValue = 0 }, ResultPile = PileType.Discard, IsAutoPlay = false, PlayIndex = 0, PlayCount = 1 };
+            var context = new GeneratedExecutionContext(card, new BlockingPlayerChoiceContext(), play) { Triggered = triggered, EventTarget = target };
+            GeneratedEffectExecutor.ExecuteGroup(context, effects ?? card.ActiveForm.Immediate, offset).GetAwaiter().GetResult();
+            return context;
+        }
+        var gold = new CardEffect { Kind = EffectKind.GainGold, Amount = 7 };
+        var damage = new CardEffect { Kind = EffectKind.Damage, Target = "enemy", Amount = 10, OnFatal = [gold] };
+        try
+        {
+            // Native permanent changes, including gain healing, loss above the new cap and gold floor.
+            owner.Creature.SetMaxHpInternal(80); owner.Creature.SetCurrentHpInternal(40); owner.Gold = 20;
+            Configure([new() { Kind = EffectKind.GainMaxHp, Amount = 3 }, new() { Kind = EffectKind.GainGold, Amount = new() { Stat = "max_hp" } },
+                new() { Kind = EffectKind.LoseGold, Amount = 5 }], ForgeCardType.Skill);
+            Execute(null);
+            Check(owner.Creature.MaxHp == 83 && owner.Creature.CurrentHp == 43 && owner.Gold == 98);
+            Check(new GeneratedExecutionContext(card, new BlockingPlayerChoiceContext()).Read(new() { Stat = "gold" }) == 98);
+            owner.Creature.SetCurrentHpInternal(83);
+            Configure([new() { Kind = EffectKind.LoseMaxHp, Amount = 4 }, new() { Kind = EffectKind.LoseGold, Amount = 999 }], ForgeCardType.Skill);
+            Execute(null);
+            Check(owner.Creature.MaxHp == 79 && owner.Creature.CurrentHp == 79 && owner.Gold == 0);
+            Configure([new() { Kind = EffectKind.GainMaxHp, Amount = 3 }, new() { Kind = EffectKind.GainGold, Amount = 12 },
+                new() { Kind = EffectKind.LoseGold, Amount = 2 }, new() { Kind = EffectKind.Block, Amount = new() { Add = [new() { Stat = "max_hp" }, new() { Stat = "gold" }] } }], ForgeCardType.Skill);
+            card.UpdateDynamicVarPreview(CardPreviewMode.Normal, null, card.DynamicVars);
+            Check(GeneratedEffectPreview.Resolve(card, 3, null, CardPreviewMode.Normal) == 92);
+            Check(owner.Creature.MaxHp == 79 && owner.Gold == 0);
+
+            // Nonlethal, skipped and disallowed native fatalities never pay out.
+            var enemy = Enemy(20); Configure([damage]); Execute(enemy); Check(owner.Gold == 0 && enemy.CurrentHp == 10);
+            Configure([damage with { Condition = new() { Op = Comparison.Eq, Left = 1, Right = 0 } }]); Execute(enemy);
+            Check(owner.Gold == 0 && enemy.CurrentHp == 10);
+            ((MinionPower)ModelDb.Power<MinionPower>().ToMutable()).ApplyInternal(enemy, 1, silent: true);
+            Configure([damage]); Execute(enemy); Check(owner.Gold == 0 && enemy.IsDead);
+            ResetEnemies(); enemy = Enemy(10); Execute(enemy); Check(owner.Gold == 7);
+
+            // Uniform and per-target-expression AoEs each pay once, independent of native commands.
+            ResetEnemies(); Enemy(5); Enemy(8); owner.Gold = 0;
+            Configure([damage with { Target = "all_enemies" }]); Execute(null);
+            Check(owner.Gold == 7 && FatalCapture.Attacks == 1);
+            ResetEnemies(); Enemy(5); Enemy(8); owner.Gold = 0;
+            Configure([damage with { Target = "all_enemies", Amount = new() { Stat = "hp", Of = "target" } }]); Execute(null);
+            Check(owner.Gold == 7 && FatalCapture.Attacks == 2);
+            ResetEnemies(); Enemy(5); enemy = Enemy(8);
+            ((MinionPower)ModelDb.Power<MinionPower>().ToMutable()).ApplyInternal(enemy, 1, silent: true);
+            owner.Gold = 0; Configure([damage with { Target = "all_enemies" }]); Execute(null); Check(owner.Gold == 7);
+
+            // Each repeat has its own result. Nested damage is allowed and pays before continuing.
+            ResetEnemies(); Enemy(5); Enemy(5); owner.Gold = 0;
+            Configure([damage with { Target = "random_enemy", Repeat = 2 }]); Execute(null); Check(owner.Gold == 14);
+            ResetEnemies(); enemy = Enemy(5); Enemy(5); owner.Gold = 0;
+            Configure([damage with { OnFatal = [damage with { Target = "random_enemy" }, gold] }]); Execute(enemy); Check(owner.Gold == 14);
+            ResetEnemies(); enemy = Enemy(5); owner.Gold = 0;
+            Configure([damage with { OnFatal = [gold with { Amount = new() { Stat = "damage_dealt" } }] }]); Execute(enemy); Check(owner.Gold == 5);
+
+            // Last-kill payoffs complete; ordinary subsequent effects remain blocked by ending.
+            ResetEnemies(); enemy = Enemy(5); owner.Gold = 0; FatalCapture.EndAfterKill = true;
+            int beforeMax = owner.Creature.MaxHp;
+            Configure([damage with { OnFatal = [new() { Kind = EffectKind.GainMaxHp, Amount = 3 }, gold] }, gold with { Amount = 100 }]);
+            var last = Execute(enemy);
+            Check(FatalCapture.Ending && owner.Gold == 7 && owner.Creature.MaxHp == beforeMax + 3 && !last.ResolvingFatal);
+
+            // Rule damage uses native unpowered results and flattened slots after immediate groups.
+            ResetEnemies(); enemy = Enemy(5); owner.Gold = 0;
+            var rule = new CardRule { Trigger = new() { Event = RuleEvent.TurnEnd }, Effects = [damage with { Target = "event.target" }, gold with { Amount = 2 }] };
+            Configure([damage with { OnFatal = [gold with { Amount = 100 }] }], rules: [rule]);
+            Execute(enemy, true, rule.Effects, card.ActiveForm.ImmediateEffects.Length);
+            Check(owner.Gold == 9);
+
+            // Nested numeric slots, symbolic payoff amounts, powered block, upgrades and saves.
+            ResetEnemies(); enemy = Enemy(5);
+            var baseForm = new CardForm { Cost = new(), Effects = [damage with { OnFatal = [new() { Kind = EffectKind.Block, Amount = 4 }, new() { Kind = EffectKind.GainMaxHp, Amount = 3 }] }, new() { Kind = EffectKind.GainGold, Amount = 2 }], Rules = [rule] };
+            var upgraded = baseForm with { Effects = [damage with { OnFatal = [new() { Kind = EffectKind.Block, Amount = 4 }, new() { Kind = EffectKind.GainMaxHp, Amount = 4 }] }, new() { Kind = EffectKind.GainGold, Amount = 2 }] };
+            card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "成长试炼", Type = ForgeCardType.Attack, Rarity = ForgeRarity.Rare, Forms = [baseForm, upgraded] });
+            Check(card.DynamicVars["E2"].BaseValue == 3 && ((BlockVar)card.DynamicVars["E1"]).Props == ValueProp.Move);
+            bool addedToHand = card.Pile?.Type != PileType.Hand;
+            if (addedToHand) owner.PlayerCombatState!.Hand.AddInternal(card);
+            card.UpdateDynamicVarPreview(CardPreviewMode.Normal, enemy, card.DynamicVars);
+            Check(card.GetDescriptionForPile(PileType.Hand).Contains("斩杀") && card.DynamicVars["E3"].PreviewValue == 2);
+            if (addedToHand) owner.PlayerCombatState!.Hand.RemoveInternal(card);
+            card.UpgradeInternal(); card.FinalizeUpgradeInternal();
+            Check(card.DynamicVars["E2"].BaseValue == 4);
+            var flags = card.BeginUpgradePreview();
+            try { Check(card.GetDescriptionForUpgradePreview().Contains("[green]4[/green]点最大生命")); }
+            finally { card.EndUpgradePreview(flags); }
+            var saved = (NeowGeneratedCard)CardModel.FromSerializable(card.ToSerializable()); saved.Owner = owner;
+            Check(saved.DefinitionPayload == card.DefinitionPayload && saved.DynamicVars["E2"].BaseValue == 4);
+            var power = (GeneratedEffectPower)ModelDb.Power<GeneratedEffectPower>().ToMutable(); power.Configure(card);
+            var restored = (GeneratedEffectPower)ModelDb.Power<GeneratedEffectPower>().ToMutable(); restored.RuntimePayload = power.RuntimePayload;
+            Check(restored.RuntimeDescriptionText(true).Contains("获得7枚金币") && restored.RuntimeDescriptionText(true).Contains("获得2枚金币"));
+
+            ResetEnemies(); enemy = Enemy(5); owner.Gold = 0;
+            Configure([damage with { OnFatal = [gold with { Amount = new() { Stat = "gold" } }] }, gold]);
+            Check(card.RuntimeDescriptionText(true).Contains("你的金币"));
+            var inherited = Execute(enemy);
+            Check(owner.Gold == 7 && inherited.Selections.Count == 0);
+            ResetEnemies(); enemy = Enemy(5);
+            var chosen = combat.CreateCard<NeowGeneratedCard>(owner);
+            owner.PlayerCombatState!.Hand.AddInternal(chosen);
+            try
+            {
+                var select = new CardEffect { Kind = EffectKind.Select, Target = new() { Pile = CardPileName.Hand, Pick = SelectionMode.All }, As = "outer" };
+                Configure([select, damage with { OnFatal = [select with { As = "inner" }, new() { Kind = EffectKind.Upgrade, Target = "selected:outer" }] }]);
+                inherited = Execute(enemy);
+                Check(chosen.IsUpgraded && inherited.Selections.ContainsKey("outer") && !inherited.Selections.ContainsKey("inner"));
+            }
+            finally { owner.PlayerCombatState.Hand.RemoveInternal(chosen); }
+            ResetEnemies(); enemy = Enemy(5);
+            Configure([damage with { OnFatal = [new() { Kind = EffectKind.GainGold, Amount = new() { Stat = "damage_dealt" } }] }]);
+            // A failing nested action restores scope/fatal state and clears the shared operation budget.
+            var failurePlay = new CardPlay { Card = card, Player = owner, Target = enemy, Resources = new() { EnergySpent = 0, EnergyValue = 0, StarsSpent = 0, StarValue = 0 }, ResultPile = PileType.Discard, IsAutoPlay = false, PlayIndex = 0, PlayCount = 1 };
+            var failure = new GeneratedExecutionContext(card, new BlockingPlayerChoiceContext(), failurePlay);
+            failure.Amounts[1] = decimal.MaxValue;
+            try { GeneratedEffectExecutor.ExecuteGroup(failure, card.ActiveForm.Immediate, 0).GetAwaiter().GetResult(); throw new Exception("Expected fatal expression overflow."); }
+            catch (OverflowException) { Check(!failure.ResolvingFatal); }
+            Console.WriteLine("PASS native HP/gold commands, fatal eligibility/results, AoE/repeat/nesting/last kill and nested preview/upgrade/save slots");
+        }
+        finally
+        {
+            ResetEnemies(); guard.UnpatchAll(guard.Id);
+            owner.Creature.SetMaxHpInternal(oldMaxHp); owner.Creature.SetCurrentHpInternal(oldHp); owner.Gold = oldGold;
+        }
+    }
+    private static class FatalCapture
+    {
+        internal static bool Ending;
+        internal static bool EndAfterKill;
+        internal static int Attacks;
+    }
+    private static DamageResult[] NativeTestDamage(IEnumerable<Creature> targets, decimal amount, ValueProp props)
+    {
+        var creatures = targets.Where(t => t.IsAlive).ToArray();
+        var results = creatures.Select(t => t.LoseHpInternal(amount, props)).ToArray();
+        if (FatalCapture.EndAfterKill && creatures.FirstOrDefault()?.CombatState is { } combat && combat.Enemies.All(t => t.IsDead)) FatalCapture.Ending = true;
+        return results;
+    }
+    private static bool AttackWithoutVisuals(AttackCommand __instance, ref Task<AttackCommand> __result)
+    {
+        FatalCapture.Attacks++;
+        var targets = (IReadOnlyList<Creature>)AccessTools.Method(typeof(AttackCommand), "GetPossibleTargets").Invoke(__instance, null)!;
+        decimal amount = (decimal)AccessTools.Field(typeof(AttackCommand), "_damagePerHit").GetValue(__instance)!;
+        var results = (List<List<DamageResult>>)AccessTools.Field(typeof(AttackCommand), "_results").GetValue(__instance)!;
+        results.Add(NativeTestDamage(targets, amount, ValueProp.Move).ToList());
+        __result = Task.FromResult(__instance); return false;
+    }
+    private static bool DamageWithoutVisuals(IEnumerable<Creature>? targets, decimal amount, ValueProp props, ref Task<IEnumerable<DamageResult>> __result)
+    {
+        __result = Task.FromResult<IEnumerable<DamageResult>>(NativeTestDamage(targets ?? [], amount, props)); return false;
+    }
+    private static void HealWithoutAnimation(ref bool playAnim) => playAnim = false;
+    private static bool SkipCommandWait(ref Task __result) { __result = Task.CompletedTask; return false; }
+    private static bool SkipSound() => false;
     private static bool GainBlockWithoutVisuals(Creature creature, decimal amount, ValueProp props, CardPlay? cardPlay, ref Task<decimal> __result)
     {
         BlockCapture.Props = props; BlockCapture.Play = cardPlay;
@@ -504,6 +691,54 @@ static class Smoke
             Check(text.Contains("耗能为0" + icon + "的牌") && !text.Contains("本场战斗"));
         }
         Console.WriteLine("PASS all five native character energy icons in card/upgrade/power text and captured listener amounts");
+    }
+    private static void CheckNativeConversionContracts()
+    {
+        NativeCardSnapshot Capture<T>() where T : CardModel
+        {
+            var canonical = ModelDb.Card<T>();
+            var native = (CardModel)canonical.ToMutable();
+            NativeCardForm Form() => new()
+            {
+                Cost = new() { Energy = native.EnergyCost.GetWithModifiers(CostModifiers.None),
+                    Stars = native.BaseStarCost >= 0 ? native.BaseStarCost : null,
+                    EnergyX = native.EnergyCost.CostsX ? true : null, StarsX = native.HasStarCostX ? true : null },
+                Variables = native.DynamicVars.ToDictionary(v => v.Key, v => v.Value.BaseValue),
+                Keywords = native.Keywords.Select(k => k.ToString()).ToArray(), Tags = native.Tags.Select(t => t.ToString()).ToArray(),
+                Target = native.TargetType.ToString()
+            };
+            var basic = Form(); native.UpgradeInternal(); native.FinalizeUpgradeInternal();
+            return new() { Id = canonical.Id.Entry, ClassName = typeof(T).Name, Name = typeof(T).Name,
+                Type = canonical.Type.ToString(), Rarity = canonical.Rarity.ToString(), Forms = [basic, Form()] };
+        }
+        var armaments = NativeCardConversion.Convert(Capture<MegaCrit.Sts2.Core.Models.Cards.Armaments>());
+        Check(armaments.Status == NativeConversionStatus.EffectsMapped && armaments.Definition!.Forms[1].Immediate[1].Target!.Pick == SelectionMode.All);
+        var grit = NativeCardConversion.Convert(Capture<MegaCrit.Sts2.Core.Models.Cards.TrueGrit>()).Definition!;
+        Check(grit.Forms[0].Immediate[0].Amount!.Value == 7 && grit.Forms[1].Immediate[0].Amount!.Value == 9);
+        Check(grit.Forms[0].Immediate[1].Target!.Pick == SelectionMode.Random && grit.Forms[1].Immediate[1].Target!.Pick == SelectionMode.Choose);
+        var bash = NativeCardConversion.Convert(Capture<MegaCrit.Sts2.Core.Models.Cards.Bash>());
+        Check(bash.Status == NativeConversionStatus.Partial && bash.Definition!.Forms[1].Immediate[1].Amount!.Value == 3);
+        var feed = NativeCardConversion.Convert(Capture<MegaCrit.Sts2.Core.Models.Cards.Feed>()).Definition!;
+        Check(feed.Forms[1].Immediate[0].Amount!.Value == 12 && feed.Forms[1].Immediate[0].OnFatal![0].Amount!.Value == 4);
+        var gamble = NativeCardConversion.Convert(Capture<MegaCrit.Sts2.Core.Models.Cards.RoyalGamble>()).Definition!;
+        Check(gamble.Forms[0].Cost.Stars == 5 && gamble.Forms[1].Tags.Contains(ForgeKeyword.Retain));
+        var hotfix = NativeCardConversion.Convert(Capture<MegaCrit.Sts2.Core.Models.Cards.Hotfix>()).Definition!;
+        Check(hotfix.Forms[0].Tags.Contains(ForgeKeyword.Exhaust) && !hotfix.Forms[1].Tags.Contains(ForgeKeyword.Exhaust));
+        Check(hotfix.Forms[0].Immediate[0].Until == LifetimeKind.Turn);
+        var slam = NativeCardConversion.Convert(Capture<MegaCrit.Sts2.Core.Models.Cards.BodySlam>()).Definition!;
+        Check(slam.Forms[0].Cost.Energy == 1 && slam.Forms[1].Cost.Energy == 0 && slam.Forms[0].Immediate[0].Amount!.Stat == "block");
+        var whirlwind = NativeCardConversion.Convert(Capture<MegaCrit.Sts2.Core.Models.Cards.Whirlwind>());
+        Check(whirlwind.Status == NativeConversionStatus.Partial && whirlwind.Definition!.Forms[0].Cost.EnergyX == true);
+        Check(NativeCardConversion.Convert(Capture<MegaCrit.Sts2.Core.Models.Cards.Darkness>()).Status == NativeConversionStatus.Unsupported);
+        foreach (var definition in new[] { armaments.Definition!, grit, bash.Definition!, feed, gamble, hotfix, slam, whirlwind.Definition! })
+        {
+            var generated = (NeowGeneratedCard)ModelDb.Card<NeowGeneratedCard>().ToMutable();
+            generated.DefinitionPayload = Wire.Encode(definition);
+            Check(generated.ActiveForm.Cost.Energy == definition.Forms[0].Cost.Energy);
+            generated.UpgradeInternal(); generated.FinalizeUpgradeInternal();
+            Check(Wire.Encode(generated.ActiveForm) == Wire.Encode(definition.Forms[1]));
+        }
+        Console.WriteLine("PASS native-to-protocol mapping preserves upgrade costs, keywords, selections, fatal rewards and generated-card reconstruction; gaps remain explicit");
     }
     private static bool SkipStartingInventory() => false;
     private static void Check(bool value) { if (!value) throw new Exception("Game contract assertion failed."); }

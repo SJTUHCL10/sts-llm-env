@@ -82,21 +82,22 @@ public sealed class GeneratedEffectPower : PowerModel
     {
         if (_snapshot is null) return "";
         string prefix = EnergyIconHelper.GetPrefix(this);
-        int offset = Form.Immediate.Length;
+        int offset = Form.ImmediateEffects.Length;
         var lines = new List<string>();
         for (int i = 0; i < Form.Listeners.Length; i++)
         {
             var rule = Form.Listeners[i];
             int index = offset;
+            string Action(CardEffect effect)
+            {
+                string amount = effect.Amount?.Value is not null ? _snapshot.Amounts[index].ToString(System.Globalization.CultureInfo.InvariantCulture) : CardText.Number(effect.Amount, chinese, resource: (kind, value) => CardText.ResourceText(kind, value, prefix));
+                index++;
+                return CardText.RenderEffect(effect, chinese, amount, (kind, value) => CardText.ResourceText(kind, value, prefix), Form.Cost, nested: Action);
+            }
             if (_snapshot.State.Remaining[i] != 0)
-                lines.Add(CardText.RenderRule(rule, chinese, effect =>
-                {
-                    string amount = effect.Amount?.Value is not null ? _snapshot.Amounts[index].ToString(System.Globalization.CultureInfo.InvariantCulture) : CardText.Number(effect.Amount, chinese, resource: (kind, value) => CardText.ResourceText(kind, value, prefix));
-                    index++;
-                    return CardText.RenderEffect(effect, chinese, amount, (kind, value) => CardText.ResourceText(kind, value, prefix), Form.Cost);
-                }, combatIsImplicit: true,
+                lines.Add(CardText.RenderRule(rule, chinese, Action, combatIsImplicit: true,
                     resource: (kind, value) => CardText.ResourceText(kind, value, prefix), cost: Form.Cost));
-            offset += rule.Effects.Length;
+            offset += CardEffect.Flatten(rule.Effects).Count();
         }
         return string.Join("\n", lines);
     }
@@ -151,14 +152,14 @@ public sealed class GeneratedEffectPower : PowerModel
         _firing = true; TriggerDepth.Value++; choice.PushModel(source);
         try
         {
-            int offset = form.Immediate.Length;
+            int offset = form.ImmediateEffects.Length;
             for (int i = 0; i < form.Listeners.Length; i++)
             {
                 var rule = form.Listeners[i];
                 context.Selections.Clear();
                 if (eligible[i] && EffectTriggerRuntime.TryConsume(form, snapshot.State, i, fired, ordinals[i], context.Matches(rule.Condition)))
                     await GeneratedEffectExecutor.ExecuteGroup(context, rule.Effects, offset);
-                offset += rule.Effects.Length;
+                offset += CardEffect.Flatten(rule.Effects).Count();
             }
         }
         finally { source.InvokeExecutionFinished(); choice.PopModel(source); TriggerDepth.Value--; _firing = false; }

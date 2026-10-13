@@ -250,7 +250,7 @@
     // renderer for those records; new journals use the shared renderer's saved text.
     const textNames = {...types,...kinds, frail:'脆弱',doom:'灾厄',focus:'集中',vigor:'活力',thorns:'荆棘',plating:'覆甲',intangible:'无实体',artifact:'人工制品',buffer:'缓冲',retain_block:'保留格挡',
       soul:'灵魂',shiv:'小刀',wound:'伤口',dazed:'晕眩',burn:'灼伤',void:'虚空',slimed:'黏液',fuel:'燃料',debris:'碎屑',minion_strike:'仆从打击',minion_sacrifice:'仆从捐躯',minion_dive:'仆从俯冲',sovereign_blade:'君王之剑',
-      lightning:'闪电',frost:'冰霜',dark:'黑暗',plasma:'等离子',glass:'玻璃',random:'随机',hp:'生命',max_hp:'最大生命',hand_size:'手牌数',draw_size:'抽牌堆牌数',discard_size:'弃牌堆牌数',exhaust_size:'消耗堆牌数',orb_count:'充能球数',orb_capacity:'充能球栏位数',event_amount:'事件数值',damage_dealt:'上次攻击实际伤害',status:'状态',curse:'诅咒',sly:'奇巧'};
+      lightning:'闪电',frost:'冰霜',dark:'黑暗',plasma:'等离子',glass:'玻璃',random:'随机',hp:'生命',max_hp:'最大生命',gold:'金币',hand_size:'手牌数',draw_size:'抽牌堆牌数',discard_size:'弃牌堆牌数',exhaust_size:'消耗堆牌数',orb_count:'充能球数',orb_capacity:'充能球栏位数',event_amount:'事件数值',damage_dealt:'上次攻击实际伤害',status:'状态',curse:'诅咒',sly:'奇巧'};
     const textName = id => textNames[id] ?? id;
     const powerUnit = id => ['strength','dexterity','focus','vigor','thorns','plating'].includes(id) ? '点' : '层';
     const pileText = pile => ({hand:'手牌',draw:'抽牌堆',discard:'弃牌堆',exhaust:'消耗堆'}[pile] ?? pile);
@@ -320,6 +320,10 @@
         case 'orb_slots': text = typeof effect.amount === 'number' ? (effect.amount < 0 ? '失去' : '获得')+String(Math.abs(effect.amount))+'个充能球栏位。' : '充能球栏位增加'+n+'个（负数表示失去）。'; break;
         case 'heal': text = (self ? '' : target)+'回复'+n+'点生命。'; break;
         case 'lose_hp': text = (self ? '' : target)+'失去'+n+'点生命。'; break;
+        case 'gain_max_hp': text = (self ? '' : target)+'增加'+n+'点最大生命。'; break;
+        case 'lose_max_hp': text = (self ? '' : target)+'减少'+n+'点最大生命。'; break;
+        case 'gain_gold': text = '获得'+n+'枚金币。'; break;
+        case 'lose_gold': text = '失去'+n+'枚金币。'; break;
         default: text = '未知效果：'+json(effect);
       }
       const factors = effect.amount?.mul;
@@ -329,6 +333,7 @@
       }
       if (effect.until === 'turn' && ['apply_power','add_keyword'].includes(effect.kind))
         text += effect.kind === 'add_keyword' || self || effect.target === 'osty' ? '持续至回合结束。' : '持续至目标的回合结束。';
+      if (effect.on_fatal) text += '斩杀：'+effectsText(effect.on_fatal,cost).join('');
       if (effect.condition) text = '若'+conditionText(effect.condition,cost)+'，'+text;
       if (effect.repeat != null) text = '重复以下效果'+numberText(effect.repeat,cost)+'次：'+text;
       return text;
@@ -478,7 +483,7 @@
         (result.cards ?? []).forEach((card,index) => cards.append(renderCard(card,result.card_texts?.[index])));
         root.append(cards);
         root.append(disclosure('模型 reasoning',response.reasoning_content ?? '没有记录 reasoning（服务未返回，或记录开关已关闭）。',false,'reasoning'));
-        root.append(disclosure('模型原始输出 / content',response.content ?? '没有记录原始输出（旧版日志未保存，或服务未返回 content）。',false,'',false));
+        root.append(disclosure('模型原始输出 / content',response.content ?? '没有记录原始输出（旧版日志未保存，或服务未返回 content）。'));
         if (req.prompt) {
           root.append(disclosure('System 提示词',req.prompt.system ?? '未记录'));
           let context = req.prompt.user;

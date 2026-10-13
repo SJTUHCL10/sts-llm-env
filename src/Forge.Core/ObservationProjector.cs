@@ -44,7 +44,7 @@ public static class ObservationProjector
     {
         var run = JsonNode.Parse(context.Run.GetRawText()) as JsonObject ?? new();
         var state = JsonNode.Parse(context.State.GetRawText()) as JsonObject ?? new();
-        var result = Pick(run, "character", "ascension", "act", "floor");
+        var result = Pick(run, "character", "ascension", "act", "floor", "gold");
         if (run["deck"] is JsonArray deck)
             result["deck"] = new JsonArray(deck.Select(node => node is JsonObject card ? Card(card) : new JsonObject { ["title"] = node?.DeepClone() })
                 .Select((card, i) => (card, count: deck[i] is JsonObject original ? original["count"]?.GetValue<int>() ?? 1 : 1))

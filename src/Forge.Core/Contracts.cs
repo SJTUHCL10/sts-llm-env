@@ -27,7 +27,8 @@ public enum EffectKind
 {
     Damage, Block, Draw, GainEnergy, GainStars, ApplyPower, Discard, Exhaust, Move, Select,
     Upgrade, Copy, Transform, CreateCard, Play, AddKeyword, RemoveKeyword, SetCost,
-    Summon, Forge, Channel, Evoke, OrbPassive, OrbSlots, Heal, LoseHp
+    Summon, Forge, Channel, Evoke, OrbPassive, OrbSlots, Heal, LoseHp,
+    GainMaxHp, LoseMaxHp, GainGold, LoseGold
 }
 public enum CardPileName { Hand, Draw, Discard, Exhaust }
 public enum SelectionMode { Random, Choose, All, First, Last }
@@ -206,6 +207,17 @@ public sealed record CardEffect
 {
     public required EffectKind Kind { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CardEffect[]? OnFatal { get; init; }
+    // Preorder slots are shared by validation, dynamic variables, text and execution.
+    public static IEnumerable<CardEffect> Flatten(IEnumerable<CardEffect> effects)
+    {
+        foreach (var effect in effects)
+        {
+            yield return effect;
+            foreach (var child in Flatten(effect.OnFatal ?? [])) yield return child;
+        }
+    }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public EffectTarget? Target { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public NumberExpression? Amount { get; init; }
@@ -283,7 +295,18 @@ public sealed record CardForm
     [JsonIgnore] public CardEffect[] Immediate => Effects ?? [];
     [JsonIgnore] public CardRule[] Listeners => Rules ?? [];
     [JsonIgnore] public ForgeKeyword[] Tags => Keywords ?? [];
-    [JsonIgnore] public CardEffect[] AllEffects => Immediate.Concat(Listeners.SelectMany(r => r.Effects)).ToArray();
+    [JsonIgnore] public CardEffect[] ImmediateEffects => CardEffect.Flatten(Immediate).ToArray();
+    [JsonIgnore] public CardEffect[] AllEffects => CardEffect.Flatten(Immediate.Concat(Listeners.SelectMany(r => r.Effects))).ToArray();
+    public bool IsImmediateRoot(int index)
+    {
+        int slot = 0;
+        foreach (var effect in Immediate)
+        {
+            if (slot == index) return true;
+            slot += CardEffect.Flatten([effect]).Count();
+        }
+        return false;
+    }
 }
 public sealed record CardDefinition
 {

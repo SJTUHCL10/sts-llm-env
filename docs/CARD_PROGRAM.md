@@ -1,6 +1,6 @@
-# 卡牌协议 v6
+# 卡牌协议 v7
 
-卡牌是受校验的数据程序，由游戏侧通过原生命令执行。LLM 返回 `{"cards":[...]}`；文本由程序生成，不参与执行。此轮直接替换旧协议，不提供旧定义迁移。
+卡牌是受校验的数据程序，由游戏侧通过原生命令执行。LLM 返回 `{"cards":[...]}`；文本由程序生成，不参与执行。v7 增加最大生命、金币和 damage.on_fatal，旧候选池不迁移。
 
 ## 两个完整形态
 
@@ -28,6 +28,8 @@
 | --- | --- |
 | damage | amount、敌人目标；actor 可为 osty |
 | block / draw / gain_energy / gain_stars / heal / lose_hp | amount |
+| gain_max_hp / lose_max_hp | amount；生物目标默认 self |
+| gain_gold / lose_gold | amount；仅玩家自身 |
 | apply_power | amount、power；力量/集中可用 until:turn |
 | discard / exhaust / upgrade / play | 卡牌目标 |
 | move | 卡牌目标、to |
@@ -41,6 +43,23 @@
 | evoke / orb_passive | 球目标；evoke 可用 remove:false |
 
 生物目标：`self/enemy/all_enemies/random_enemy/osty/event.target`。规则没有玩家当前选定的 `enemy`，应使用随机、全体或事件目标。即时攻击使用原生攻击修正；规则和技能中的直接伤害使用 Unpowered。`lose_hp` 绕过格挡并触发原生伤害流程。
+
+
+`gain_max_hp/lose_max_hp` 使用原生最大生命命令，玩家的变化永久保留。增加上限后按实际增加量调用回血；降低上限时，当前生命超过新上限的部分走原生扣血流程（来源为卡牌）。`gain_gold/lose_gold` 永久改变玩家金币，获得金币沿用原生修正与钩子，失去金币使用 Lost 类型且最低为零。四种动作都接受非负数值或动态表达式，可用于普通 effects、rules 或 on_fatal；不限制职业。
+
+### 斩杀
+
+只有 `damage` 可以附带非空 `on_fatal:[动作]`：
+
+```json
+{"kind":"damage","target":"enemy","amount":10,"on_fatal":[{"kind":"gain_max_hp","amount":3},{"kind":"gain_gold","amount":20}]}
+```
+
+伤害前记录各目标的原生 `ShouldOwnerDeathTriggerFatal()`，伤害后使用 `DamageResult.WasTargetKilled` 判断本次伤害是否击杀符合斩杀资格的目标；随从和原生特殊敌人的限制沿用游戏。每次 damage 动作最多执行一次斩杀组，全体伤害击杀多名敌人也只执行一次，包括因条件或目标数值不同而拆开的原生命令。repeat 的每次伤害独立判定；跳过或未击杀不触发。
+
+斩杀组在伤害动作内部执行，击杀最后一个敌人仍完成已触发的组，普通后续动作仍受战斗结束保护。组允许全部已支持动作，包含继续携带 on_fatal 的 damage；战斗操作能否在结束阶段生效由原生命令决定。玩家死亡则停止。组继承当前打出/规则的选定目标、事件数据和来源牌，不把死亡目标重绑为事件目标；enemy 仍指本次打出选定的敌人，死亡目标不会再被操作。
+
+组可读取外层 select 绑定，内部新增绑定不会泄漏到外层。嵌套最多六层，嵌套动作计入每个形态 24 个动作、每条规则 8 个动作的总限制；运行中仍共享 4096 次操作预算。数值变量、文本、升级和保存使用包含嵌套动作的前序顺序。斩杀收益里的 damage_dealt 是刚完成的整个 damage 动作的总伤害；若组内又造成伤害，后续读取其最新结果。
 
 ### 奥斯提的生成限制
 
@@ -96,11 +115,11 @@
 
 表达式为 decimal 字面量、stat、add、sub、mul、div 之一；add/mul 有 2～4 个操作数，sub/div 恰好两个。sub 表示减法；div 使用 decimal 普通除法，中间运算不转成整数，嵌套最多六层。字面分母不能为零；运行时零分母和 decimal 溢出会中止效果。decimal 精度是有限的，不是任意精度有理数。上述半血条件在 39/79 时成立、40/80 时不成立；mul 0.5 与 div 2 等价。旧的 add 与负数乘积仍显示为减法。
 
-表达式的整数化发生在最终使用处：repeat、生成/复制/选牌 count、channel、forge、set_cost 向零截断，非负数量负值按零处理；orb_slots 保留符号后向零截断。伤害、格挡、生命、能量、星、状态层数和召唤量保留 decimal 进入原生命令，由游戏在最终状态变更时处理整数；正数抽牌量沿用原版向上取整（1.5 抽 2 张），预览一致。固定费用、过滤费用、options、turns、occurrence 和 limit 仍为整数。离散效果优先设计成整数量。
+表达式的整数化发生在最终使用处：repeat、生成/复制/选牌 count、channel、forge、set_cost 向零截断，非负数量负值按零处理；orb_slots 保留符号后向零截断。伤害、格挡、生命、最大生命、金币、能量、星、状态层数和召唤量保留 decimal 进入原生命令，由游戏在最终状态变更时处理整数；正数抽牌量沿用原版向上取整（1.5 抽 2 张），预览一致。固定费用、过滤费用、options、turns、occurrence 和 limit 仍为整数。离散效果优先设计成整数量。
 
 v6 直接替换旧 div 语义，旧候选池不迁移；读取已有卡牌时也使用普通除法。新的小数语义不改为伤害倍率钩子：表达式先算出基础效果数值，再进入原生修正流程。
 
-生物数值：hp/max_hp/block/power，of 默认 self，可为 target/osty；power 必须带 id。玩家数值：energy/stars/hand_size/draw_size/discard_size/exhaust_size/orb_count/orb_capacity。上下文数值：paid_energy/paid_stars（本次打出实付资源快照）、event_amount、damage_dealt（最近一个伤害动作的 TotalDamage）。状态在动作执行时读取。
+生物数值：hp/max_hp/block/power，of 默认 self，可为 target/osty；power 必须带 id。玩家数值：gold/energy/stars/hand_size/draw_size/discard_size/exhaust_size/orb_count/orb_capacity。上下文数值：paid_energy/paid_stars（本次打出实付资源快照）、event_amount、damage_dealt（最近一个伤害动作的 TotalDamage）。状态在动作执行时读取。
 
 条件为比较 `eq/ne/gt/ge/lt/le`，或 all/any/not。条件满足后执行动作；数值不存在的事件载荷为零，不存在的卡牌/目标不产生操作。目标相关条件按每个目标评估。
 

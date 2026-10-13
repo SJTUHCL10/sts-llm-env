@@ -20,7 +20,7 @@ Store your key in the local `provider.api_key` field or the `NEOWS_COMPANY_API_K
 
 By default, generation starts immediately on entering the run's first combat; later combats start after the first enemy turn ends, with up to three requests per combat and at least 15 seconds between requests. Valid cards enter the current run's candidate pool. When a reward opens, one available candidate is added alongside the original options. If no candidate is ready, the original reward appears immediately. Rewards never wait for the network or change while you are choosing. Late results can appear after later combats.
 
-New cards use protocol v6: two complete upgrade forms, general card selection and creation/transformation, rule groups, and dynamic expressions. Supported character mechanics include Osty/Souls/Doom, Orbs/Focus, Forge/Stars, and Shivs/Sly. The LLM can combine implemented effects but cannot return executable code. There is no power budget; balance needs to be evaluated through play. Earlier protocols have no migration path, so start a new run when testing.
+New cards use protocol v7: two complete upgrade forms, general card selection and creation/transformation, rule groups, dynamic expressions, maximum HP/gold gains and losses, and damage-bound Fatal groups. Supported character mechanics include Osty/Souls/Doom, Orbs/Focus, Forge/Stars, and Shivs/Sly. The LLM can combine implemented effects but cannot return executable code. There is no power budget; balance needs to be evaluated through play. Earlier protocols have no migration path, so start a new run when testing.
 
 Generated card definitions are stored with the game's native card saves, so loading them does not require another model call. The candidate pool and frozen rewards are stored separately in `data/runs`; retain this directory to restore rewards for an ongoing run. Keep the mod enabled when loading saves containing generated cards.
 
@@ -56,6 +56,8 @@ dotnet run --project src/Forge.Tool -- prompt config.example.json examples/conte
 
 ## Viewing generation logs
 
+To convert reviewed native cards into protocol JSON and compare native/generated wording, run `audit-native.ps1 -GameDir '<game directory>'`. It exports separate mapped and partial definitions, confirmed gaps, and an unreviewed inventory. See [Native card audit](docs/NATIVE_CARD_AUDIT.md).
+
 The local viewer requires Python 3.10+ and no third-party packages. The Windows launcher locates Python and also supports an existing local Codex Python runtime. Pass the game directory to start the server and open your browser automatically:
 
 ```powershell
@@ -77,7 +79,7 @@ Most detailed documentation is in Chinese; the architecture guide is in English:
 
 - [Configuration and troubleshooting](docs/CONFIGURATION.md): settings, data directories, and common failure causes.
 - [LLM protocol](docs/LLM_PROTOCOL.md): request context, output, and candidate pool rules.
-- [Card protocol](docs/CARD_PROGRAM.md): v6 forms, actions, targets, and rule semantics.
+- [Card protocol](docs/CARD_PROGRAM.md): v7 forms, actions, targets, Fatal groups, and rule semantics.
 - [Architecture](docs/ARCHITECTURE.md): module boundaries, threading, saves, and game hooks.
 - [Validation guide](docs/VALIDATION.md): automated checks and in-game acceptance steps.
 

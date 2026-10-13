@@ -1,0 +1,49 @@
+{
+  "cards": [
+    {
+      "name": "血金盛宴",
+      "type": "attack",
+      "rarity": "rare",
+      "forms": [
+        {
+          "cost": {"energy": 2},
+          "keywords": ["exhaust"],
+          "effects": [
+            {"kind": "damage", "target": "enemy", "amount": 12, "on_fatal": [
+              {"kind": "gain_max_hp", "amount": 3},
+              {"kind": "gain_gold", "amount": 15}
+            ]}
+          ]
+        },
+        {
+          "cost": {"energy": 2},
+          "keywords": ["exhaust"],
+          "effects": [
+            {"kind": "damage", "target": "enemy", "amount": 16, "on_fatal": [
+              {"kind": "gain_max_hp", "amount": 4},
+              {"kind": "gain_gold", "amount": 20},
+              {"kind": "draw", "amount": 1}
+            ]}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "献金求生",
+      "type": "skill",
+      "rarity": "uncommon",
+      "forms": [
+        {"cost": {"energy": 0}, "effects": [
+          {"kind": "lose_gold", "amount": {"div": [{"stat": "gold"}, 10]}},
+          {"kind": "lose_max_hp", "amount": 1},
+          {"kind": "block", "amount": 12}
+        ]},
+        {"cost": {"energy": 0}, "effects": [
+          {"kind": "lose_gold", "amount": {"div": [{"stat": "gold"}, 20]}},
+          {"kind": "lose_max_hp", "amount": 1},
+          {"kind": "block", "amount": 18}
+        ]}
+      ]
+    }
+  ]
+}

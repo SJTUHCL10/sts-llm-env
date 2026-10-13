@@ -56,7 +56,8 @@ try {
             Remove-Item -LiteralPath $packagedDirectory -Recurse -Force
         }
     }
-    Compress-Archive -LiteralPath $package -DestinationPath (Join-Path $PSScriptRoot 'build\NeowsCompany-0.1.0.zip') -Force
+    $manifest = Get-Content -LiteralPath 'src\Forge.Mod\mod_manifest.json' -Raw | ConvertFrom-Json
+    Compress-Archive -LiteralPath $package -DestinationPath (Join-Path $PSScriptRoot "build\NeowsCompany-$($manifest.version).zip") -Force
     Write-Output "Built package: $package"
 }
 finally { Pop-Location }

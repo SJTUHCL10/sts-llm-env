@@ -59,8 +59,8 @@ public sealed class NeowGeneratedCard : CardModel
     public override CardPoolModel Pool => ModelDb.CardPool<TokenCardPool>();
     public override CardType Type => _definition.Type switch { ForgeCardType.Attack => CardType.Attack, ForgeCardType.Power => CardType.Power, _ => CardType.Skill };
     public override CardRarity Rarity => _definition.Rarity switch { ForgeRarity.Rare => CardRarity.Rare, ForgeRarity.Uncommon => CardRarity.Uncommon, _ => CardRarity.Common };
-    public override TargetType TargetType => ActiveForm.Immediate.Any(e => e.Target?.Ref == "enemy") ? TargetType.AnyEnemy
-        : ActiveForm.Immediate.Any(e => e.Target?.Ref == "all_enemies") ? TargetType.AllEnemies : TargetType.Self;
+    public override TargetType TargetType => ActiveForm.ImmediateEffects.Any(e => e.Target?.Ref == "enemy") ? TargetType.AnyEnemy
+        : ActiveForm.ImmediateEffects.Any(e => e.Target?.Ref == "all_enemies") ? TargetType.AllEnemies : TargetType.Self;
     public override bool GainsBlock => ActiveForm.AllEffects.Any(e => e.Kind == EffectKind.Block);
     public override string PortraitPath => MissingPortraitPath;
     public override string BetaPortraitPath => PortraitPath;
@@ -76,7 +76,7 @@ public sealed class NeowGeneratedCard : CardModel
             yield return e.Kind switch
             {
                 EffectKind.Damage => (DynamicVar)new GeneratedDamageVar($"E{i}", e.Amount?.Value ?? 0, e, i),
-                EffectKind.Block => new GeneratedBlockVar($"E{i}", e.Amount?.Value ?? 0, i, i >= ActiveForm.Immediate.Length),
+                EffectKind.Block => new GeneratedBlockVar($"E{i}", e.Amount?.Value ?? 0, i, i >= ActiveForm.ImmediateEffects.Length),
                 _ => new GeneratedAmountVar($"E{i}", e.Amount?.Value ?? 0, i)
             };
             if (e.Kind is EffectKind.CreateCard or EffectKind.Copy) yield return new GeneratedCountVar($"C{i}", e.Count, i);
@@ -127,6 +127,7 @@ public sealed class NeowGeneratedCard : CardModel
             foreach (var tip in NativeMechanics.OrbTips(id)) yield return tip;
         if (form.AllEffects.Any(e => e.Kind == EffectKind.Forge)) foreach (var tip in HoverTipFactory.FromForge()) yield return tip;
         if (form.AllEffects.Any(e => e.Kind == EffectKind.Summon)) yield return HoverTipFactory.Static(StaticHoverTip.SummonStatic);
+        if (form.AllEffects.Any(e => e.OnFatal is not null)) yield return HoverTipFactory.Static(StaticHoverTip.Fatal);
     }
     protected override IEnumerable<IHoverTip> ExtraHoverTips => EffectHoverTips(ActiveForm);
     protected override async Task OnPlay(PlayerChoiceContext choiceContext, CardPlay cardPlay)

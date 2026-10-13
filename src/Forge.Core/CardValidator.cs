@@ -2,13 +2,13 @@ namespace Forge.Core;
 
 public static class MechanicCatalog
 {
-    public const int ProtocolVersion = 6;
+    public const int ProtocolVersion = 7;
     public static readonly string[] Powers = ["strength", "dexterity", "weak", "vulnerable", "frail", "poison", "doom", "focus", "vigor", "thorns", "plating", "intangible", "artifact", "buffer", "retain_block"];
     // Generation policy only: keep the full catalog for existing saved definitions.
     public static readonly string[] OstyPowers = ["strength", "weak", "poison", "doom", "vigor", "intangible", "artifact", "buffer"];
     public static readonly string[] Cards = ["soul", "shiv", "wound", "dazed", "burn", "void", "slimed", "fuel", "debris", "minion_strike", "minion_sacrifice", "minion_dive", "sovereign_blade"];
     public static readonly string[] Orbs = ["lightning", "frost", "dark", "plasma", "glass", "random"];
-    public static readonly string[] Stats = ["hp", "max_hp", "block", "power", "energy", "stars", "hand_size", "draw_size", "discard_size", "exhaust_size", "orb_count", "orb_capacity", "paid_energy", "paid_stars", "event_amount", "damage_dealt"];
+    public static readonly string[] Stats = ["hp", "max_hp", "gold", "block", "power", "energy", "stars", "hand_size", "draw_size", "discard_size", "exhaust_size", "orb_count", "orb_capacity", "paid_energy", "paid_stars", "event_amount", "damage_dealt"];
 }
 
 public static class CardValidator
@@ -25,8 +25,7 @@ public static class CardValidator
             var cost = form.Cost;
             Require(cost.Energy >= 0 && cost.Stars is not < 0, "Negative cost.");
             Require(form.Tags.Length <= 5 && form.Tags.Distinct().Count() == form.Tags.Length && form.Tags.All(Enum.IsDefined), "Invalid keywords.");
-            Require(form.Listeners.Length <= 8 && form.Listeners.All(r => r is not null && r.Effects is not null)
-                && form.AllEffects.Length is >= 1 and <= 24, "A form needs 1..24 actions, at most 8 rules.");
+            Require(form.Listeners.Length <= 8 && form.Listeners.All(r => r is not null && r.Effects is not null), "At most 8 valid rules are allowed.");
             ValidateEffects(form.Immediate, false, new());
             foreach (var rule in form.Listeners)
             {
@@ -49,7 +48,9 @@ public static class CardValidator
                 if (trigger.Limit is { } limit) Require(limit.Count > 0 && Enum.IsDefined(limit.Within), "Invalid successful-activation quota.");
                 ValidateCondition(rule.Condition, true);
                 ValidateEffects(rule.Effects, true, new());
+                Require(CardEffect.Flatten(rule.Effects).Count() <= 8, "A rule needs 1..8 actions including fatal actions.");
             }
+            Require(form.AllEffects.Length is >= 1 and <= 24, "A form needs 1..24 actions including fatal actions.");
             Require(card.Type != ForgeCardType.Power || form.Listeners.Length > 0 || form.Immediate.Any(e => e.Kind == EffectKind.ApplyPower), "Power needs a rule or native power.");
             Require(card.Type != ForgeCardType.Power || !form.Tags.Contains(ForgeKeyword.Exhaust), "Power cannot exhaust.");
             Require(card.Type != ForgeCardType.Attack || form.AllEffects.Any(e => e.Kind == EffectKind.Damage), "Attack needs damage.");
@@ -57,11 +58,17 @@ public static class CardValidator
         return card;
     }
 
-    private static void ValidateEffects(CardEffect[] effects, bool triggered, HashSet<string> bindings)
+    private static void ValidateEffects(CardEffect[] effects, bool triggered, HashSet<string> bindings, int depth = 0)
     {
+        Require(depth <= 6 && effects is { Length: <= 24 }, "Action nesting exceeds six or action group is too large.");
         foreach (var e in effects)
         {
             Require(e is not null && Enum.IsDefined(e.Kind), "Invalid action.");
+            if (e.OnFatal is { } fatal)
+            {
+                Require(e.Kind == EffectKind.Damage && fatal.Length > 0, "Only damage supports a nonempty on_fatal group.");
+                ValidateEffects(fatal, triggered, new(bindings), depth + 1);
+            }
             ValidateCondition(e.Condition, triggered);
             if (e.Repeat is not null) ValidateNumber(e.Repeat, triggered, false);
             if (e.Amount is not null) ValidateNumber(e.Amount, triggered, e.Kind is EffectKind.ApplyPower or EffectKind.OrbSlots);
@@ -74,7 +81,7 @@ public static class CardValidator
             else if (orbTarget) Require(e.Target?.Ref is null or "first_orb" or "last_orb" or "all_orbs", "Invalid orb target.");
             else Require(e.Target is null || e.Target.Ref is "self" or "enemy" or "all_enemies" or "random_enemy" or "osty" or "event.target", "Invalid creature target.");
             if (e.Kind == EffectKind.Damage) Require(e.Target?.Ref is "enemy" or "all_enemies" or "random_enemy" or "event.target", "Damage needs an enemy/event target.");
-            if (e.Kind is EffectKind.Draw or EffectKind.GainEnergy or EffectKind.GainStars or EffectKind.Summon or EffectKind.Forge or EffectKind.Channel or EffectKind.OrbSlots or EffectKind.CreateCard)
+            if (e.Kind is EffectKind.Draw or EffectKind.GainEnergy or EffectKind.GainStars or EffectKind.GainGold or EffectKind.LoseGold or EffectKind.Summon or EffectKind.Forge or EffectKind.Channel or EffectKind.OrbSlots or EffectKind.CreateCard)
                 Require(e.Target?.Ref is null or "self" && e.Target?.Pile is null, "Player operation requires self.");
             Require(!triggered || e.Target?.Ref != "enemy", "Rule needs random/all enemies or event.target.");
             Require(triggered || e.Target?.Ref != "event.target", "Event target requires a rule.");
@@ -90,7 +97,7 @@ public static class CardValidator
             Require(e.Until is null || e.Kind == EffectKind.SetCost || e.Kind == EffectKind.ApplyPower && e.Until == LifetimeKind.Turn && e.Power is "strength" or "focus"
                 || e.Kind == EffectKind.AddKeyword && (e.Until == LifetimeKind.Combat || e.Until == LifetimeKind.Turn && e.Keyword is ForgeKeyword.Sly or ForgeKeyword.Retain), "Invalid modification lifetime.");
             Require(e.Remove is null || e.Kind == EffectKind.Evoke, "remove is only valid on evoke.");
-            bool amount = e.Kind is EffectKind.Damage or EffectKind.Block or EffectKind.Draw or EffectKind.GainEnergy or EffectKind.GainStars or EffectKind.ApplyPower or EffectKind.SetCost or EffectKind.Summon or EffectKind.Forge or EffectKind.Channel or EffectKind.OrbSlots or EffectKind.Heal or EffectKind.LoseHp;
+            bool amount = e.Kind is EffectKind.Damage or EffectKind.Block or EffectKind.Draw or EffectKind.GainEnergy or EffectKind.GainStars or EffectKind.ApplyPower or EffectKind.SetCost or EffectKind.Summon or EffectKind.Forge or EffectKind.Channel or EffectKind.OrbSlots or EffectKind.Heal or EffectKind.LoseHp or EffectKind.GainMaxHp or EffectKind.LoseMaxHp or EffectKind.GainGold or EffectKind.LoseGold;
             Require(amount == (e.Amount is not null), "Action amount is missing or irrelevant.");
             Require(e.Count is null || e.Kind is EffectKind.CreateCard or EffectKind.Copy, "count is only valid for create_card/copy; use target.count for selection.");
             if (e.Kind == EffectKind.ApplyPower) Require(e.Power is not null && MechanicCatalog.Powers.Contains(e.Power), "Unknown native power.");

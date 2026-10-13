@@ -23,6 +23,7 @@ internal sealed class GeneratedExecutionContext
     internal Creature? EventTarget { get; init; }
     internal decimal EventAmount { get; init; }
     internal bool Triggered { get; init; }
+    internal bool ResolvingFatal { get; set; }
     internal int DamageDealt { get; set; }
     internal decimal[] Amounts { get; }
     internal int PaidEnergy { get; init; }
@@ -40,7 +41,7 @@ internal sealed class GeneratedExecutionContext
         var creature = n.Of switch { "osty" => owner.Osty, "target" => target ?? EventTarget ?? Play?.Target, _ => owner.Creature };
         return n.Stat switch
         {
-            "hp" => creature?.CurrentHp ?? 0, "max_hp" => creature?.MaxHp ?? 0, "block" => creature?.Block ?? 0,
+            "hp" => creature?.CurrentHp ?? 0, "max_hp" => creature?.MaxHp ?? 0, "gold" => owner.Gold, "block" => creature?.Block ?? 0,
             "power" => creature?.Powers.FirstOrDefault(p => p.Id == NativeMechanics.Power(n.Id!).Id)?.Amount ?? 0,
             "energy" => owner.PlayerCombatState?.Energy ?? 0, "stars" => owner.PlayerCombatState?.Stars ?? 0,
             "hand_size" => PileType.Hand.GetPile(owner).Cards.Count, "draw_size" => PileType.Draw.GetPile(owner).Cards.Count,
@@ -70,6 +71,7 @@ internal static class GeneratedEffectExecutor
         if (root) Resolution.Value = new();
         try
         {
+            int index = offset;
             for (int i = 0; i < effects.Length; i++)
             {
                 var effect = effects[i];
@@ -77,18 +79,20 @@ internal static class GeneratedEffectExecutor
                 for (int r = 0; r < repetitions; r++)
                 {
                     Step();
-                    if (CombatManager.Instance.IsEnding || !context.Source.Owner.Creature.IsAlive) return;
-                    await Execute(context, effect, offset + i);
+                    if (CombatManager.Instance.IsEnding && !context.ResolvingFatal || !context.Source.Owner.Creature.IsAlive) return;
+                    await Execute(context, effect, index);
                 }
+                index += CardEffect.Flatten([effect]).Count();
             }
         }
         finally { if (root) Resolution.Value = null; }
     }
     private static async Task Execute(GeneratedExecutionContext c, CardEffect e, int index)
     {
-        var source = c.Source; var owner = source.Owner; var combat = owner.Creature.CombatState!;
+        var source = c.Source; var owner = source.Owner; var combat = owner.Creature.CombatState;
         if (e.Kind is EffectKind.Discard or EffectKind.Exhaust or EffectKind.Move or EffectKind.Select or EffectKind.Upgrade or EffectKind.Copy or EffectKind.Transform or EffectKind.Play or EffectKind.AddKeyword or EffectKind.RemoveKeyword or EffectKind.SetCost)
         {
+            if (combat is null) return;
             if (!c.Matches(e.Condition)) return;
             var cards = await SelectCards(c, e.Target!, e.Kind);
             if (e.Kind == EffectKind.Select) { c.Selections[e.As!] = cards; return; }
@@ -113,7 +117,7 @@ internal static class GeneratedEffectExecutor
             foreach (var card in cards)
             {
                 Step();
-                if (CombatManager.Instance.IsEnding) return;
+                if (CombatManager.Instance.IsEnding && !c.ResolvingFatal) return;
                 // References retain identity; they never reach into the permanent deck.
                 if (card.CombatState != combat) continue;
                 switch (e.Kind)
@@ -157,7 +161,7 @@ internal static class GeneratedEffectExecutor
             }
             return;
         }
-        var enemies = combat.HittableEnemies.ToArray();
+        var enemies = combat?.HittableEnemies.ToArray() ?? [];
         Creature[] targets = e.Target?.Ref switch
         {
             null or "self" => [owner.Creature], "osty" => owner.Osty is { IsAlive: true } osty ? [osty] : [],
@@ -165,11 +169,9 @@ internal static class GeneratedEffectExecutor
             "event.target" => c.EventTarget is { IsAlive: true } eventTarget ? [eventTarget] : [],
             "all_enemies" => enemies, "random_enemy" => enemies.Length > 0 ? [owner.RunState.Rng.CombatTargets.NextItem(enemies)!] : [], _ => []
         };
-        // A uniform AoE remains a single native attack transaction.
-        if (e.Kind == EffectKind.Damage && e.Target?.Ref == "all_enemies" && targets.Length > 0
-            && targets.All(t => c.Matches(e.Condition, t)) && targets.Select(t => c.Amount(e, index, t)).Distinct().Count() == 1)
+        if (e.Kind == EffectKind.Damage)
         {
-            await Damage(c, e, Math.Max(0, c.Amount(e, index, targets[0])), null, true);
+            await ExecuteDamage(c, e, index, targets);
             return;
         }
         foreach (var target in targets)
@@ -179,7 +181,6 @@ internal static class GeneratedEffectExecutor
             if (e.Kind is not (EffectKind.ApplyPower or EffectKind.OrbSlots)) amount = Math.Max(0, amount);
             switch (e.Kind)
             {
-                case EffectKind.Damage: await Damage(c, e, amount, target); break;
                 case EffectKind.Block: await CreatureCmd.GainBlock(target, c.Triggered ? amount : GeneratedEffectPreview.EnchantBlock(source, amount), GeneratedEffectPreview.BlockProps(c.Triggered), c.Triggered ? null : c.Play); break;
                 case EffectKind.Draw: await CardPileCmd.Draw(c.Choice, amount, owner); break;
                 case EffectKind.GainEnergy: await PlayerCmd.GainEnergy(amount, owner); break;
@@ -196,6 +197,10 @@ internal static class GeneratedEffectExecutor
                 case EffectKind.OrbSlots: if (amount >= 0) await OrbCmd.AddSlots(owner, EffectRules.Integer(amount)); else OrbCmd.RemoveSlots(owner, -EffectRules.Integer(amount)); break;
                 case EffectKind.Heal: await CreatureCmd.Heal(target, amount); break;
                 case EffectKind.LoseHp: await CreatureCmd.Damage(c.Choice, target, amount, ValueProp.Unblockable | ValueProp.Unpowered, owner.Creature, source, c.Play); break;
+                case EffectKind.GainMaxHp: await CreatureCmd.GainMaxHp(target, amount); break;
+                case EffectKind.LoseMaxHp: await CreatureCmd.LoseMaxHp(c.Choice, target, amount, isFromCard: true); break;
+                case EffectKind.GainGold: await PlayerCmd.GainGold(amount, owner); break;
+                case EffectKind.LoseGold: await PlayerCmd.LoseGold(amount, owner); break;
                 case EffectKind.CreateCard:
                     for (int n = 0, count = c.Count(e.Count); n < count; n++)
                     {
@@ -207,23 +212,53 @@ internal static class GeneratedEffectExecutor
             }
         }
     }
-    private static async Task Damage(GeneratedExecutionContext c, CardEffect e, decimal amount, Creature? target, bool all = false)
+    internal static bool ShouldTriggerFatal(IEnumerable<DamageResult> results, ISet<Creature> eligible)
+        => results.Any(result => result.WasTargetKilled && eligible.Contains(result.Receiver));
+    private static async Task ExecuteDamage(GeneratedExecutionContext c, CardEffect e, int index, Creature[] targets)
+    {
+        // Capture native fatal eligibility before damage/death can remove powers.
+        var eligible = targets.Where(t => t.Powers.All(p => p.ShouldOwnerDeathTriggerFatal())).ToHashSet();
+        var results = new List<DamageResult>();
+        if (e.Target?.Ref == "all_enemies" && targets.Length > 0
+            && targets.All(t => c.Matches(e.Condition, t)) && targets.Select(t => c.Amount(e, index, t)).Distinct().Count() == 1)
+            results.AddRange(await Damage(c, e, Math.Max(0, c.Amount(e, index, targets[0])), null, true));
+        else
+            foreach (var target in targets)
+            {
+                if (!c.Source.Owner.Creature.IsAlive) break;
+                if (!target.IsAlive || !c.Matches(e.Condition, target)) continue;
+                results.AddRange(await Damage(c, e, Math.Max(0, c.Amount(e, index, target)), target));
+            }
+        c.DamageDealt = checked((int)results.Sum(r => r.TotalDamage));
+        if (e.OnFatal is not { } fatal || !ShouldTriggerFatal(results, eligible)) return;
+        bool previous = c.ResolvingFatal;
+        var selections = c.Selections.ToArray();
+        c.ResolvingFatal = true;
+        try { await ExecuteGroup(c, fatal, index + 1); }
+        finally
+        {
+            c.ResolvingFatal = previous;
+            c.Selections.Clear();
+            foreach (var (name, cards) in selections) c.Selections[name] = cards;
+        }
+    }
+    private static async Task<IReadOnlyList<DamageResult>> Damage(GeneratedExecutionContext c, CardEffect e, decimal amount, Creature? target, bool all = false)
     {
         var source = c.Source; var combat = source.Owner.Creature.CombatState!;
         var attacker = e.Actor == "osty" ? source.Owner.Osty : source.Owner.Creature;
-        if (attacker is not { IsAlive: true }) return;
+        if (attacker is not { IsAlive: true }) return [];
         if (!c.Triggered && source.Type == CardType.Attack)
         {
             var command = e.Actor == "osty" ? DamageCmd.Attack(amount).FromOsty(attacker, source, c.Play) : DamageCmd.Attack(amount).FromCard(source, c.Play);
             if (all) command.TargetingAllOpponents(combat); else command.Targeting(target!);
             await command.WithHitFx("vfx/vfx_attack_blunt", null, "blunt_attack.mp3").Execute(c.Choice);
-            c.DamageDealt = checked((int)command.Results.SelectMany(r => r).Sum(r => r.TotalDamage));
+            return command.Results.SelectMany(r => r).ToArray();
         }
         else
         {
             var results = all ? await CreatureCmd.Damage(c.Choice, combat.HittableEnemies.ToArray(), amount, ValueProp.Unpowered, attacker)
                 : await CreatureCmd.Damage(c.Choice, target!, amount, ValueProp.Unpowered, attacker);
-            c.DamageDealt = checked((int)results.Sum(r => r.TotalDamage));
+            return results.ToArray();
         }
     }
     private static CardPilePosition Position(CardEffect e) => e.Position switch { "random" => CardPilePosition.Random, "bottom" => CardPilePosition.Bottom, _ => e.To == CardPileName.Draw ? CardPilePosition.Top : CardPilePosition.Bottom };

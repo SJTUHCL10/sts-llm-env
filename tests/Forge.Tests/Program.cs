@@ -22,6 +22,84 @@ var context = new GenerationContext
 };
 var config = new ForgeConfig { PrefetchMinimumIntervalSeconds = 1, PrefetchInitialCardPlays = 0, MaxRequestsPerCombat = 2, GenerationTiming = GenerationTiming.WaitOnReward };
 
+await Test("native conversion distinguishes unknown implementations, known gaps and missing variables", () =>
+{
+    NativeCardSnapshot Snapshot(string name, string type = "Skill") => new()
+    {
+        Id = name.ToUpperInvariant(), ClassName = name, Name = "原生测试", Type = type, Rarity = "Common",
+        Forms = [new() { Cost = new() { Energy = 1 }, Variables = [] }, new() { Cost = new() { Energy = 0 }, Variables = [] }]
+    };
+    Check(NativeCardConversion.Convert(Snapshot("UnreviewedCard")).Status == NativeConversionStatus.Unreviewed);
+    foreach (string name in new[] { "Afterimage", "Darkness", "Flatten", "Shiv", "PerfectedStrike", "DarkEmbrace", "MachineLearning" })
+    {
+        var result = NativeCardConversion.Convert(Snapshot(name));
+        Check(result.Status == NativeConversionStatus.Unsupported && result.Definition is null && result.Reasons.Length > 0);
+    }
+    Check(NativeCardConversion.Convert(Snapshot("Wound", "Status")).Status == NativeConversionStatus.Unsupported);
+    Check(NativeCardConversion.Convert(Snapshot("AnyCard") with { MultiplayerOnly = true }).Status == NativeConversionStatus.Unsupported);
+    Check(NativeCardConversion.Convert(Snapshot("Backflip")).Status == NativeConversionStatus.Error);
+    Check(NativeCardConversion.Convert(Snapshot("Backflip") with { Forms = [] }).Status == NativeConversionStatus.Error);
+    return Task.CompletedTask;
+});
+await Test("native conversion preserves action order, selection upgrades and full numeric forms", () =>
+{
+    var native = new NativeCardSnapshot
+    {
+        Id = "TRUE_GRIT", ClassName = "TrueGrit", Name = "坚毅", Type = "Skill", Rarity = "Common",
+        Forms = [new() { Cost = new() { Energy = 1 }, Variables = new() { ["Block"] = 7 } },
+                 new() { Cost = new() { Energy = 1 }, Variables = new() { ["Block"] = 9 } }]
+    };
+    var conversion = NativeCardConversion.Convert(native);
+    var card = CardValidator.Validate(Wire.Decode<CardDefinition>(Wire.Encode(conversion.Definition!)));
+    Check(conversion.Status == NativeConversionStatus.EffectsMapped);
+    Check(card.Forms[0].Immediate[0].Kind == EffectKind.Block && card.Forms[0].Immediate[0].Amount!.Value == 7);
+    Check(card.Forms[0].Immediate[1].Kind == EffectKind.Exhaust && card.Forms[0].Immediate[1].Target!.Pick == SelectionMode.Random);
+    Check(card.Forms[1].Immediate[0].Amount!.Value == 9 && card.Forms[1].Immediate[1].Target!.Pick == SelectionMode.Choose);
+    var armaments = NativeCardConversion.Convert(native with { ClassName = "Armaments" }).Definition!;
+    Check(armaments.Forms[1].Immediate[1].Target!.Pick == SelectionMode.All && armaments.Forms[1].Immediate[1].Target!.Count is null);
+    var ironWave = NativeCardConversion.Convert(native with { ClassName = "IronWave", Type = "Attack", Forms = native.Forms.Select(f => f with
+        { Variables = new() { ["Block"] = 5, ["Damage"] = 5 } }).ToArray() }).Definition!;
+    Check(ironWave.Forms[0].Immediate.Select(e => e.Kind).SequenceEqual(new[] { EffectKind.Block, EffectKind.Damage }));
+    return Task.CompletedTask;
+});
+await Test("native conversion discloses rarity, tag, X resolution and attack grouping losses", () =>
+{
+    var native = new NativeCardSnapshot
+    {
+        Id = "STRIKE_IRONCLAD", ClassName = "StrikeIronclad", Name = "打击", Type = "Attack", Rarity = "Basic",
+        Forms = Enumerable.Range(0, 2).Select(i => new NativeCardForm
+            { Cost = new() { Energy = 1 }, Variables = new() { ["Damage"] = 6 + i * 3 }, Tags = ["Strike"] }).ToArray()
+    };
+    var result = NativeCardConversion.Convert(native);
+    Check(result.Status == NativeConversionStatus.Partial && result.Definition!.Rarity == ForgeRarity.Common);
+    Check(result.Reasons.Any(r => r.Contains("稀有度")) && result.Reasons.Any(r => r.Contains("Strike")));
+    var whirlwind = NativeCardConversion.Convert(native with { ClassName = "Whirlwind", Rarity = "Uncommon", Forms = native.Forms.Select(f => f with
+        { Cost = new() { EnergyX = true }, Tags = [] }).ToArray() });
+    Check(whirlwind.Status == NativeConversionStatus.Partial && whirlwind.Reasons.Any(r => r.Contains("X 值修正")));
+    Check(whirlwind.Reasons.Any(r => r.Contains("多段攻击")));
+    Check(whirlwind.Definition!.Forms[0].Immediate[0].Repeat!.Stat == "paid_energy");
+    return Task.CompletedTask;
+});
+await Test("native conversion retains fatal rewards, dynamic expressions and temporary focus", () =>
+{
+    NativeCardSnapshot Snapshot(string name, string type, Dictionary<string, decimal> variables) => new()
+    {
+        Id = name, ClassName = name, Name = "原生测试", Type = type, Rarity = "Rare",
+        Forms = [new() { Cost = new() { Energy = 1 }, Variables = variables }, new() { Cost = new() { Energy = 0 }, Variables = variables }]
+    };
+    var feed = NativeCardConversion.Convert(Snapshot("Feed", "Attack", new() { ["Damage"] = 10, ["MaxHp"] = 3 }));
+    Check(feed.Status == NativeConversionStatus.Partial && feed.Definition!.Forms[0].Immediate[0].OnFatal![0].Kind == EffectKind.GainMaxHp);
+    var slam = NativeCardConversion.Convert(Snapshot("BodySlam", "Attack", []));
+    Check(slam.Status == NativeConversionStatus.EffectsMapped && slam.Definition!.Forms[1].Cost.Energy == 0);
+    Check(slam.Definition!.Forms[0].Immediate[0].Amount!.Stat == "block");
+    var hyperbeam = NativeCardConversion.Convert(Snapshot("Hyperbeam", "Attack", new() { ["Damage"] = 24, ["FocusPower"] = 3 })).Definition!;
+    Check(hyperbeam.Forms[0].Immediate[1].Amount!.Value == -3 && hyperbeam.Forms[0].Immediate[1].Until == LifetimeKind.Turn);
+    var pain = NativeCardConversion.Convert(Snapshot("FeelNoPain", "Power", new() { ["Power"] = 3 }));
+    Check(pain.Status == NativeConversionStatus.Partial && pain.Definition!.Forms[0].Listeners[0].Trigger.Event == RuleEvent.CardExhausted);
+    Check(CardText.Render(pain.Definition!, true).Contains("消耗"));
+    return Task.CompletedTask;
+});
+
 await Test("two complete forms round trip and upgrade changes mechanics", () =>
 {
     var loaded = CardValidator.Validate(Wire.Decode<CardDefinition>(Wire.Encode(valid)));
@@ -30,6 +108,77 @@ await Test("two complete forms round trip and upgrade changes mechanics", () =>
     string json = Wire.Encode(loaded);
     Check(!json.Contains("upgrade_") && !json.Contains("schema_version") && !json.Contains("null") && !json.Contains("repeat"));
     return Task.CompletedTask;
+});
+await Test("permanent HP and gold actions accept expressions and validate their targets", async () =>
+{
+    foreach (var kind in new[] { EffectKind.GainMaxHp, EffectKind.LoseMaxHp, EffectKind.GainGold, EffectKind.LoseGold })
+    {
+        var action = new CardEffect { Kind = kind, Amount = new() { Div = [new() { Stat = "gold" }, 10] } };
+        CardDefinition With(CardEffect e) => valid with { Type = ForgeCardType.Skill, Forms = valid.Forms.Select(f => f with { Effects = [e] }).ToArray() };
+        var loaded = CardValidator.Validate(Wire.Decode<CardDefinition>(Wire.Encode(With(action))));
+        Check(CardText.Render(loaded, true).Contains("金币") && CardText.Render(loaded, false).Contains(kind is EffectKind.GainGold or EffectKind.LoseGold ? "Gold" : "Max HP"));
+        await Reject(() => CardValidator.Validate(With(action with { Amount = -1 })));
+        await Reject(() => CardValidator.Validate(With(action with { Amount = null })));
+        if (kind is EffectKind.GainGold or EffectKind.LoseGold)
+            await Reject(() => CardValidator.Validate(With(action with { Target = "enemy" })));
+        else CardValidator.Validate(With(action with { Target = "enemy" }));
+    }
+    CardValidator.ValidateNumber(new() { Stat = "gold" });
+    await Reject(() => CardValidator.ValidateNumber(new() { Stat = "gold", Of = "target" }));
+    var observation = context with { Run = JsonSerializer.SerializeToElement(new { character = "IRONCLAD", gold = 42 }) };
+    Check(ObservationProjector.Project(observation).GetProperty("gold").GetInt32() == 42);
+});
+await Test("fatal actions share preorder slots, rendering, upgrades and provider capabilities", () =>
+{
+    var damage = new CardEffect { Kind = EffectKind.Damage, Target = "enemy", Amount = 10, OnFatal =
+        [new() { Kind = EffectKind.GainMaxHp, Amount = 3 }, new() { Kind = EffectKind.GainGold, Amount = new() { Stat = "damage_dealt" } }] };
+    var form = new CardForm { Cost = new() { Energy = 1 }, Effects = [damage, new() { Kind = EffectKind.Draw, Amount = 1 }],
+        Rules = [new() { Trigger = new() { Event = RuleEvent.TurnEnd }, Effects = [damage with { Target = "random_enemy", OnFatal = [new() { Kind = EffectKind.Block, Amount = 2 }] }] }] };
+    var upgraded = form with { Effects = [damage with { OnFatal = [new() { Kind = EffectKind.GainMaxHp, Amount = 4 }] }, new() { Kind = EffectKind.Draw, Amount = 2 }] };
+    var card = valid with { Forms = [form, upgraded] };
+    var loaded = CharacterMechanics.FromRun(context.Run).Validate(Wire.Decode<CardDefinition>(Wire.Encode(card)));
+    Check(loaded.Forms[0].AllEffects.Select(e => e.Kind).SequenceEqual(new[] { EffectKind.Damage, EffectKind.GainMaxHp, EffectKind.GainGold, EffectKind.Draw, EffectKind.Damage, EffectKind.Block }));
+    Check(form.ImmediateEffects.Length == 4 && form.IsImmediateRoot(0) && form.IsImmediateRoot(3) && !form.IsImmediateRoot(1));
+    string rendered = CardText.Render(loaded, true, i => (100 + i).ToString());
+    Check(rendered.Contains("造成100点伤害。斩杀：增加101点最大生命。获得102枚金币。") && rendered.Contains("抽103张牌") && rendered.Contains("获得105点格挡"));
+    Check(CardText.Render(loaded, true, upgraded: true).Contains("斩杀：增加4点最大生命"));
+    Check(CardText.Render(loaded, false).Contains("Fatal:"));
+    string prompt = PromptBuilder.Build(config, context).System;
+    foreach (string token in new[] { "on_fatal", "gain_max_hp", "lose_max_hp", "gain_gold", "lose_gold", "gold", "last enemy", "All action kinds" }) Check(prompt.Contains(token));
+    return Task.CompletedTask;
+});
+await Test("fatal groups allow all actions with lexical selections and inherited character gates", async () =>
+{
+    var select = new CardEffect { Kind = EffectKind.Select, Target = new() { Pile = CardPileName.Hand, Pick = SelectionMode.First }, As = "outer" };
+    var damage = new CardEffect { Kind = EffectKind.Damage, Target = "enemy", Amount = 1,
+        OnFatal = [new() { Kind = EffectKind.Upgrade, Target = "selected:outer" }, select with { As = "inner" }, new() { Kind = EffectKind.Exhaust, Target = "selected:inner" },
+            new() { Kind = EffectKind.Damage, Target = "random_enemy", Amount = 2, OnFatal = [new() { Kind = EffectKind.Draw, Amount = 1 }] }] };
+    CardDefinition With(CardEffect[] effects) => valid with { Forms = valid.Forms.Select(f => f with { Effects = effects, Rules = null }).ToArray() };
+    CardValidator.Validate(With([select, damage]));
+    await Reject(() => CardValidator.Validate(With([damage])));
+    await Reject(() => CardValidator.Validate(With([select, damage, new() { Kind = EffectKind.Upgrade, Target = "selected:inner" }])));
+    await Reject(() => CharacterMechanics.FromRun(context.Run).Validate(With([damage with { OnFatal = [new() { Kind = EffectKind.GainStars, Amount = 1 }] }])));
+    var available = CharacterMechanics.FromRun(JsonSerializer.SerializeToElement(new { character = "REGENT" }));
+    available.Validate(With([damage with { OnFatal = [new() { Kind = EffectKind.GainStars, Amount = 1 }] }]));
+    foreach (var action in new CardEffect[]
+    {
+        new() { Kind = EffectKind.Block, Amount = 1, OnFatal = [new() { Kind = EffectKind.Draw, Amount = 1 }] },
+        damage with { OnFatal = [] }, damage with { OnFatal = [null!] },
+        damage with { OnFatal = [new() { Kind = EffectKind.Draw, Amount = new() { Stat = "event_amount" } }] }
+    }) await Reject(() => CardValidator.Validate(With([action])));
+});
+await Test("fatal nesting and nested actions count toward form and rule budgets", async () =>
+{
+    var damage = new CardEffect { Kind = EffectKind.Damage, Target = "random_enemy", Amount = 1 };
+    CardDefinition With(CardEffect e) => valid with { Forms = valid.Forms.Select(f => f with { Effects = [e], Rules = null }).ToArray() };
+    var nested = damage;
+    for (int i = 0; i < 6; i++) nested = damage with { OnFatal = [nested] };
+    CardValidator.Validate(With(nested));
+    await Reject(() => CardValidator.Validate(With(damage with { OnFatal = [nested] })));
+    var many = damage with { OnFatal = Enumerable.Repeat(new CardEffect { Kind = EffectKind.Draw, Amount = 1 }, 24).ToArray() };
+    await Reject(() => CardValidator.Validate(With(many)));
+    var rule = new CardRule { Trigger = new() { Event = RuleEvent.TurnEnd }, Effects = [damage with { OnFatal = Enumerable.Repeat(new CardEffect { Kind = EffectKind.Draw, Amount = 1 }, 8).ToArray() }] };
+    await Reject(() => CardValidator.Validate(valid with { Forms = valid.Forms.Select(f => f with { Effects = null, Rules = [rule] }).ToArray() }));
 });
 await Test("X flags alone define resource costs and accept existing explicit costs", async () =>
 {
