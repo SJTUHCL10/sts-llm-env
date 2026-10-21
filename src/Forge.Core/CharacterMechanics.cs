@@ -52,6 +52,9 @@ public sealed record CharacterMechanics(bool Poison, bool Stars, bool Necrobinde
             foreach (var rule in form.Listeners)
             {
                 if (rule.Trigger.Event == RuleEvent.Summoned && !Necrobinder || rule.Trigger.Event is RuleEvent.OrbChanneled or RuleEvent.OrbEvoked && !Defect) Unavailable();
+                if (rule.Trigger.Event is RuleEvent.Forged or RuleEvent.StarsGained or RuleEvent.StarsSpent && !Stars) Unavailable();
+                if (rule.Trigger.Where is { } w && (w.Power is { } power && !AllowsPower(power)
+                    || w.Orb is not null && !Defect || (w.Actor is "osty" or "self_or_osty" || w.Target is "osty" or "self_or_osty" || w.Source is "osty" or "self_or_osty") && !Necrobinder)) Unavailable();
                 CheckFilter(rule.Trigger.Filter); CheckCondition(rule.Condition);
             }
         }
@@ -59,13 +62,14 @@ public sealed record CharacterMechanics(bool Poison, bool Stars, bool Necrobinde
     }
     private void CheckFilter(CardFilter? filter)
     {
-        if (filter?.Id is { } id && !AllowsCard(id) || filter?.Keyword == ForgeKeyword.Sly && !Poison) Unavailable();
+        if (filter?.Id is { } id && !AllowsCard(id) || filter?.Keyword == ForgeKeyword.Sly && !Poison
+            || filter?.Tag == "shiv" && !Poison || filter?.Tag == "minion" && !Stars || filter?.Tag == "osty_attack" && !Necrobinder) Unavailable();
     }
     private void CheckNumber(NumberExpression? number)
     {
         if (number is null) return;
         if (number.Of == "osty" && !Necrobinder || number.Stat == "power" && !AllowsPower(number.Id!)
-            || number.Stat is "stars" or "paid_stars" && !Stars || number.Stat is "orb_count" or "orb_capacity" && !Defect) Unavailable();
+            || number.Stat is "stars" or "paid_stars" or "event_paid_stars" && !Stars || number.Stat is "orb_count" or "orb_capacity" && !Defect) Unavailable();
         foreach (var child in number.Add ?? number.Sub ?? number.Mul ?? number.Div ?? []) CheckNumber(child);
     }
     private void CheckCondition(EffectCondition? condition)

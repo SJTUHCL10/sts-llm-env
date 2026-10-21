@@ -10,6 +10,7 @@ using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Combat.History;
 using MegaCrit.Sts2.Core.Combat.History.Entries;
 using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Entities.CardRewardAlternatives;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Models;
@@ -34,6 +35,7 @@ using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Runs.History;
 using MegaCrit.Sts2.Core.Models.Events;
+using MegaCrit.Sts2.Core.TestSupport;
 
 try
 {
@@ -63,6 +65,12 @@ static class Smoke
         Check(ModelDb.Relic<PrismaticGem>().Id.Entry == "PRISMATIC_GEM");
         foreach (string id in MechanicCatalog.Cards) Check(NativeMechanics.Card(id).IsCanonical);
         foreach (string id in MechanicCatalog.Powers) Check(NativeMechanics.Power(id).IsCanonical);
+        foreach (var orb in new MegaCrit.Sts2.Core.Models.OrbModel[]
+        {
+            ModelDb.Orb<MegaCrit.Sts2.Core.Models.Orbs.LightningOrb>(), ModelDb.Orb<MegaCrit.Sts2.Core.Models.Orbs.FrostOrb>(),
+            ModelDb.Orb<MegaCrit.Sts2.Core.Models.Orbs.DarkOrb>(), ModelDb.Orb<MegaCrit.Sts2.Core.Models.Orbs.PlasmaOrb>(),
+            ModelDb.Orb<MegaCrit.Sts2.Core.Models.Orbs.GlassOrb>()
+        }) Check(orb.IsCanonical);
         foreach (string id in new[] { "strength", "focus" }) foreach (bool negative in new[] { false, true }) Check(NativeMechanics.TemporaryPower(id, negative).IsCanonical);
         Check(ModelDb.Character<Necrobinder>().CardPool.Id.Entry == "NECROBINDER_CARD_POOL" && ModelDb.Character<Defect>().CardPool.Id.Entry == "DEFECT_CARD_POOL");
         Console.WriteLine("PASS native card/power aliases and role pools resolve against v0.111.0");
@@ -157,6 +165,196 @@ static class Smoke
         Console.WriteLine("PASS native Harmony reward/history/description hooks and placeholder power icons");
         Console.WriteLine("PASS game API smoke checks (rendered UI/live combat not exercised)");
     }
+    private static void CheckPlanningCapture()
+    {
+        var player = Player.CreateForNewRun<Regent>(UnlockState.all, 71);
+        var run = RunState.CreateForTest([player], acts: [ModelDb.Act<Glory>()], seed: "PLANNING");
+        run.Map.StartingMapPoint.AddChildPoint(new MapPoint(1, 1) { PointType = MapPointType.Elite });
+        run.Act.SetBossEncounter(ModelDb.Encounter<AeonglassBoss>());
+        run.Act.SetSecondBossEncounter(ModelDb.Encounter<QueenBoss>());
+        string rng = Wire.Encode(run.Rng.ToSerializable());
+        string rooms = Wire.Encode(run.Act.ToSave());
+        var capture = new StateCapture();
+        var planning = capture.Detach(StateCapture.CapturePlanning(run));
+        Check(planning.GetProperty("bosses").GetArrayLength() == 2);
+        Check(planning.GetProperty("bosses")[0].GetProperty("id").GetString() == "AEONGLASS_BOSS");
+        var hp = planning.GetProperty("bosses")[0].GetProperty("monsters")[0].GetProperty("initial_hp");
+        Check(hp.GetProperty("min").GetInt32() == ModelDb.Monster<Aeonglass>().MinInitialHp);
+        Check(hp.GetProperty("max").GetInt32() == ModelDb.Monster<Aeonglass>().MaxInitialHp);
+        Check(planning.GetProperty("elite_pool").EnumerateArray().Any(e => e.GetProperty("id").GetString() == "MECHA_KNIGHT_ELITE"));
+        Check(!planning.TryGetProperty("map", out _));
+        Check(Wire.Encode(run.Rng.ToSerializable()) == rng && Wire.Encode(run.Act.ToSave()) == rooms);
+        foreach (var encounter in new EncounterModel[] { ModelDb.Encounter<AeonglassBoss>(), ModelDb.Encounter<QueenBoss>(), ModelDb.Encounter<MechaKnightElite>(), ModelDb.Encounter<AxebotsNormal>() })
+        {
+            run.PushRoom(new CombatRoom(encounter.ToMutable(), run));
+            try
+            {
+                var inRoom = capture.Detach(StateCapture.CapturePlanning(run));
+                Check(inRoom.GetProperty("bosses").GetArrayLength() == (encounter.RoomType == RoomType.Boss ? 0 : 2));
+                Check(inRoom.GetProperty("elite_pool").GetRawText() == planning.GetProperty("elite_pool").GetRawText());
+                Check(Wire.Encode(run.Rng.ToSerializable()) == rng && Wire.Encode(run.Act.ToSave()) == rooms);
+            }
+            finally { run.PopCurrentRoom(); }
+        }
+        Check(capture.Detach(StateCapture.CapturePlanning(run)).GetProperty("bosses").GetArrayLength() == 2);
+        foreach (var act in new ActModel[] { ModelDb.Act<Underdocks>(), ModelDb.Act<Overgrowth>(), ModelDb.Act<Hive>(), ModelDb.Act<Glory>() })
+            foreach (var encounter in act.AllBossEncounters.Concat(act.AllEliteEncounters))
+            {
+                foreach (var monster in encounter.AllPossibleMonsters)
+                    Check(GameKnowledge.MonsterMechanics(monster.Id.Entry) is not null);
+                if (GameKnowledge.InitialLineup(encounter.Id.Entry) is { } lineup)
+                    foreach (var member in lineup)
+                        Check(member.Count > 0 && encounter.AllPossibleMonsters.Any(m => m.Id.Entry == member.Id));
+            }
+        var projected = ObservationProjector.Project(new GenerationContext { CombatKey = "planning", Run = System.Text.Json.JsonSerializer.SerializeToElement(new { planning }),
+            State = System.Text.Json.JsonSerializer.SerializeToElement(new { }), RecentEvents = [] });
+        var queen = projected.GetProperty("planning").GetProperty("bosses")[1];
+        Check(queen.GetProperty("initial_lineup").GetArrayLength() == 2);
+        Check(queen.GetProperty("monsters").GetArrayLength() == 2);
+        CheckPlanningHpAscension();
+        var current = new MapPoint(1, 1) { PointType = MapPointType.Monster };
+        var elite = new MapPoint(2, 1) { PointType = MapPointType.Elite };
+        var unknown = new MapPoint(2, 2) { PointType = MapPointType.Unknown };
+        var boss = new MapPoint(3, 1) { PointType = MapPointType.Boss };
+        current.AddChildPoint(elite); current.AddChildPoint(unknown);
+        elite.AddChildPoint(boss); unknown.AddChildPoint(boss);
+        Check(StateCapture.CountFutureElites(current) == 1 && StateCapture.CountFutureElites(boss) == 0);
+        Check(StateCapture.CountFutureElites(elite) == 0 && current.Children.Count == 2);
+        var alternative = new MapPoint(2, 3) { PointType = MapPointType.Elite };
+        current.AddChildPoint(alternative); alternative.AddChildPoint(boss);
+        Check(StateCapture.CountFutureElites(current) == 1); // Separate branches are not two fights.
+        CheckPlanningElitePool();
+        Console.WriteLine("PASS planning captures assigned bosses and possible future elites without exposing maps or consuming encounters/RNG");
+    }
+
+    private static int _planningAscension;
+
+    private static void CheckPlanningElitePool()
+    {
+        var player = Player.CreateForNewRun<Regent>(UnlockState.all, 73);
+        var run = RunState.CreateForTest([player], acts: [ModelDb.Act<Underdocks>(),
+            ModelDb.Act<Overgrowth>(), ModelDb.Act<Glory>()], seed: "PLANNING_ELITES");
+        var capture = new StateCapture();
+        // Keep the native map object, replacing only the test start's future edges.
+        run.ClearVisitedMapCoordsDebug();
+        var start = run.Map!.StartingMapPoint;
+        foreach (var child in start.Children.ToArray()) start.RemoveChildPoint(child);
+        var first = new MapPoint(1, 1) { PointType = MapPointType.Elite };
+        var second = new MapPoint(2, 1) { PointType = MapPointType.Elite };
+        start.AddChildPoint(first);
+
+        for (int actIndex = 0; actIndex < 3; actIndex++)
+        {
+            run.CurrentActIndex = actIndex;
+            var act = run.Act;
+            act.GenerateRooms(run.Rng.UpFront, UnlockState.all, false);
+            var saved = act.ToSave();
+            var queue = saved.SerializableRooms.EliteEncounterIds;
+            var pool = act.AllEliteEncounters.Select(e => e.Id).ToHashSet();
+            Check(pool.Count == 3 && queue.Count == 15);
+            for (int i = 0; i < queue.Count; i += pool.Count)
+                Check(queue.Skip(i).Take(pool.Count).ToHashSet().SetEquals(pool));
+            for (int consumed = 0; consumed <= 7; consumed++)
+            {
+                saved.SerializableRooms.EliteEncountersVisited = consumed;
+                var restored = ActModel.FromSave(saved);
+                string rng = Wire.Encode(run.Rng.ToSerializable()), rooms = Wire.Encode(restored.ToSave());
+                var candidates = StateCapture.PossibleEliteEncounters(restored, 1).Select(e => e.Id).ToHashSet();
+                Check(candidates.Contains(queue[consumed]));
+                Check(StateCapture.PossibleEliteEncounters(restored, 0).Count() == 0);
+                // Inside each bag, previously drawn types are excluded. At refill,
+                // the last type is excluded when a non-conflicting choice exists.
+                int used = consumed % pool.Count;
+                if (used > 0)
+                    Check(!candidates.Overlaps(queue.Skip(consumed - used).Take(used)));
+                else if (consumed > 0)
+                    Check(!candidates.Contains(queue[consumed - 1]));
+                var acrossRefill = StateCapture.PossibleEliteEncounters(restored, 4).Select(e => e.Id).ToHashSet();
+                Check(acrossRefill.SetEquals(pool));
+                if (used == 2)
+                {
+                    Check(candidates.Count == 1);
+                    Check(StateCapture.PossibleEliteEncounters(restored, 2).Select(e => e.Id).ToHashSet().SetEquals(pool));
+                }
+                Check(Wire.Encode(run.Rng.ToSerializable()) == rng && Wire.Encode(restored.ToSave()) == rooms);
+                var reloaded = ActModel.FromSave(restored.ToSave());
+                Check(StateCapture.PossibleEliteEncounters(reloaded, 1).Select(e => e.Id).ToHashSet().SetEquals(candidates));
+                // Unseen pre-rolls must not affect the possible-candidate projection.
+                var hidden = restored.ToSave();
+                hidden.SerializableRooms.EliteEncounterIds.Reverse(consumed, queue.Count - consumed);
+                Check(StateCapture.PossibleEliteEncounters(ActModel.FromSave(hidden), 1).Select(e => e.Id).ToHashSet().SetEquals(candidates));
+            }
+
+            // Entering two native map elites advances the consumed prefix; capture
+            // must combine it with the reachable fight count, not the whole act pool.
+            act.MarkRoomVisited(RoomType.Elite); act.MarkRoomVisited(RoomType.Elite);
+            string beforeRng = Wire.Encode(run.Rng.ToSerializable()), beforeRooms = Wire.Encode(act.ToSave());
+            var planning = capture.Detach(StateCapture.CapturePlanning(run));
+            Check(planning.GetProperty("elite_act_id").GetString() == act.Id.Entry);
+            Check(planning.GetProperty("elite_pool").GetArrayLength() == 1 && !planning.TryGetProperty("map", out _));
+            Check(planning.GetProperty("elite_pool")[0].GetProperty("id").GetString() == queue[2].Entry);
+            first.AddChildPoint(second);
+            Check(capture.Detach(StateCapture.CapturePlanning(run)).GetProperty("elite_pool").GetArrayLength() == 3);
+            first.RemoveChildPoint(second);
+            start.RemoveChildPoint(first); // No reachable elite: advance the pool only.
+            planning = capture.Detach(StateCapture.CapturePlanning(run));
+            Check(planning.GetProperty("act_id").GetString() == act.Id.Entry);
+            if (actIndex < 2)
+            {
+                var next = run.Acts[actIndex + 1];
+                Check(planning.GetProperty("elite_act_id").GetString() == next.Id.Entry);
+                Check(planning.GetProperty("elite_pool").EnumerateArray().Select(e => e.GetProperty("id").GetString())
+                    .ToHashSet().SetEquals(next.AllEliteEncounters.Select(e => e.Id.Entry)));
+            }
+            else
+                Check(planning.GetProperty("elite_pool").GetArrayLength() == 0);
+            Check(Wire.Encode(run.Rng.ToSerializable()) == beforeRng && Wire.Encode(act.ToSave()) == beforeRooms);
+            start.AddChildPoint(first);
+            first.AddChildPoint(second);
+            Check(StateCapture.CountFutureElites(start) == 2);
+            first.RemoveChildPoint(second);
+        }
+        // A missing map is unknown, rather than evidence that this act has no elites.
+        run.Map = null!;
+        Check(capture.Detach(StateCapture.CapturePlanning(run)).GetProperty("elite_pool").GetArrayLength() == 3);
+        Console.WriteLine("PASS native elite bags, reachable fight counts, next-act/final-act pools, reload and read-only capture");
+    }
+
+    private static bool PlanningAscension(MegaCrit.Sts2.Core.Entities.Ascension.AscensionLevel level, ref bool __result)
+    {
+        __result = (int)level <= _planningAscension;
+        return false;
+    }
+
+    private static void CheckPlanningHpAscension()
+    {
+        var player = Player.CreateForNewRun<Regent>(UnlockState.all, 72);
+        var run = RunState.CreateForTest([player], acts: [ModelDb.Act<Overgrowth>()], seed: "PLANNING_HP");
+        run.Map.StartingMapPoint.AddChildPoint(new MapPoint(1, 1) { PointType = MapPointType.Elite });
+        var guard = new Harmony("forge.smoke.planning-hp");
+        guard.Patch(AccessTools.Method(typeof(RunManager), "HasAscension"), prefix: new HarmonyMethod(typeof(Smoke), nameof(PlanningAscension)));
+        try
+        {
+            run.Act.SetBossEncounter(ModelDb.Encounter<SoulFyshBoss>());
+            foreach (int ascension in new[] { 0, 7, 8, 10 })
+            {
+                _planningAscension = ascension;
+                string rng = Wire.Encode(run.Rng.ToSerializable()), rooms = Wire.Encode(run.Act.ToSave());
+                var planning = new StateCapture().Detach(StateCapture.CapturePlanning(run));
+                var hp = planning.GetProperty("bosses")[0].GetProperty("monsters")[0].GetProperty("initial_hp");
+                Check(hp.GetProperty("min").GetInt32() == (ascension >= 8 ? 221 : 211));
+                Check(hp.GetProperty("max").GetInt32() == hp.GetProperty("min").GetInt32());
+                var parasite = planning.GetProperty("elite_pool").EnumerateArray().Single(e => e.GetProperty("id").GetString() == "PHROG_PARASITE_ELITE")
+                    .GetProperty("monsters").EnumerateArray().Single(m => m.GetProperty("id").GetString() == "PHROG_PARASITE").GetProperty("initial_hp");
+                Check(parasite.GetProperty("min").GetInt32() == (ascension >= 8 ? 66 : 61));
+                Check(parasite.GetProperty("max").GetInt32() == (ascension >= 8 ? 68 : 64));
+                Check(Wire.Encode(run.Rng.ToSerializable()) == rng && Wire.Encode(run.Act.ToSave()) == rooms);
+            }
+        }
+        finally { guard.UnpatchAll(guard.Id); }
+        Console.WriteLine("PASS native planning HP ranges follow ascension 8 without rolling HP or changing encounters/RNG");
+    }
+
     private static void CheckCombatRewardEligibility(Player player)
     {
         var run = RunState.CreateForTest([player], acts: [ModelDb.Act<Underdocks>(),
@@ -296,12 +494,208 @@ static class Smoke
             Check(NativeMechanics.Matches(NativeMechanics.Card("soul"), new() { Id = "soul", Type = "skill" }));
             Console.WriteLine("PASS native event ordinals include earlier events and snapshot filter properties before later upgrades");
             CheckCombatRewardEligibility(Player.CreateForNewRun<Regent>(UnlockState.all, 3));
+            CheckPlanningCapture();
             CheckFirstCombatTiming();
+            CheckExtendedEventContracts(card, owner, combat);
+            CheckAnySelectionContracts(owner, combat);
             CheckQuantityAndDecimalContracts(owner, other, combat);
         }
         finally { CombatManager.Instance.History.Clear(); turnField.SetValue(CombatManager.Instance, previous); guard.UnpatchAll(guard.Id); }
     }
+    private static void CheckExtendedEventContracts(NeowGeneratedCard card, Player owner, CombatState combat)
+    {
+        var choice = new BlockingPlayerChoiceContext();
+        var enemy = combat.CreateCreature(ModelDb.Monster<Axebot>().ToMutable(), CombatSide.Enemy, null);
+        var second = combat.CreateCreature(ModelDb.Monster<Axebot>().ToMutable(), CombatSide.Enemy, null);
+        combat.AddCreature(enemy); combat.AddCreature(second);
+        enemy.SetMaxHpInternal(50); enemy.SetCurrentHpInternal(50);
+        second.SetMaxHpInternal(50); second.SetCurrentHpInternal(50);
+        var sourceCard = (CardModel)NativeMechanics.Card("shiv").ToMutable(); sourceCard.Owner = owner;
+        var listeners = new List<GeneratedEffectPower>();
+        GeneratedEffectPower Listen(EffectTrigger trigger, EffectCondition? condition = null)
+        {
+            var form = new CardForm { Cost = new(), Rules = [new() { Trigger = trigger, Condition = condition,
+                Effects = [new() { Kind = EffectKind.GainEnergy, Amount = 1, Condition = new() { Op = Comparison.Eq, Left = 0, Right = 1 } }] }] };
+            card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "事件契约", Type = ForgeCardType.Power, Rarity = ForgeRarity.Rare, Forms = [form, form] });
+            var power = (GeneratedEffectPower)ModelDb.Power<GeneratedEffectPower>().ToMutable(); power.Configure(card);
+            power.ApplyInternal(owner.Creature, 1, silent: true); listeners.Add(power); return power;
+        }
+        int Activations(GeneratedEffectPower power) => Wire.Decode<GeneratedPowerSnapshot>(power.RuntimePayload).State.Activations[0];
+        EffectCondition Eq(string stat, decimal amount) => new() { Op = Comparison.Eq, Left = new() { Stat = stat }, Right = amount };
+        try
+        {
+            var noDealer = new GeneratedRuleEvent(RuleEvent.DamageGiven) { Subject = enemy, Target = enemy, Targets = [enemy] };
+            var ownerWithoutPet = combat.Players.First(p => p != owner).Creature;
+            Check(ownerWithoutPet.Player!.Osty is null && !noDealer.Matches(new() { Event = RuleEvent.DamageGiven }, ownerWithoutPet, noDealer.Facts(ownerWithoutPet)));
+            var block = Listen(new() { Event = RuleEvent.BlockGained, Filter = new() { Id = "shiv" }, Where = new() { Actor = "self", Target = "self", Source = "self", SourceKind = "card" } }, Eq("event_amount", 3.5m));
+            block.AfterBlockGained(owner.Creature, 0, ValueProp.Unpowered, sourceCard).GetAwaiter().GetResult();
+            block.AfterBlockGained(owner.Creature, 3.5m, ValueProp.Unpowered, null).GetAwaiter().GetResult();
+            Check(Activations(block) == 0);
+            block.AfterBlockGained(owner.Creature, 3.5m, ValueProp.Unpowered, sourceCard).GetAwaiter().GetResult();
+            Check(Activations(block) == 1);
+            var damage = Listen(new() { Event = RuleEvent.DamageGiven, Filter = new() { Type = "attack", Tag = "shiv", MinCost = 0, MaxCost = 0 }, Where = new() { Actor = "self", Target = "enemy", Attack = true } }, new()
+            {
+                All = [Eq("event_amount", 7), Eq("event_total_damage", 7), Eq("event_unblocked_damage", 4),
+                    new() { All = [Eq("event_target_count", 1), new() { Op = Comparison.Eq, Left = new() { Stat = "hp", Of = "event.subject" }, Right = 50 }] }]
+            });
+            var hit = new DamageResult(enemy, ValueProp.Move) { BlockedDamage = 3, UnblockedDamage = 4 };
+            damage.AfterDamageGiven(choice, owner.Creature, hit, ValueProp.Unpowered, enemy, sourceCard).GetAwaiter().GetResult();
+            damage.AfterDamageGiven(choice, enemy, hit, ValueProp.Move, enemy, sourceCard).GetAwaiter().GetResult();
+            Check(Activations(damage) == 0);
+            damage.AfterDamageGiven(choice, owner.Creature, hit, ValueProp.Move, enemy, sourceCard).GetAwaiter().GetResult();
+            damage.AfterDamageGiven(choice, owner.Creature, new(second, ValueProp.Move) { UnblockedDamage = 7 }, ValueProp.Move, second, sourceCard).GetAwaiter().GetResult();
+            Check(Activations(damage) == 1); // The per-hit unblocked amount differs on the second target.
+            var repeated = Listen(new() { Event = RuleEvent.DamageGiven, Where = new() { Attack = true } }, Eq("event_amount", 7));
+            repeated.AfterDamageGiven(choice, owner.Creature, hit, ValueProp.Move, enemy, sourceCard).GetAwaiter().GetResult();
+            repeated.AfterDamageGiven(choice, owner.Creature, hit, ValueProp.Move, enemy, sourceCard).GetAwaiter().GetResult();
+            Check(Activations(repeated) == 2);
+            var strength = (StrengthPower)ModelDb.Power<StrengthPower>().ToMutable(); strength.ApplyInternal(enemy, -2, silent: true);
+            var changed = Listen(new() { Event = RuleEvent.PowerAmountChanged, Where = new() { Power = "strength", PowerType = "debuff", Temporary = false, Target = "enemy", Actor = "self" } }, Eq("event_amount", -2));
+            changed.AfterPowerAmountChanged(choice, strength, -2, owner.Creature, sourceCard).GetAwaiter().GetResult();
+            changed.AfterPowerAmountChanged(choice, strength, 2, owner.Creature, sourceCard).GetAwaiter().GetResult();
+            Check(Activations(changed) == 1);
+            var forge = Listen(new() { Event = RuleEvent.Forged, Where = new() { SourceKind = "power", Actor = "self" } }, Eq("event_amount", 4.5m));
+            forge.AfterForge(4.5m, owner, sourceCard).GetAwaiter().GetResult();
+            forge.AfterForge(4.5m, owner, strength).GetAwaiter().GetResult();
+            forge.AfterForge(0, owner, strength).GetAwaiter().GetResult();
+            Check(Activations(forge) == 1);
+            foreach (var kind in new[] { RuleEvent.StarsGained, RuleEvent.StarsSpent })
+            {
+                var stars = Listen(new() { Event = kind }, Eq("event_amount", 3));
+                (kind == RuleEvent.StarsGained ? stars.AfterStarsGained(3, owner) : stars.AfterStarsSpent(3, owner)).GetAwaiter().GetResult();
+                (kind == RuleEvent.StarsGained ? stars.AfterStarsGained(0, owner) : stars.AfterStarsSpent(0, owner)).GetAwaiter().GetResult();
+                Check(Activations(stars) == 1);
+            }
+            var play = new CardPlay { Card = sourceCard, Player = owner, Target = enemy, Resources = new() { EnergySpent = 2, StarsSpent = 3, EnergyValue = 2, StarValue = 3 }, ResultPile = PileType.Discard, PlayCount = 2, PlayIndex = 1, IsAutoPlay = false };
+            var spending = Listen(new() { Event = RuleEvent.CardPlayed, Where = new() { LastInSeries = true, AutoPlay = false } }, new() { All = [Eq("event_paid_energy", 2), Eq("event_paid_stars", 3)] });
+            spending.AfterCardPlayed(choice, play).GetAwaiter().GetResult(); Check(Activations(spending) == 1);
+            var command = DamageCmd.Attack(7).FromCard(sourceCard, play).TargetingAllOpponents(combat);
+            var results = (List<List<DamageResult>>)AccessTools.Field(typeof(AttackCommand), "_results").GetValue(command)!;
+            results.Add([hit, new(second, ValueProp.Move) { UnblockedDamage = 7 }]);
+            var completed = Listen(new() { Event = RuleEvent.AttackCompleted, Where = new() { Actor = "self", LastInSeries = true } }, new()
+            {
+                All = [Eq("event_amount", 14), Eq("event_target_count", 2), Eq("event_unblocked_damage", 11), Eq("event_paid_stars", 3)]
+            });
+            completed.AfterAttack(choice, command).GetAwaiter().GetResult(); Check(Activations(completed) == 1);
+            var received = Listen(new() { Event = RuleEvent.DamageReceived, Where = new() { Target = "self", Actor = "enemy" } }, new()
+            {
+                All = [Eq("event_amount", 4), new() { Op = Comparison.Eq, Left = new() { Stat = "hp", Of = "event.target" }, Right = 50 },
+                    new() { Op = Comparison.Eq, Left = new() { Stat = "hp", Of = "event.subject" }, Right = owner.Creature.CurrentHp }]
+            });
+            received.AfterDamageReceived(choice, owner.Creature, new(owner.Creature, ValueProp.Move) { UnblockedDamage = 4 }, ValueProp.Move, enemy, null).GetAwaiter().GetResult();
+            Check(Activations(received) == 1);
+            var draw = Listen(new() { Event = RuleEvent.CardDrawn, Where = new() { FromHandDraw = false, SourceKind = "unknown" } });
+            draw.AfterCardDrawn(choice, sourceCard, true).GetAwaiter().GetResult();
+            draw.AfterCardDrawn(choice, sourceCard, false).GetAwaiter().GetResult(); Check(Activations(draw) == 1);
+            var drawnSource = Listen(new() { Event = RuleEvent.CardDrawn, Where = new() { SourceKind = "card" } });
+            drawnSource.AfterCardDrawn(choice, sourceCard, false).GetAwaiter().GetResult(); Check(Activations(drawnSource) == 0);
+            var exhaust = Listen(new() { Event = RuleEvent.CardExhausted, Where = new() { CausedByEthereal = true } });
+            exhaust.AfterCardExhausted(choice, sourceCard, false).GetAwaiter().GetResult();
+            exhaust.AfterCardExhausted(choice, sourceCard, true).GetAwaiter().GetResult(); Check(Activations(exhaust) == 1);
+            var lightning = ModelDb.Orb<MegaCrit.Sts2.Core.Models.Orbs.LightningOrb>().ToMutable(); lightning.Owner = owner;
+            var frost = ModelDb.Orb<MegaCrit.Sts2.Core.Models.Orbs.FrostOrb>().ToMutable(); frost.Owner = owner;
+            var evoke = Listen(new() { Event = RuleEvent.OrbEvoked, Where = new() { Orb = "lightning" } }, Eq("event_target_count", 2));
+            evoke.AfterOrbEvoked(choice, frost, [enemy, second]).GetAwaiter().GetResult();
+            evoke.AfterOrbEvoked(choice, lightning, [enemy, second, enemy]).GetAwaiter().GetResult(); Check(Activations(evoke) == 1);
+            // Persistence and clone must retain filters and successful-activation quotas independently.
+            var loaded = (GeneratedEffectPower)ModelDb.Power<GeneratedEffectPower>().ToMutable(); loaded.RuntimePayload = evoke.RuntimePayload;
+            Check(Activations(loaded) == 1 && Wire.Decode<GeneratedPowerSnapshot>(loaded.RuntimePayload).Definition.Forms[0].Listeners[0].Trigger.Where!.Orb == "lightning");
+            var clone = (GeneratedEffectPower)evoke.ClonePreservingMutability();
+            var saved = Wire.Decode<GeneratedPowerSnapshot>(clone.RuntimePayload); saved.State.Activations[0] = 9; clone.RuntimePayload = Wire.Encode(saved);
+            Check(Activations(evoke) == 1);
+            // Execute a real multi-target rule action through native damage commands without visual effects.
+            var guard = new Harmony("forge.smoke.extended-event-targets");
+            guard.Patch(AccessTools.Method(typeof(CreatureCmd), "Damage", [typeof(PlayerChoiceContext), typeof(IEnumerable<Creature>), typeof(decimal), typeof(ValueProp), typeof(Creature), typeof(CardModel), typeof(CardPlay)]), prefix: new HarmonyMethod(typeof(Smoke), nameof(DamageWithoutVisuals)));
+            try
+            {
+                var form = new CardForm { Cost = new(), Effects = [new() { Kind = EffectKind.Damage, Target = "event.targets", Amount = 3 }] };
+                card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "多目标契约", Type = ForgeCardType.Skill, Rarity = ForgeRarity.Common, Forms = [form with { Effects = null, Rules = [new() { Trigger = new() { Event = RuleEvent.OrbEvoked }, Effects = form.Effects! }] }, form with { Effects = null, Rules = [new() { Trigger = new() { Event = RuleEvent.OrbEvoked }, Effects = form.Effects! }] }] });
+                GeneratedEffectExecutor.ExecuteGroup(new(card, choice) { Triggered = true, EventTargets = [enemy, second, enemy] }, form.Effects!, 0).GetAwaiter().GetResult();
+                Check(enemy.CurrentHp == 47 && second.CurrentHp == 47);
+            }
+            finally { guard.UnpatchAll(guard.Id); }
+        }
+        finally
+        {
+            foreach (var power in listeners) owner.Creature.RemovePowerInternal(power);
+            combat.RemoveCreature(enemy); combat.RemoveCreature(second);
+        }
+        Console.WriteLine("PASS native extended events preserve per-hit damage, signed power changes, resource payments, origins, targets, filters and persisted state");
+    }
     private static bool SkipSaveManager(ref SaveManager? __result) { __result = null; return false; }
+    private sealed class SelectionProbe : MegaCrit.Sts2.Core.TestSupport.ICardSelector
+    {
+        internal int Wanted, Calls;
+        internal CardModel[] Candidates = [];
+        internal int Min, Max;
+        public Task<IEnumerable<CardModel>> GetSelectedCards(IEnumerable<CardModel> options, int minSelect, int maxSelect)
+        {
+            Calls++; Candidates = options.ToArray(); Min = minSelect; Max = maxSelect;
+            return Task.FromResult(Candidates.Take(Math.Min(Wanted, maxSelect)));
+        }
+        public CardRewardSelection GetSelectedCardReward(IReadOnlyList<CardCreationResult> options,
+            IReadOnlyList<CardRewardAlternative> alternatives) => throw new NotSupportedException();
+    }
+    private static void CheckAnySelectionContracts(Player owner, CombatState combat)
+    {
+        var source = combat.CreateCard<NeowGeneratedCard>(owner);
+        var probe = new SelectionProbe();
+        using var selector = CardSelectCmd.PushSelector(probe);
+        var guard = new Harmony("neowscompany.tests.any-selection");
+        // Native choice logging initializes Godot.OS, unavailable in this console harness.
+        guard.Patch(AccessTools.Method(typeof(CardSelectCmd), "LogChoice"), prefix: new HarmonyMethod(typeof(Smoke), nameof(SkipSelectionLog)));
+        guard.Patch(AccessTools.PropertyGetter(typeof(CombatManager), nameof(CombatManager.IsOverOrEnding)), prefix: new HarmonyMethod(typeof(Smoke), nameof(SelectionCombatOpen)));
+        guard.Patch(AccessTools.PropertyGetter(typeof(CombatManager), nameof(CombatManager.IsEnding)), prefix: new HarmonyMethod(typeof(Smoke), nameof(SelectionCombatOpen)));
+        try
+        {
+            foreach (var pileName in Enum.GetValues<CardPileName>())
+            {
+                var pile = NativeMechanics.Pile(pileName).GetPile(owner);
+                var statuses = Enumerable.Range(0, 12).Select(_ => combat.CreateCard<MegaCrit.Sts2.Core.Models.Cards.Wound>(owner)).ToArray();
+                var other = combat.CreateCard<MegaCrit.Sts2.Core.Models.Cards.Shiv>(owner);
+                pile.AddInternal(source); pile.AddInternal(other);
+                foreach (var status in statuses) pile.AddInternal(status);
+                try
+                {
+                    var target = new EffectTarget { Pile = pileName, Pick = SelectionMode.Any, Filter = new() { Type = "status" } };
+                    var form = new CardForm { Cost = new(), Effects = [new() { Kind = EffectKind.Select, Target = target, As = "chosen" }] };
+                    source.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "任意选择", Type = ForgeCardType.Skill, Rarity = ForgeRarity.Common, Forms = [form, form] });
+                    var restored = (NeowGeneratedCard)CardModel.FromSerializable(source.ToSerializable());
+                    Check(restored.ActiveForm.Immediate[0].Target!.Pick == SelectionMode.Any && !restored.DynamicVars.Any(v => v.Key == "T0"));
+                    GeneratedExecutionContext Execute(EffectTarget selection)
+                    {
+                        var context = new GeneratedExecutionContext(source, new BlockingPlayerChoiceContext(), null);
+                        GeneratedEffectExecutor.ExecuteGroup(context, [form.Immediate[0] with { Target = selection }], 0).GetAwaiter().GetResult();
+                        return context;
+                    }
+                    foreach (int wanted in new[] { 0, 5, 12 })
+                    {
+                        probe.Wanted = wanted;
+                        int before = probe.Calls;
+                        Check(Execute(target).Selections["chosen"].Length == wanted);
+                        Check(probe.Calls == before + 1 && probe.Min == 0 && probe.Max == 12);
+                        Check(probe.Candidates.Length == 12 && probe.Candidates.All(c => statuses.Contains(c)));
+                    }
+                    probe.Wanted = 12;
+                    Check(Execute(target with { Pick = SelectionMode.Choose, Count = 10, UpTo = true }).Selections["chosen"].Length == 10 && probe.Min == 0 && probe.Max == 10);
+                    int calls = probe.Calls;
+                    Check(Execute(target with { Pick = SelectionMode.All }).Selections["chosen"].Length == 12 && probe.Calls == calls);
+                    Check(!Execute(target with { Filter = null }).Selections["chosen"].Contains(source));
+                    calls = probe.Calls;
+                    Check(Execute(target with { Filter = new() { Type = "curse" } }).Selections["chosen"].Length == 0 && probe.Calls == calls);
+                }
+                finally
+                {
+                    foreach (var status in statuses) pile.RemoveInternal(status);
+                    pile.RemoveInternal(other); pile.RemoveInternal(source);
+                }
+            }
+        }
+        finally { guard.UnpatchAll(guard.Id); }
+        Console.WriteLine("PASS any selection uses native choices for zero/partial/all cards in all piles, filters, source exclusion, save/load and bounded choose compatibility");
+    }
+    private static bool SelectionCombatOpen(ref bool __result) { __result = false; return false; }
+    private static bool SkipSelectionLog() => false;
     private static void CheckFirstCombatTiming()
     {
         foreach (var roomType in new[] { RoomType.Monster, RoomType.Elite, RoomType.Boss })
@@ -345,6 +739,7 @@ static class Smoke
         try
         {
             string text = card.GetDescriptionForUpgradePreview();
+            Check(text.Contains("造成6点伤害[green]2[/green]次。"));
             Check(text.Contains("[green]2[/green]张小刀") && text.Contains("[green]2[/green]次") && text.Contains("随机[green]2[/green]张牌"));
             Check(!text.Contains("[green]6[/green]"));
         }
@@ -352,7 +747,11 @@ static class Smoke
         Check(card.DynamicVars.Values.All(v => !v.WasJustUpgraded));
         var restored = (NeowGeneratedCard)CardModel.FromSerializable(card.ToSerializable()); restored.Owner = owner;
         flags = restored.BeginUpgradePreview();
-        try { Check(restored.GetDescriptionForUpgradePreview().Contains("[green]2[/green]张小刀")); }
+        try
+        {
+            string text = restored.GetDescriptionForUpgradePreview();
+            Check(text.Contains("[green]2[/green]张小刀") && text.Contains("造成6点伤害[green]2[/green]次。"));
+        }
         finally { restored.EndUpgradePreview(flags); }
         var capture = new StateCapture();
         Check(capture.Detach(capture.Card(card)).GetProperty("origin").GetString() == "generated");
@@ -362,6 +761,24 @@ static class Smoke
         summary.Add(ObservationProjector.CompactEvent(System.Text.Json.JsonSerializer.SerializeToElement(new { detail = new { type = "CardPlayFinishedEntry",
             fields = new { Actor = new { id = owner.Character.Id.Entry }, CardPlay = new { card = capture.Detach(capture.Card(card)) } } } })), owner.Character.Id.Entry);
         Check(summary.Snapshot().GetProperty("cards_played")[0].GetProperty("origin").GetString() == "generated");
+
+        var repeated = combat.CreateCard<NeowGeneratedCard>(owner);
+        var repeatedForm = new CardForm { Cost = new(), Effects = [
+            new() { Kind = EffectKind.GainEnergy, Amount = 1, Repeat = new() { Stat = "hand_size" } },
+            new() { Kind = EffectKind.Draw, Amount = 2 }] };
+        repeated.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "薪尽火传", Type = ForgeCardType.Skill,
+            Rarity = ForgeRarity.Rare, Forms = [repeatedForm, repeatedForm] });
+        Check(repeated.RuntimeDescriptionText(true).StartsWith("手牌中每有一张牌，就获得"));
+        owner.PlayerCombatState!.Hand.AddInternal(repeated);
+        try
+        {
+            repeated.UpdateDynamicVarPreview(CardPreviewMode.Normal, null, repeated.DynamicVars);
+            Check(repeated.RuntimeDescriptionText(true).StartsWith("重复{R0:diff()}次：『获得"));
+            Check(repeated.GetDescriptionForPile(PileType.Hand).EndsWith("』。\n抽2张牌。"));
+            var reloaded = (NeowGeneratedCard)CardModel.FromSerializable(repeated.ToSerializable()); reloaded.Owner = owner;
+            Check(reloaded.RuntimeDescriptionText(true).StartsWith("手牌中每有一张牌，就获得"));
+        }
+        finally { owner.PlayerCombatState.Hand.RemoveInternal(repeated); }
 
         owner.Creature.SetMaxHpInternal(79); owner.Creature.SetCurrentHpInternal(39);
         var half = new NumberExpression { Div = [new() { Stat = "max_hp" }, 2] };

@@ -94,6 +94,58 @@ class ViewerTests(unittest.TestCase):
             self.assertEqual(generation_directory(path), logs.resolve())
         self.assertEqual(generation_directory(Path(self.temp.name)), self.directory.resolve())
 
+    def test_game_mod_and_direct_paths_resolve_before_logs_exist(self):
+        game = Path(self.temp.name) / "game"
+        mod = game / "mods" / "NeowsCompany"
+        logs = mod / "data" / "generation"
+        mod.mkdir(parents=True)
+        for data_exists in (False, True):
+            if data_exists:
+                logs.parent.mkdir()
+            for path in (game, mod, logs):
+                with self.subTest(path=path, data_exists=data_exists):
+                    self.assertEqual(generation_directory(path), logs.resolve())
+                    self.assertFalse(logs.exists(), "Resolving logs must not create game files")
+
+    def test_http_discovers_cards_when_game_creates_logs_after_startup(self):
+        game = Path(self.temp.name) / "game"
+        mod = game / "mods" / "NeowsCompany"
+        mod.mkdir(parents=True)
+        logs = mod / "data" / "generation"
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(JournalStore(generation_directory(game))))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            self.addCleanup(connection.close)
+
+            def get_json(endpoint):
+                connection.request("GET", endpoint)
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                return json.loads(response.read())
+
+            initial = get_json("/api/sessions")
+            self.assertEqual(initial["sessions"], [])
+            self.assertEqual(initial["errors"], [])
+            self.assertEqual(initial["directory"], str(logs.resolve()))
+            self.assertFalse(logs.parent.exists())
+
+            logs.mkdir(parents=True)
+            journal = logs / "first-combat.jsonl"
+            journal.write_text(json.dumps(event("generation_ready", {
+                "revision": 1, "cards": [{"name": "首次生成"}]
+            }), ensure_ascii=False) + "\n", encoding="utf-8")
+            sessions = get_json("/api/sessions")["sessions"]
+            self.assertEqual(len(sessions), 1)
+            self.assertEqual(sessions[0]["cards"], ["首次生成"])
+            detail = get_json("/api/session?file=first-combat.jsonl")
+            self.assertEqual(detail["requests"][0]["result"]["cards"][0]["name"], "首次生成")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
     def test_only_selected_journals_are_readable(self):
         self.write([])
         store = JournalStore(self.directory)

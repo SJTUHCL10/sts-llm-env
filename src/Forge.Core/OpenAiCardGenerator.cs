@@ -16,7 +16,7 @@ public sealed class OpenAiCardGenerator(HttpClient client, ProviderConfig config
             ["messages"] = new[] { new { role = "system", content = prompt.System }, new { role = "user", content = prompt.User } },
             [config.TokenLimitParameter] = config.MaxTokens
         };
-        if (config.IncludeTemperature) body["temperature"] = config.Temperature;
+        if (config.IncludeTemperature && config.Temperature is double temperature) body["temperature"] = temperature;
         if (config.ReasoningEffort is not null) body["reasoning_effort"] = config.ReasoningEffort;
         if (config.JsonMode) body["response_format"] = new { type = "json_object" };
         using var request = new HttpRequestMessage(HttpMethod.Post, config.BaseUrl.TrimEnd('/') + "/chat/completions");

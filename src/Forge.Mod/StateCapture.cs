@@ -9,6 +9,7 @@ using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.MonsterMoves.Intents;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Rooms;
@@ -31,12 +32,99 @@ internal sealed class StateCapture
             ascension = run.AscensionLevel, character = player.Character.Id.Entry,
             room_type = run.CurrentRoom?.RoomType.ToString(), room_id = run.CurrentRoom?.Id,
             map_path = run is RunState concrete ? concrete.VisitedMapCoords.Select(c => new { c.row, c.col }).ToArray() : null,
+            planning = CapturePlanning(run),
             deck = player.Deck.Cards.Select(Card).ToArray(), gold = player.Gold,
             relics = player.Relics.Select(m => new { id = m.Id.Entry, title = Safe(() => m.Title.GetFormattedText()),
                 description = Safe(() => m.DynamicDescription.GetFormattedText()), state = Scalars(m) }).ToArray(),
             potions = player.Potions.Select(m => new { id = m.Id.Entry, title = Safe(() => m.Title.GetFormattedText()),
                 description = Safe(() => m.DynamicDescription.GetFormattedText()), state = Scalars(m) }).ToArray()
         };
+    }
+
+    internal static object CapturePlanning(IRunState run)
+    {
+        var current = run.CurrentMapPoint ?? run.Map?.StartingMapPoint;
+        int? futureElites = current is null ? null : CountFutureElites(current);
+        ActModel? eliteAct = run.Act;
+        if (futureElites == 0)
+            eliteAct = run.CurrentActIndex < 2 && run.CurrentActIndex + 1 < run.Acts.Count
+                ? run.Acts[run.CurrentActIndex + 1] : null;
+        IEnumerable<EncounterModel> elites = eliteAct?.AllEliteEncounters ?? [];
+        if (eliteAct == run.Act && futureElites is > 0)
+            elites = PossibleEliteEncounters(run.Act, futureElites.Value);
+        return new
+        {
+            act_id = run.Act.Id.Entry,
+            act_title = Safe(() => run.Act.Title.GetFormattedText()) as string ?? run.Act.Id.Entry,
+            // Read assigned encounters only. Never PullNextEncounter/GenerateMonsters here.
+            bosses = run.CurrentRoom?.RoomType == RoomType.Boss ? [] : new[] { Safe(() => run.Act.BossEncounter) as EncounterModel,
+                    Safe(() => run.Act.SecondBossEncounter) as EncounterModel }
+                .OfType<EncounterModel>().DistinctBy(e => e.Id).Select(PlanningEncounter).ToArray(),
+            elite_act_id = eliteAct?.Id.Entry,
+            elite_act_title = eliteAct is null ? null : Safe(() => eliteAct.Title.GetFormattedText()) as string ?? eliteAct.Id.Entry,
+            elite_pool = elites.OrderBy(e => e.Id.Entry, StringComparer.Ordinal).Select(PlanningEncounter).ToArray()
+        };
+    }
+
+    internal static IEnumerable<EncounterModel> PossibleEliteEncounters(ActModel act, int count)
+    {
+        var pool = act.AllEliteEncounters.OrderBy(e => e.Id.Entry, StringComparer.Ordinal).ToArray();
+        if (count <= 0 || pool.Length == 0) return [];
+        var rooms = act.ToSave().SerializableRooms;
+        var queue = rooms.EliteEncounterIds;
+        int visited = rooms.EliteEncountersVisited;
+        // Native queues contain 15 pre-rolled draws. Read only the consumed prefix,
+        // including the current map combat (marked visited on room entry).
+        int offset = queue.Count == 0 ? 0 : visited % queue.Count;
+        int usedInBag = offset % pool.Length;
+        var used = queue.Skip(offset - usedInBag).Take(usedInBag).ToHashSet();
+        var previous = visited == 0 || queue.Count == 0 ? null
+            : pool.FirstOrDefault(e => e.Id == queue[(visited - 1) % queue.Count]);
+        var possible = new HashSet<EncounterModel>();
+        var explored = new HashSet<(string Remaining, ModelId? Previous, int Depth)>();
+        Explore(pool.Where(e => !used.Contains(e.Id)).ToArray(), previous, count);
+        return possible;
+
+        void Explore(EncounterModel[] remaining, EncounterModel? last, int depth)
+        {
+            if (depth == 0) return;
+            if (remaining.Length == 0) remaining = pool;
+            if (!explored.Add((string.Join(",", remaining.Select(e => e.Id.Entry)), last?.Id, depth))) return;
+            // Match ActModel.AddWithoutRepeatingTags, including its fallback when
+            // every remaining encounter conflicts. Do not inspect future queue entries.
+            var preferred = remaining.Where(e => last is null || (e.Id != last.Id && !e.SharesTagsWith(last))).ToArray();
+            foreach (var next in preferred.Length == 0 ? remaining : preferred)
+            {
+                possible.Add(next);
+                Explore(remaining.Where(e => e.Id != next.Id).ToArray(), next, depth - 1);
+            }
+        }
+    }
+
+    private static object PlanningEncounter(EncounterModel encounter) => new
+    {
+        id = encounter.Id.Entry,
+        title = Safe(() => encounter.Title.GetFormattedText()) as string ?? encounter.Id.Entry,
+        // AllPossibleMonsters is a static candidate set, not a generated lineup.
+        monsters = encounter.AllPossibleMonsters.DistinctBy(m => m.Id).OrderBy(m => m.Id.Entry, StringComparer.Ordinal)
+            .Select(m => new { id = m.Id.Entry, title = Safe(() => m.Title.GetFormattedText()) as string ?? m.Id.Entry,
+                // Native getters apply the active run's ascension; no HP roll or monster generation.
+                initial_hp = Safe(() => new { min = m.MinInitialHp, max = m.MaxInitialHp }) }).ToArray()
+    };
+
+    internal static int CountFutureElites(MapPoint current)
+    {
+        var counts = new Dictionary<MapPoint, int>();
+        return current.Children.Select(Count).DefaultIfEmpty(0).Max();
+
+        int Count(MapPoint point)
+        {
+            if (counts.TryGetValue(point, out int count)) return count;
+            count = (point.PointType == MapPointType.Elite ? 1 : 0)
+                + point.Children.Select(Count).DefaultIfEmpty(0).Max();
+            counts[point] = count;
+            return count;
+        }
     }
 
     public object State(ICombatState combat, Player player)

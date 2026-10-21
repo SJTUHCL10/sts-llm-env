@@ -12,8 +12,13 @@ from urllib.parse import parse_qs, urlsplit
 def generation_directory(path):
     """Accept a generation directory, mod directory, or game directory."""
     path = Path(path).expanduser().resolve()
-    for candidate in (path / "mods" / "NeowsCompany" / "data" / "generation",
-                      path / "data" / "generation", path):
+    mod = path / "mods" / "NeowsCompany"
+    # Bind to the intended log folder even before the game first creates it.
+    if mod.is_dir():
+        return mod / "data" / "generation"
+    if path.is_dir() and path.name.casefold() == "neowscompany":
+        return path / "data" / "generation"
+    for candidate in (path / "data" / "generation", path):
         if candidate.is_dir() and (candidate.name == "generation" or any(candidate.glob("*.jsonl"))):
             return candidate
     return path
@@ -183,7 +188,7 @@ def main():
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     options = parser.parse_args()
     directory = generation_directory(options.directory)
-    if not directory.is_dir():
+    if not directory.is_dir() and (directory.exists() or directory.name != "generation"):
         parser.error(f"日志目录不存在：{directory}。请传入游戏目录或 data/generation 的实际路径。")
     if not 0 <= options.port <= 65535:
         parser.error("端口必须在 0 到 65535 之间。")
@@ -193,6 +198,8 @@ def main():
         parser.error("无法启动本地服务。端口可能已被占用，请使用 --port 0 或指定其他端口。")
     url = f"http://127.0.0.1:{server.server_port}"
     print(f"Generation viewer: {url}\nLogs: {directory}\nPress Ctrl+C to stop.", flush=True)
+    if not directory.is_dir():
+        print("日志目录尚未创建；游戏写入生成记录后，页面会自动刷新显示。", flush=True)
     if not options.no_browser:
         webbrowser.open(url)
     try:

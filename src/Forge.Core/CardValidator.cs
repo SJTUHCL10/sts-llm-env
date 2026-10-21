@@ -2,13 +2,13 @@ namespace Forge.Core;
 
 public static class MechanicCatalog
 {
-    public const int ProtocolVersion = 7;
+    public const int ProtocolVersion = 8;
     public static readonly string[] Powers = ["strength", "dexterity", "weak", "vulnerable", "frail", "poison", "doom", "focus", "vigor", "thorns", "plating", "intangible", "artifact", "buffer", "retain_block"];
     // Generation policy only: keep the full catalog for existing saved definitions.
     public static readonly string[] OstyPowers = ["strength", "weak", "poison", "doom", "vigor", "intangible", "artifact", "buffer"];
     public static readonly string[] Cards = ["soul", "shiv", "wound", "dazed", "burn", "void", "slimed", "fuel", "debris", "minion_strike", "minion_sacrifice", "minion_dive", "sovereign_blade"];
     public static readonly string[] Orbs = ["lightning", "frost", "dark", "plasma", "glass", "random"];
-    public static readonly string[] Stats = ["hp", "max_hp", "gold", "block", "power", "energy", "stars", "hand_size", "draw_size", "discard_size", "exhaust_size", "orb_count", "orb_capacity", "paid_energy", "paid_stars", "event_amount", "damage_dealt"];
+    public static readonly string[] Stats = ["hp", "max_hp", "gold", "block", "power", "energy", "stars", "hand_size", "draw_size", "discard_size", "exhaust_size", "orb_count", "orb_capacity", "paid_energy", "paid_stars", "event_amount", "damage_dealt", "event_total_damage", "event_unblocked_damage", "event_paid_energy", "event_paid_stars", "event_target_count"];
 }
 
 public static class CardValidator
@@ -37,7 +37,7 @@ public static class CardValidator
                 Require(rule.Lifetime != LifetimeKind.Combat || rule.Turns is null, "Combat lifetime has no turns.");
                 Require(rule.Lifetime != LifetimeKind.NextTurn || trigger.Event == RuleEvent.TurnStart && rule.Turns is null, "Next-turn rules run at the next turn start once.");
                 bool cardEvent = trigger.Event is RuleEvent.CardPlayed or RuleEvent.CardDrawn or RuleEvent.CardDiscarded or RuleEvent.CardExhausted or RuleEvent.CardGenerated;
-                Require(trigger.Filter is null || cardEvent, "Card filter requires a card event.");
+                RuleEvents.Validate(trigger);
                 ValidateFilter(trigger.Filter);
                 if (trigger.Occurrence is { } occurrence)
                 {
@@ -48,6 +48,7 @@ public static class CardValidator
                 if (trigger.Limit is { } limit) Require(limit.Count > 0 && Enum.IsDefined(limit.Within), "Invalid successful-activation quota.");
                 ValidateCondition(rule.Condition, true);
                 ValidateEffects(rule.Effects, true, new());
+                ValidateEventUses(rule);
                 Require(CardEffect.Flatten(rule.Effects).Count() <= 8, "A rule needs 1..8 actions including fatal actions.");
             }
             Require(form.AllEffects.Length is >= 1 and <= 24, "A form needs 1..24 actions including fatal actions.");
@@ -79,12 +80,12 @@ public static class CardValidator
                 Require(referenceTarget.Pile is null && referenceTarget.Pick is null && referenceTarget.Count is null && referenceTarget.Filter is null && referenceTarget.UpTo is null, "Creature/orb target cannot also select cards.");
             if (cards) ValidateCardTarget(e.Target, triggered, bindings);
             else if (orbTarget) Require(e.Target?.Ref is null or "first_orb" or "last_orb" or "all_orbs", "Invalid orb target.");
-            else Require(e.Target is null || e.Target.Ref is "self" or "enemy" or "all_enemies" or "random_enemy" or "osty" or "event.target", "Invalid creature target.");
-            if (e.Kind == EffectKind.Damage) Require(e.Target?.Ref is "enemy" or "all_enemies" or "random_enemy" or "event.target", "Damage needs an enemy/event target.");
+            else Require(e.Target is null || e.Target.Ref is "self" or "enemy" or "all_enemies" or "random_enemy" or "osty" or "event.target" or "event.targets" or "event.actor" or "event.source" or "event.subject", "Invalid creature target.");
+            if (e.Kind == EffectKind.Damage) Require(e.Target?.Ref is "enemy" or "all_enemies" or "random_enemy" or "event.target" or "event.targets" or "event.actor" or "event.source" or "event.subject", "Damage needs an enemy/event target.");
             if (e.Kind is EffectKind.Draw or EffectKind.GainEnergy or EffectKind.GainStars or EffectKind.GainGold or EffectKind.LoseGold or EffectKind.Summon or EffectKind.Forge or EffectKind.Channel or EffectKind.OrbSlots or EffectKind.CreateCard)
                 Require(e.Target?.Ref is null or "self" && e.Target?.Pile is null, "Player operation requires self.");
             Require(!triggered || e.Target?.Ref != "enemy", "Rule needs random/all enemies or event.target.");
-            Require(triggered || e.Target?.Ref != "event.target", "Event target requires a rule.");
+            Require(triggered || e.Target?.Ref?.StartsWith("event.", StringComparison.Ordinal) != true, "Event target requires a rule.");
             Require(e.Actor is null || e.Kind == EffectKind.Damage && e.Actor == "osty", "Only damage supports an Osty actor.");
             Require(e.Power is null || e.Kind == EffectKind.ApplyPower, "power is only valid on apply_power.");
             Require(e.Orb is null || e.Kind == EffectKind.Channel, "orb is only valid on channel.");
@@ -124,7 +125,7 @@ public static class CardValidator
         }
         Require(target.Pile is not null && Enum.IsDefined(target.Pile.Value) && target.Pick is not null && Enum.IsDefined(target.Pick.Value), "Pile and selection mode required.");
         Require(target.UpTo is null || target.Pick == SelectionMode.Choose, "up_to requires choose.");
-        Require(target.Pick != SelectionMode.All || target.Count is null, "All selection has no count.");
+        Require(target.Pick is not (SelectionMode.All or SelectionMode.Any) || target.Count is null, "All/any selection has no count.");
         if (target.Count is not null) ValidateNumber(target.Count, triggered, false);
         ValidateFilter(target.Filter);
     }
@@ -134,6 +135,10 @@ public static class CardValidator
         Require(filter.Type is null or "attack" or "skill" or "power" or "status" or "curse", "Unknown filter type.");
         Require(filter.Id is null || MechanicCatalog.Cards.Contains(filter.Id), "Unknown card alias.");
         Require(filter.Cost is null or >= 0 && (filter.Rarity is null || Enum.IsDefined(filter.Rarity.Value)) && (filter.Keyword is null || Enum.IsDefined(filter.Keyword.Value)), "Invalid filter.");
+        Require(filter.MinCost is null or >= 0 && filter.MaxCost is null or >= 0
+            && (filter.MinCost is null || filter.MaxCost is null || filter.MinCost <= filter.MaxCost)
+            && (filter.Cost is null || filter.MinCost is null && filter.MaxCost is null), "Invalid cost range.");
+        Require(filter.Tag is null or "strike" or "defend" or "minion" or "shiv" or "osty_attack", "Unknown card tag.");
     }
     private static void ValidateSource(CardSource? source)
     {
@@ -154,9 +159,9 @@ public static class CardValidator
         if (expression.Value is decimal value) Require((signed || value >= 0) && expression.Of is null && expression.Id is null, "Invalid literal.");
         else if (expression.Stat is { } stat)
         {
-            Require(MechanicCatalog.Stats.Contains(stat) && expression.Of is null or "self" or "target" or "osty", "Invalid stat reference.");
+            Require(MechanicCatalog.Stats.Contains(stat) && expression.Of is null or "self" or "target" or "osty" or "event.actor" or "event.source" or "event.subject" or "event.target", "Invalid stat reference.");
             Require(expression.Of is null || stat is "hp" or "max_hp" or "block" or "power", "Only creature stats have a subject.");
-            Require(stat != "event_amount" || triggered, "Event amount requires a rule.");
+            Require(!stat.StartsWith("event_", StringComparison.Ordinal) && expression.Of?.StartsWith("event.", StringComparison.Ordinal) != true || triggered, "Event facts require a rule.");
             Require(stat == "power" ? expression.Id is not null && MechanicCatalog.Powers.Contains(expression.Id) : expression.Id is null, "Invalid power stat ID.");
         }
         else
@@ -184,6 +189,27 @@ public static class CardValidator
             var children = condition.All ?? condition.Any ?? [condition.Not!];
             Require(children.Length is >= 1 and <= 4 && children.All(c => c is not null), "Invalid boolean arity.");
             foreach (var child in children) ValidateCondition(child, triggered, depth + 1);
+        }
+    }
+    private static void ValidateEventUses(CardRule rule)
+    {
+        void Number(NumberExpression? n)
+        {
+            if (n is null) return;
+            if (n.Stat is "event_paid_energy" or "event_paid_stars") Require(RuleEvents.CarriesResources(rule.Trigger.Event), "Event resources require a play/attack event.");
+            if (n.Stat is "event_total_damage" or "event_unblocked_damage") Require(rule.Trigger.Event is RuleEvent.DamageGiven or RuleEvent.DamageReceived or RuleEvent.AttackCompleted, "Damage facts require damage/attack.");
+            foreach (var child in n.Add ?? n.Sub ?? n.Mul ?? n.Div ?? []) Number(child);
+        }
+        void Condition(EffectCondition? c)
+        {
+            if (c is null) return;
+            Number(c.Left); Number(c.Right);
+            foreach (var child in c.All ?? c.Any ?? (c.Not is null ? [] : [c.Not])) Condition(child);
+        }
+        Condition(rule.Condition);
+        foreach (var e in CardEffect.Flatten(rule.Effects))
+        {
+            Number(e.Amount); Number(e.Repeat); Number(e.Count); Number(e.Target?.Count); Condition(e.Condition);
         }
     }
     private static bool SafeText(string? value, int max, bool empty = false) => value is not null && value.Length <= max && (empty || !string.IsNullOrWhiteSpace(value)) && !value.Any(c => char.IsControl(c) || c is '[' or ']' or '{' or '}' or '<' or '>');

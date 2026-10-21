@@ -45,6 +45,34 @@ public static class ObservationProjector
         var run = JsonNode.Parse(context.Run.GetRawText()) as JsonObject ?? new();
         var state = JsonNode.Parse(context.State.GetRawText()) as JsonObject ?? new();
         var result = Pick(run, "character", "ascension", "act", "floor", "gold");
+        int? ascension = run["ascension"] is JsonValue ascensionValue && ascensionValue.TryGetValue<int>(out int level) && level >= 0
+            ? level : null;
+        if (run["planning"] is JsonObject planning)
+        {
+            var future = Pick(planning, "act_id", "act_title", "elite_act_id", "elite_act_title");
+            foreach (string key in new[] { "bosses", "elite_pool" })
+                if (planning[key] is JsonArray encounters)
+                    future[key] = new JsonArray(encounters.OfType<JsonObject>().Select(encounter =>
+                    {
+                        var item = Pick(encounter, "id", "title");
+                        if (item["title"] is { } title) item["title"] = Clean(title.ToString());
+                        if (item["id"] is JsonValue encounterId && encounterId.TryGetValue<string>(out var encounterKey)
+                            && GameKnowledge.InitialLineup(encounterKey) is { } lineup)
+                            item["initial_lineup"] = new JsonArray(lineup.Select(member => (JsonNode)new JsonObject
+                            { ["id"] = member.Id, ["count"] = member.Count, ["role"] = member.Role }).ToArray());
+                        if (encounter["monsters"] is JsonArray monsters)
+                            item["monsters"] = new JsonArray(monsters.OfType<JsonObject>().Select(monster =>
+                            {
+                                var entry = Pick(monster, "id", "title", "initial_hp");
+                                if (entry["title"] is { } name) entry["title"] = Clean(name.ToString());
+                                if (entry["id"] is JsonValue id && id.TryGetValue<string>(out var nativeId)
+                                    && GameKnowledge.MonsterMechanics(nativeId, ascension) is { } notes) entry["mechanics"] = notes;
+                                return (JsonNode)entry;
+                            }).ToArray());
+                        return (JsonNode)item;
+                    }).ToArray());
+            result["planning"] = future;
+        }
         if (run["deck"] is JsonArray deck)
             result["deck"] = new JsonArray(deck.Select(node => node is JsonObject card ? Card(card) : new JsonObject { ["title"] = node?.DeepClone() })
                 .Select((card, i) => (card, count: deck[i] is JsonObject original ? original["count"]?.GetValue<int>() ?? 1 : 1))
@@ -81,6 +109,8 @@ public static class ObservationProjector
         // Older/offline captures may only have the resolved room type.
         if (!combat.ContainsKey("encounter") && run["room_type"] is { } roomType)
             combat["encounter"] = new JsonObject { ["type"] = roomType.ToString().ToLowerInvariant() };
+        if (combat["encounter"]?["type"]?.ToString() == "boss" && result["planning"] is JsonObject futurePlanning)
+            futurePlanning["bosses"] = new JsonArray();
         if (state["player"] is JsonObject player) combat["player"] = Creature(player);
         else foreach (string key in new[] { "hp", "max_hp" }) if (state[key] is { } field) combat[key] = field.DeepClone();
         if (state["player_combat"] is JsonObject pcs)

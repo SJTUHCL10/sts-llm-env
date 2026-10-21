@@ -9,9 +9,9 @@
 | `enabled` | `true` | 是否生成和追加新牌；已有生成牌仍可正常使用 |
 | `generated_cards_per_reward` | `1` | 每份战斗卡牌奖励追加 0–3 张牌，原版选项不减少 |
 | `generation_timing` | `"prefetch"` | 战斗中提前请求，只展示已完成结果；可选 `"wait_on_reward"`，打开奖励时请求并最多等待配置的超时 |
-| `max_requests_per_combat` | `3` | 每场最多请求次数，失败也占一次；没有自动网络重试 |
+| `max_requests_per_combat` | `2` | 每场最多请求次数，失败也占一次；没有自动网络重试 |
 | `prefetch_minimum_interval_seconds` | `15` | 两次请求启动的最小间隔；同一场最多一个请求在途 |
-| `prefetch_initial_card_plays` | `2` | 兼容旧配置的字段，现已忽略；首次调用固定等敌方首回合结束 |
+| `prefetch_initial_card_plays` | `2` | 兼容旧配置的字段，现已忽略；本局第一场入场即调用，后续战斗等敌方首回合结束 |
 | `candidate_pool_capacity` | `24` | 本局未展示候选池容量，超出淘汰最旧候选 |
 | `active_style` | `"balanced"` | 使用 `styles` 中的哪个配置 |
 | `styles.<name>.system_prompt` | 见示例 | 风格系统提示词；Mod 会追加固定的效果协议 |
@@ -25,7 +25,7 @@
 | `record_generation_reasoning` | `true` | 保存服务端 reasoning_content；需开启 record_generation |
 | `provider.reasoning_effort` | `null` | 不传参数，使用服务默认；可设置思考强度或关闭思考，见下方说明 |
 
-`prefetch_initial_card_plays` 仅用于读取旧配置，不控制当前调用时机。首次预生成在敌方首回合结束后；第一轮内胜利则使用最终摘要。候选池与奖励冻结规则见 [LLM_PROTOCOL.md](LLM_PROTOCOL.md#候选池和时机)。
+`prefetch_initial_card_plays` 仅用于读取旧配置，不控制当前调用时机。本局第一场战斗入场即预生成，后续战斗在敌方首回合结束后开始；后续战斗若在此之前胜利，则可使用最终摘要开始首次请求。候选池与奖励冻结规则见 [LLM_PROTOCOL.md](LLM_PROTOCOL.md#奖励与候选池)。
 
 最后一幕的 Boss 战斗没有原生卡牌奖励，因此不会创建生成会话或请求 LLM，包括进阶 10 的两场 Boss。判断与游戏奖励逻辑一致，使用当前幕索引、幕列表和遭遇的 Boss 类型，不依赖层数；前两幕 Boss 与第三幕普通/精英战斗照常生成。
 
@@ -39,11 +39,11 @@
 | `model` | `local-model` | 服务端提供的模型名称 |
 | `api_key` | 空字符串 | 本地凭据；不要提交到 Git |
 | `api_key_environment_variable` | `NEOWS_COMPANY_API_KEY` | 非空环境变量优先于 `api_key` |
-| `timeout_seconds` | `30` | 单次请求超时，范围 1–120 秒 |
-| `max_tokens` | `4096` | 输出预算，范围 128–16000；服务可能将推理 token 计入预算 |
+| `timeout_seconds` | `120` | 单次请求超时，范围 1–120 秒 |
+| `max_tokens` | `16384` | 输出预算，范围 128–16384；服务可能将推理 token 计入预算 |
 | `token_limit_parameter` | `max_tokens` | 可改为 `max_completion_tokens` |
-| `temperature` | `0.8` | 温度；是否支持由服务决定 |
-| `include_temperature` | `true` | 不支持温度参数时设为 `false` |
+| `temperature` | `null` | 为 `null` 时不发送温度参数，使用服务默认；可设置 0–2 的数值 |
+| `include_temperature` | `true` | 温度参数发送开关；设为 `false` 时，即使配置了温度数值也不发送，保留以兼容旧配置 |
 | `json_mode` | `false` | 开启时发送 `response_format: {"type":"json_object"}` |
 | `reasoning_effort` | `null` | 省略此请求字段，使用服务默认 |
 | `max_response_bytes` | `131072` | 响应大小上限，范围 1024–1048576 字节 |

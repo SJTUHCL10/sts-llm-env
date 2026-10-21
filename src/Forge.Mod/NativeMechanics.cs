@@ -33,6 +33,9 @@ internal static class NativeMechanics
         && (filter.Type is null || card.Type.ToString().Equals(filter.Type, StringComparison.OrdinalIgnoreCase))
         && (filter.Rarity is null || card.Rarity.ToString().Equals(filter.Rarity.ToString(), StringComparison.OrdinalIgnoreCase))
         && (filter.Cost is null || !card.EnergyCost.CostsX && card.EnergyCost.GetWithModifiers(CostModifiers.All) == filter.Cost)
+        && (filter.MinCost is null || !card.EnergyCost.CostsX && card.EnergyCost.GetWithModifiers(CostModifiers.All) >= filter.MinCost)
+        && (filter.MaxCost is null || !card.EnergyCost.CostsX && card.EnergyCost.GetWithModifiers(CostModifiers.All) <= filter.MaxCost)
+        && (filter.Tag is null || card.Tags.Any(tag => System.Text.Json.JsonNamingPolicy.SnakeCaseLower.ConvertName(tag.ToString()) == filter.Tag))
         && (filter.Upgraded is null || card.IsUpgraded == filter.Upgraded)
         && (filter.Keyword is null || card.Keywords.Contains(NeowGeneratedCard.NativeKeyword(filter.Keyword.Value)));
     internal static Task Channel(PlayerChoiceContext choice, Player player, string orb) => orb switch

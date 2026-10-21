@@ -81,7 +81,7 @@ public sealed class NeowGeneratedCard : CardModel
             };
             if (e.Kind is EffectKind.CreateCard or EffectKind.Copy) yield return new GeneratedCountVar($"C{i}", e.Count, i);
             if (e.Repeat is not null) yield return new GeneratedCountVar($"R{i}", e.Repeat, i);
-            if (e.Target?.Pile is not null && e.Target.Pick != SelectionMode.All) yield return new GeneratedCountVar($"T{i}", e.Target.Count, i);
+            if (e.Target?.Pile is not null && e.Target.Pick is not (SelectionMode.All or SelectionMode.Any)) yield return new GeneratedCountVar($"T{i}", e.Target.Count, i);
         }
     }
     internal static NumberExpression? NumericSlot(CardEffect effect, char slot) => slot switch
@@ -119,13 +119,13 @@ public sealed class NeowGeneratedCard : CardModel
     }
     internal static IEnumerable<IHoverTip> EffectHoverTips(CardForm form)
     {
-        foreach (var id in form.AllEffects.Where(e => e.Power is not null).Select(e => e.Power!).Distinct())
+        foreach (var id in form.AllEffects.Where(e => e.Power is not null).Select(e => e.Power!).Concat(form.Listeners.Where(r => r.Trigger.Where?.Power is not null).Select(r => r.Trigger.Where!.Power!)).Distinct())
             yield return HoverTipFactory.FromPower(NativeMechanics.Power(id));
         foreach (var id in form.AllEffects.Where(e => e.Card?.Id is not null).Select(e => e.Card!.Id!).Distinct())
             yield return HoverTipFactory.FromCard(NativeMechanics.Card(id));
-        foreach (var id in form.AllEffects.Where(e => e.Orb is not null && e.Orb != "random").Select(e => e.Orb!).Distinct())
+        foreach (var id in form.AllEffects.Where(e => e.Orb is not null && e.Orb != "random").Select(e => e.Orb!).Concat(form.Listeners.Where(r => r.Trigger.Where?.Orb is not null).Select(r => r.Trigger.Where!.Orb!)).Distinct())
             foreach (var tip in NativeMechanics.OrbTips(id)) yield return tip;
-        if (form.AllEffects.Any(e => e.Kind == EffectKind.Forge)) foreach (var tip in HoverTipFactory.FromForge()) yield return tip;
+        if (form.AllEffects.Any(e => e.Kind == EffectKind.Forge) || form.Listeners.Any(r => r.Trigger.Event == RuleEvent.Forged)) foreach (var tip in HoverTipFactory.FromForge()) yield return tip;
         if (form.AllEffects.Any(e => e.Kind == EffectKind.Summon)) yield return HoverTipFactory.Static(StaticHoverTip.SummonStatic);
         if (form.AllEffects.Any(e => e.OnFatal is not null)) yield return HoverTipFactory.Static(StaticHoverTip.Fatal);
     }

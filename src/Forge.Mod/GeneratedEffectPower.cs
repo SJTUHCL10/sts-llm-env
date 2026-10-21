@@ -112,8 +112,8 @@ public sealed class GeneratedEffectPower : PowerModel
         if (_snapshot is not null && Owner.Side == side && participants.Contains(Owner)) EffectTriggerRuntime.BeginTurn(Form, _snapshot.State);
         return Task.CompletedTask;
     }
-    public override Task AfterPlayerTurnStart(PlayerChoiceContext choiceContext, Player player) => player.Creature == Owner ? Fire(choiceContext, RuleEvent.TurnStart) : Task.CompletedTask;
-    public override Task BeforeSideTurnEnd(PlayerChoiceContext choiceContext, CombatSide side, IEnumerable<Creature> participants) => side == Owner.Side && participants.Contains(Owner) ? Fire(choiceContext, RuleEvent.TurnEnd) : Task.CompletedTask;
+    public override Task AfterPlayerTurnStart(PlayerChoiceContext choiceContext, Player player) => player.Creature == Owner ? FireTurn(choiceContext, RuleEvent.TurnStart) : Task.CompletedTask;
+    public override Task BeforeSideTurnEnd(PlayerChoiceContext choiceContext, CombatSide side, IEnumerable<Creature> participants) => side == Owner.Side && participants.Contains(Owner) ? FireTurn(choiceContext, RuleEvent.TurnEnd) : Task.CompletedTask;
     public override async Task AfterSideTurnEndLate(PlayerChoiceContext choiceContext, CombatSide side, IEnumerable<Creature> participants)
     {
         if (_snapshot is null || side != Owner.Side || !participants.Contains(Owner)) return;
@@ -122,31 +122,93 @@ public sealed class GeneratedEffectPower : PowerModel
     public override Task AfterCardPlayed(PlayerChoiceContext choiceContext, CardPlay cardPlay)
     {
         if (ReferenceEquals(_armingPlay, cardPlay)) { _armingPlay = null; return Task.CompletedTask; }
-        return cardPlay.Player.Creature == Owner ? Fire(choiceContext, RuleEvent.CardPlayed, cardPlay.Card, cardPlay.Target) : Task.CompletedTask;
+        return Fire(choiceContext, new(RuleEvent.CardPlayed)
+        {
+            Actor = cardPlay.Player.Creature, Source = cardPlay.Player.Creature, SourceModel = cardPlay.Card, Card = cardPlay.Card, Play = cardPlay,
+            Target = cardPlay.Target, Subject = cardPlay.Target, Targets = cardPlay.Target is { } target ? [target] : []
+        });
     }
-    public override Task AfterCardDrawn(PlayerChoiceContext choiceContext, CardModel card, bool fromHandDraw) => card.Owner.Creature == Owner ? Fire(choiceContext, RuleEvent.CardDrawn, card) : Task.CompletedTask;
-    public override Task AfterCardDiscarded(PlayerChoiceContext choiceContext, CardModel card) => card.Owner.Creature == Owner ? Fire(choiceContext, RuleEvent.CardDiscarded, card) : Task.CompletedTask;
-    public override Task AfterCardExhausted(PlayerChoiceContext choiceContext, CardModel card, bool causedByEthereal) => card.Owner.Creature == Owner ? Fire(choiceContext, RuleEvent.CardExhausted, card) : Task.CompletedTask;
-    public override Task AfterCardGeneratedForCombat(CardModel card, Player? creator) => creator?.Creature == Owner ? Fire(new BlockingPlayerChoiceContext(), RuleEvent.CardGenerated, card) : Task.CompletedTask;
-    public override Task AfterDamageReceived(PlayerChoiceContext choiceContext, Creature target, DamageResult result, ValueProp props, Creature? dealer, CardModel? cardSource) => target == Owner ? Fire(choiceContext, RuleEvent.DamageReceived, target: dealer, amount: result.UnblockedDamage) : Task.CompletedTask;
-    public override Task AfterAttack(PlayerChoiceContext choiceContext, AttackCommand command) => command.Attacker == Owner || command.Attacker == Owner.Player?.Osty ? Fire(choiceContext, RuleEvent.AttackCompleted, command.CardPlay?.Card, command.Results.SelectMany(r => r).Select(r => r.Receiver).FirstOrDefault(), (int)command.Results.SelectMany(r => r).Sum(r => r.TotalDamage)) : Task.CompletedTask;
-    public override Task AfterSummon(PlayerChoiceContext choiceContext, Player summoner, decimal amount) => summoner.Creature == Owner ? Fire(choiceContext, RuleEvent.Summoned, amount: amount) : Task.CompletedTask;
-    public override Task AfterOrbChanneled(PlayerChoiceContext choiceContext, Player player, OrbModel orb) => player.Creature == Owner ? Fire(choiceContext, RuleEvent.OrbChanneled) : Task.CompletedTask;
-    public override Task AfterOrbEvoked(PlayerChoiceContext choiceContext, OrbModel orb, IEnumerable<Creature> targets) => orb.Owner.Creature == Owner ? Fire(choiceContext, RuleEvent.OrbEvoked, target: targets.FirstOrDefault()) : Task.CompletedTask;
-    private async Task Fire(PlayerChoiceContext choice, RuleEvent fired, CardModel? eventCard = null, Creature? target = null, decimal amount = 0)
+    private static GeneratedRuleEvent CardEvent(RuleEvent kind, CardModel card) => new(kind) { Card = card, Actor = card.Owner.Creature };
+    public override Task AfterCardDrawn(PlayerChoiceContext choiceContext, CardModel card, bool fromHandDraw) => Fire(choiceContext, CardEvent(RuleEvent.CardDrawn, card) with { FromHandDraw = fromHandDraw });
+    public override Task AfterCardDiscarded(PlayerChoiceContext choiceContext, CardModel card) => Fire(choiceContext, CardEvent(RuleEvent.CardDiscarded, card));
+    public override Task AfterCardExhausted(PlayerChoiceContext choiceContext, CardModel card, bool causedByEthereal) => Fire(choiceContext, CardEvent(RuleEvent.CardExhausted, card) with { CausedByEthereal = causedByEthereal });
+    public override Task AfterCardGeneratedForCombat(CardModel card, Player? creator) => Fire(new BlockingPlayerChoiceContext(), CardEvent(RuleEvent.CardGenerated, card) with { Actor = creator?.Creature, Source = creator?.Creature });
+    public override Task AfterDamageReceived(PlayerChoiceContext choiceContext, Creature target, DamageResult result, ValueProp props, Creature? dealer, CardModel? cardSource) => Fire(choiceContext, new(RuleEvent.DamageReceived)
+    {
+        Actor = dealer, Source = dealer, SourceModel = cardSource, Subject = target, Target = dealer, Targets = [target], Card = cardSource,
+        Amount = result.UnblockedDamage, TotalDamage = result.TotalDamage, UnblockedDamage = result.UnblockedDamage, Attack = props.IsPoweredAttack()
+    });
+    public override Task AfterDamageGiven(PlayerChoiceContext choiceContext, Creature? dealer, DamageResult result, ValueProp props, Creature target, CardModel? cardSource) => Fire(choiceContext, new(RuleEvent.DamageGiven)
+    {
+        Actor = dealer, Source = dealer, SourceModel = cardSource, Subject = target, Target = target, Targets = [target], Card = cardSource,
+        Amount = result.TotalDamage, TotalDamage = result.TotalDamage, UnblockedDamage = result.UnblockedDamage, Attack = props.IsPoweredAttack()
+    });
+    public override Task AfterBlockGained(Creature creature, decimal amount, ValueProp props, CardModel? cardSource) => amount > 0 ? Fire(new BlockingPlayerChoiceContext(), new(RuleEvent.BlockGained)
+    {
+        Actor = creature, Source = cardSource?.Owner?.Creature, SourceModel = cardSource, Subject = creature, Target = creature, Targets = [creature], Card = cardSource, Amount = amount
+    }) : Task.CompletedTask;
+    public override Task AfterPowerAmountChanged(PlayerChoiceContext choiceContext, PowerModel power, decimal amount, Creature? applier, CardModel? cardSource) => amount != 0 ? Fire(choiceContext, new(RuleEvent.PowerAmountChanged)
+    {
+        Actor = applier, Source = applier, SourceModel = cardSource, Subject = power.Owner, Target = power.Owner, Targets = [power.Owner], Card = cardSource,
+        Amount = amount, Power = GeneratedRuleEvent.PowerAlias(power), PowerType = power.GetTypeForAmount(amount).ToString().ToLowerInvariant(), Temporary = power is ITemporaryPower
+    }) : Task.CompletedTask;
+    public override Task AfterAttack(PlayerChoiceContext choiceContext, AttackCommand command)
+    {
+        var results = command.Results.SelectMany(r => r).ToArray();
+        var targets = results.Select(r => r.Receiver).Distinct().ToArray();
+        return Fire(choiceContext, new(RuleEvent.AttackCompleted)
+        {
+            Actor = command.Attacker, Source = command.Attacker, SourceModel = command.ModelSource, Card = command.CardPlay?.Card, Play = command.CardPlay,
+            Target = targets.FirstOrDefault(), Subject = targets.FirstOrDefault(), Targets = targets,
+            Amount = results.Sum(r => r.TotalDamage), TotalDamage = results.Sum(r => r.TotalDamage), UnblockedDamage = results.Sum(r => r.UnblockedDamage), Attack = command.DamageProps.IsPoweredAttack()
+        });
+    }
+    public override Task AfterSummon(PlayerChoiceContext choiceContext, Player summoner, decimal amount) => Fire(choiceContext, new(RuleEvent.Summoned) { Actor = summoner.Creature, Amount = amount });
+    public override Task AfterForge(decimal amount, Player forger, AbstractModel? source) => amount > 0 ? Fire(new BlockingPlayerChoiceContext(), new(RuleEvent.Forged)
+    {
+        Actor = forger.Creature, Source = GeneratedRuleEvent.ModelOwner(source), SourceModel = source, Card = source as CardModel,
+        Subject = forger.Creature, Target = forger.Creature, Targets = [forger.Creature], Amount = amount
+    }) : Task.CompletedTask;
+    public override Task AfterStarsGained(int amount, Player gainer) => ResourceEvent(RuleEvent.StarsGained, amount, gainer);
+    public override Task AfterStarsSpent(int amount, Player spender) => ResourceEvent(RuleEvent.StarsSpent, amount, spender);
+    private Task ResourceEvent(RuleEvent kind, int amount, Player player) => amount > 0 ? Fire(new BlockingPlayerChoiceContext(), new(kind)
+    {
+        Actor = player.Creature, Subject = player.Creature, Target = player.Creature, Targets = [player.Creature], Amount = amount
+    }) : Task.CompletedTask;
+    public override Task AfterOrbChanneled(PlayerChoiceContext choiceContext, Player player, OrbModel orb) => Fire(choiceContext, new(RuleEvent.OrbChanneled)
+    {
+        Actor = player.Creature, Source = player.Creature, SourceModel = orb, Orb = GeneratedRuleEvent.OrbAlias(orb)
+    });
+    public override Task AfterOrbEvoked(PlayerChoiceContext choiceContext, OrbModel orb, IEnumerable<Creature> targets)
+    {
+        var affected = targets.Distinct().ToArray();
+        return Fire(choiceContext, new(RuleEvent.OrbEvoked)
+        {
+            Actor = orb.Owner.Creature, Source = orb.Owner.Creature, SourceModel = orb, Orb = GeneratedRuleEvent.OrbAlias(orb),
+            Target = affected.FirstOrDefault(), Subject = affected.FirstOrDefault(), Targets = affected
+        });
+    }
+    private Task FireTurn(PlayerChoiceContext choice, RuleEvent kind) => Fire(choice, new GeneratedRuleEvent(kind) { Actor = Owner });
+    private async Task Fire(PlayerChoiceContext choice, GeneratedRuleEvent occurrence)
     {
         if (_snapshot is null || _firing || TriggerDepth.Value >= 8 || !Owner.IsAlive || CombatManager.Instance.IsEnding || Owner.Player is null) return;
         var snapshot = _snapshot; var form = Form;
+        var facts = occurrence.Facts(Owner);
+        var eligible = form.Listeners.Select(rule => occurrence.Matches(rule.Trigger, Owner, facts) && (rule.Trigger.Filter is null || occurrence.Card is { } eventCard
+            && (RuleEvents.IsCardEvent(occurrence.Kind) ? GeneratedEventFacts.MatchesCurrent(rule.Trigger, eventCard, Owner, CombatState) : NativeMechanics.Matches(eventCard, rule.Trigger.Filter)))).ToArray();
+        if (!eligible.Any(match => match)) { await RemoveIfExpired(); return; }
         var source = (NeowGeneratedCard)ModelDb.Card<NeowGeneratedCard>().ToMutable();
         source.DefinitionPayload = Wire.Encode(snapshot.Definition); source.Owner = Owner.Player;
         if (snapshot.SourceUpgraded) { source.UpgradeInternal(); source.FinalizeUpgradeInternal(); }
         var context = new GeneratedExecutionContext(source, choice, amounts: snapshot.Amounts)
         {
-            Triggered = true, EventCard = eventCard, EventTarget = target, EventAmount = amount,
+            Triggered = true, EffectSource = this, EventCard = occurrence.Card, EventTarget = occurrence.Target, EventAmount = occurrence.Amount,
+            EventActor = occurrence.Actor, EventSource = occurrence.Source, EventSubject = occurrence.Subject, EventTargets = occurrence.Targets,
+            EventTotalDamage = occurrence.TotalDamage, EventUnblockedDamage = occurrence.UnblockedDamage,
+            EventPaidEnergy = occurrence.Play?.Resources.EnergySpent ?? 0, EventPaidStars = occurrence.Play?.Resources.StarsSpent ?? 0,
             OriginCard = Owner.Player.PlayerCombatState?.AllCards.OfType<NeowGeneratedCard>().FirstOrDefault(card => card.InstanceKey == snapshot.SourceInstanceKey),
             PaidEnergy = snapshot.PaidEnergy, PaidStars = snapshot.PaidStars
         };
-        var eligible = form.Listeners.Select(rule => rule.Trigger.Event == fired && (rule.Trigger.Filter is null || eventCard is not null && GeneratedEventFacts.MatchesCurrent(rule.Trigger, eventCard, Owner, CombatState))).ToArray();
         // Read ordinals before any payoff can append nested events.
         var ordinals = form.Listeners.Select((rule, i) => eligible[i] && rule.Trigger.Occurrence is not null ? GeneratedEventFacts.Ordinal(rule.Trigger, Owner, CombatState) : 1).ToArray();
         _firing = true; TriggerDepth.Value++; choice.PushModel(source);
@@ -157,7 +219,7 @@ public sealed class GeneratedEffectPower : PowerModel
             {
                 var rule = form.Listeners[i];
                 context.Selections.Clear();
-                if (eligible[i] && EffectTriggerRuntime.TryConsume(form, snapshot.State, i, fired, ordinals[i], context.Matches(rule.Condition)))
+                if (eligible[i] && EffectTriggerRuntime.TryConsume(form, snapshot.State, i, occurrence.Kind, ordinals[i], context.Matches(rule.Condition)))
                     await GeneratedEffectExecutor.ExecuteGroup(context, rule.Effects, offset);
                 offset += CardEffect.Flatten(rule.Effects).Count();
             }
@@ -170,7 +232,7 @@ public sealed class GeneratedEffectPower : PowerModel
 
 internal static class GeneratedEventFacts
 {
-    private sealed record Facts(ModelId Id, CardType Type, CardRarity Rarity, int Cost, bool Upgraded, CardKeyword[] Keywords);
+    private sealed record Facts(ModelId Id, CardType Type, CardRarity Rarity, int Cost, bool Upgraded, CardKeyword[] Keywords, string[] Tags);
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<CombatHistoryEntry, Facts> Saved = new();
     internal static CardModel? EventCard(CombatHistoryEntry e, RuleEvent type) => (type, e) switch
     {
@@ -181,7 +243,7 @@ internal static class GeneratedEventFacts
     internal static void Capture(CombatHistoryEntry entry)
     {
         var card = new[] { RuleEvent.CardPlayed, RuleEvent.CardDrawn, RuleEvent.CardDiscarded, RuleEvent.CardExhausted, RuleEvent.CardGenerated }.Select(type => EventCard(entry, type)).FirstOrDefault(c => c is not null);
-        if (card is not null) Saved.GetValue(entry, _ => new(card.Id, card.Type, card.Rarity, card.EnergyCost.CostsX ? -1 : card.EnergyCost.GetWithModifiers(CostModifiers.All), card.IsUpgraded, card.Keywords.ToArray()));
+        if (card is not null) Saved.GetValue(entry, _ => new(card.Id, card.Type, card.Rarity, card.EnergyCost.CostsX ? -1 : card.EnergyCost.GetWithModifiers(CostModifiers.All), card.IsUpgraded, card.Keywords.ToArray(), card.Tags.Select(tag => System.Text.Json.JsonNamingPolicy.SnakeCaseLower.ConvertName(tag.ToString())).ToArray()));
     }
     internal static int Ordinal(EffectTrigger trigger, Creature owner, ICombatState combat)
     {
@@ -202,6 +264,8 @@ internal static class GeneratedEventFacts
             && (filter.Type is null || f.Type.ToString().Equals(filter.Type, StringComparison.OrdinalIgnoreCase))
             && (filter.Rarity is null || f.Rarity.ToString().Equals(filter.Rarity.ToString(), StringComparison.OrdinalIgnoreCase))
             && (filter.Cost is null || f.Cost == filter.Cost) && (filter.Upgraded is null || f.Upgraded == filter.Upgraded)
+            && (filter.MinCost is null || f.Cost >= filter.MinCost) && (filter.MaxCost is null || f.Cost >= 0 && f.Cost <= filter.MaxCost)
+            && (filter.Tag is null || f.Tags.Contains(filter.Tag))
             && (filter.Keyword is null || f.Keywords.Contains(NeowGeneratedCard.NativeKeyword(filter.Keyword.Value)));
     }
 }

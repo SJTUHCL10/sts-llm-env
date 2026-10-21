@@ -6,6 +6,8 @@ Adds LLM-generated card rewards to Slay the Spire 2 singleplayer. Neow designs n
 
 Current mod version: `0.1.0`. Target game version: `v0.111.0`. Singleplayer only; compatibility needs to be checked again after game updates. Card artwork uses game placeholders, and no other mods are required.
 
+Changes since the last public release are listed in the [changelog](CHANGELOG.md).
+
 ## Installation
 
 1. Exit the game and place the prebuilt package's `NeowsCompany` folder in the game's `mods` directory. To install from source, see the build instructions below.
@@ -18,9 +20,9 @@ Store your key in the local `provider.api_key` field or the `NEOWS_COMPANY_API_K
 
 ## Gameplay
 
-By default, generation starts immediately on entering the run's first combat; later combats start after the first enemy turn ends, with up to three requests per combat and at least 15 seconds between requests. Valid cards enter the current run's candidate pool. When a reward opens, one available candidate is added alongside the original options. If no candidate is ready, the original reward appears immediately. Rewards never wait for the network or change while you are choosing. Late results can appear after later combats.
+By default, generation starts immediately on entering the run's first combat; later combats start after the first enemy turn ends, with up to two requests per combat and at least 15 seconds between requests. Valid cards enter the current run's candidate pool. When a reward opens, one available candidate is added alongside the original options. If no candidate is ready, the original reward appears immediately. Rewards never wait for the network or change while you are choosing. Late results can appear after later combats.
 
-New cards use protocol v7: two complete upgrade forms, general card selection and creation/transformation, rule groups, dynamic expressions, maximum HP/gold gains and losses, and damage-bound Fatal groups. Supported character mechanics include Osty/Souls/Doom, Orbs/Focus, Forge/Stars, and Shivs/Sly. The LLM can combine implemented effects but cannot return executable code. There is no power budget; balance needs to be evaluated through play. Earlier protocols have no migration path, so start a new run when testing.
+New cards use protocol v8: two complete upgrade forms, general card selection and creation/transformation, rule groups, dynamic expressions, maximum HP/gold gains and losses, damage-bound Fatal groups, and Block/damage/power/Forge/Stars event filters with source and target context. Supported character mechanics include Osty/Souls/Doom, Orbs/Focus, Forge/Stars, and Shivs/Sly. The LLM can combine implemented effects but cannot return executable code. There is no power budget; balance needs to be evaluated through play. Protocol v7 definitions, rule snapshots and candidate pools remain readable; earlier candidate protocols have no migration path.
 
 Generated card definitions are stored with the game's native card saves, so loading them does not require another model call. The candidate pool and frozen rewards are stored separately in `data/runs`; retain this directory to restore rewards for an ongoing run. Keep the mod enabled when loading saves containing generated cards.
 
@@ -71,7 +73,7 @@ Without a path, the launcher uses `STS2_GAME_DIR`, falling back to the repositor
 
 New logs include effect text from the shared CardText renderer; the viewer reconstructs text from definitions in older logs. Opening a JSON block expands nested objects and lists, which can still be collapsed manually. The Copy button copies the full contents regardless of their collapsed state. `OBSERVATION_JSON` has its own view; reasoning and raw output start collapsed. Raw output preserves whitespace and code fences, with known credentials and service URLs redacted. Content missing from old logs cannot be recovered. Times use your browser's local timezone, and requests with no completion record are marked pending.
 
-The page refreshes every five seconds by default, so you can keep it open while playing. Invalid or unfinished JSONL lines are skipped with a notice. The viewer only reads logs and listens on `127.0.0.1`; it does not call the model or change game files. Press `Ctrl+C` to stop it. Launcher options include `-Port 0` to choose an available port, `-NoBrowser` to run only the server, and `-PythonExe '<path to python.exe>'`. The corresponding Python options are `--port 0` and `--no-browser`.
+The page refreshes every five seconds by default, so you can keep it open while playing. You can start it before the first game after installing the mod, even if `data/generation` does not exist yet; records appear automatically once the game creates them. Invalid or unfinished JSONL lines are skipped with a notice. The viewer only reads logs and listens on `127.0.0.1`; it does not call the model or change game files. Press `Ctrl+C` to stop it. Launcher options include `-Port 0` to choose an available port, `-NoBrowser` to run only the server, and `-PythonExe '<path to python.exe>'`. The corresponding Python options are `--port 0` and `--no-browser`.
 
 ## Documentation
 
@@ -79,7 +81,7 @@ Most detailed documentation is in Chinese; the architecture guide is in English:
 
 - [Configuration and troubleshooting](docs/CONFIGURATION.md): settings, data directories, and common failure causes.
 - [LLM protocol](docs/LLM_PROTOCOL.md): request context, output, and candidate pool rules.
-- [Card protocol](docs/CARD_PROGRAM.md): v7 forms, actions, targets, Fatal groups, and rule semantics.
+- [Card protocol](docs/CARD_PROGRAM.md): v8 forms, actions, targets, Fatal groups, and event/filter semantics.
 - [Architecture](docs/ARCHITECTURE.md): module boundaries, threading, saves, and game hooks.
 - [Validation guide](docs/VALIDATION.md): automated checks and in-game acceptance steps.
 

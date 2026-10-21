@@ -31,8 +31,8 @@ public enum EffectKind
     GainMaxHp, LoseMaxHp, GainGold, LoseGold
 }
 public enum CardPileName { Hand, Draw, Discard, Exhaust }
-public enum SelectionMode { Random, Choose, All, First, Last }
-public enum RuleEvent { TurnStart, TurnEnd, CardPlayed, CardDrawn, CardDiscarded, CardExhausted, CardGenerated, DamageReceived, AttackCompleted, Summoned, OrbChanneled, OrbEvoked }
+public enum SelectionMode { Random, Choose, All, First, Last, Any }
+public enum RuleEvent { TurnStart, TurnEnd, CardPlayed, CardDrawn, CardDiscarded, CardExhausted, CardGenerated, DamageReceived, AttackCompleted, Summoned, OrbChanneled, OrbEvoked, BlockGained, DamageGiven, PowerAmountChanged, Forged, StarsGained, StarsSpent }
 public enum CounterScope { Turn, Combat }
 public enum LifetimeKind { Turn, NextTurn, Combat }
 public enum Comparison { Eq, Ne, Gt, Ge, Lt, Le }
@@ -122,6 +122,12 @@ public sealed record CardFilter
     public ForgeRarity? Rarity { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? Cost { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MinCost { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MaxCost { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Tag { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool? Upgraded { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -268,6 +274,8 @@ public sealed record EffectTrigger
     public required RuleEvent Event { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public CardFilter? Filter { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public EventFilter? Where { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public EventOccurrence? Occurrence { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

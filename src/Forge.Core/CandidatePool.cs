@@ -29,7 +29,7 @@ public sealed class CandidatePool
         _historyCapacity = Math.Max(100, historyLimit);
         _snapshot = File.Exists(path) ? Wire.Decode<CandidatePoolSnapshot>(File.ReadAllText(path))
             : new() { RunKey = runKey };
-        if (_snapshot.SchemaVersion != 2 || _snapshot.CardProtocol != MechanicCatalog.ProtocolVersion || _snapshot.RunKey != runKey || _snapshot.Candidates is null
+        if (_snapshot.SchemaVersion != 2 || _snapshot.CardProtocol is not (7 or MechanicCatalog.ProtocolVersion) || _snapshot.RunKey != runKey || _snapshot.Candidates is null
             || _snapshot.History is null || _snapshot.Seen is null || _snapshot.Rewards is null)
             throw new FormatException("Invalid candidate pool snapshot.");
         foreach (var candidate in _snapshot.Candidates.Concat(_snapshot.History)) CardValidator.Validate(candidate.Card);
@@ -38,11 +38,12 @@ public sealed class CandidatePool
             if (reward is null || reward.Length > 3) throw new FormatException("Invalid pool reward.");
             foreach (var card in reward) CardValidator.Validate(card);
         }
+        _snapshot = _snapshot with { CardProtocol = MechanicCatalog.ProtocolVersion };
     }
 
     public static string Fingerprint(CardDefinition card) => AtomicStore.Key(Wire.Encode(card with { Name = "", Flavor = "" }));
     private static string Shape(CardDefinition card) => $"{card.Type}|{card.Forms[0].Cost.Energy}|{card.Forms[0].Cost.Stars}|"
-        + string.Join(",", card.Forms.SelectMany(f => f.Listeners).Select(r => $"{r.Trigger.Event}/{Wire.Encode(r.Trigger.Filter)}/{r.Lifetime}/{Wire.Encode(r.Trigger.Occurrence)}")) + "|"
+        + string.Join(",", card.Forms.SelectMany(f => f.Listeners).Select(r => $"{r.Trigger.Event}/{Wire.Encode(r.Trigger.Filter)}/{Wire.Encode(r.Trigger.Where)}/{r.Lifetime}/{Wire.Encode(r.Trigger.Occurrence)}")) + "|"
         + string.Join(",", card.Forms.SelectMany(f => f.AllEffects).Select(e => $"{e.Kind}/{e.Power}/{e.Actor}/{e.Target?.Ref}/{e.Target?.Pile}/{e.Card?.Id}/{e.Card?.Pool}/{e.Orb}"));
     private static T Copy<T>(T value) => Wire.Decode<T>(Wire.Encode(value));
     public GeneratedCandidate[] History()

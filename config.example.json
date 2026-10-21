@@ -16,7 +16,7 @@
   "styles": {
     "balanced": {
       "system_prompt": "Design fair, interesting Slay the Spire 2 cards with effects supported by the card language.",
-      "instructions": "Chinese names and flavor in Neow's mysterious voice. Design a memorable card around one idea. A single effect is welcome. Vary mechanics; use the deck and combat as inspiration."
+      "instructions": "Chinese names. Design a memorable card around one idea. A single effect is welcome. Vary mechanics and effects."
     },
     "experimental": {
       "system_prompt": "Design fair, interesting Slay the Spire 2 cards with effects supported by the card language.",
@@ -32,7 +32,7 @@
     "max_tokens": 16384,
     "token_limit_parameter": "max_tokens",
     "reasoning_effort": null,
-    "temperature": 0.8,
+    "temperature": null,
     "include_temperature": true,
     "json_mode": false,
     "max_response_bytes": 131072

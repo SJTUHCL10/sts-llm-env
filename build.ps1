@@ -47,6 +47,7 @@ try {
     Copy-Item -LiteralPath 'config.example.json' -Destination $package
     Copy-Item -LiteralPath 'README.md' -Destination $package
     Copy-Item -LiteralPath 'README.zh-CN.md' -Destination $package
+    Copy-Item -LiteralPath 'CHANGELOG.md' -Destination $package
     foreach ($directory in @('docs', 'examples')) {
         $packagedDirectory = Join-Path $package $directory
         if (Test-Path -LiteralPath $packagedDirectory) {

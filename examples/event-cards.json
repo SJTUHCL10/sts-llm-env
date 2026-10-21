@@ -1,0 +1,60 @@
+{
+  "cards": [
+    {
+      "name": "铁壁回声", "type": "power", "rarity": "uncommon",
+      "forms": [
+        {"cost":{"energy":1},"rules":[{"trigger":{"event":"block_gained","where":{"own_turn":true}},"effects":[{"kind":"damage","target":"random_enemy","amount":3}]}]},
+        {"cost":{"energy":1},"rules":[{"trigger":{"event":"block_gained","where":{"own_turn":true}},"effects":[{"kind":"damage","target":"random_enemy","amount":4}]}]}
+      ]
+    },
+    {
+      "name": "逐击削弱", "type": "power", "rarity": "rare",
+      "forms": [
+        {"cost":{"energy":2},"rules":[{"trigger":{"event":"damage_given","where":{"actor":"self","target":"enemy","attack":true}},"condition":{"op":"gt","left":{"stat":"event_total_damage"},"right":0},"effects":[{"kind":"apply_power","target":"event.subject","power":"weak","amount":1}]}]},
+        {"cost":{"energy":1},"rules":[{"trigger":{"event":"damage_given","where":{"actor":"self","target":"enemy","attack":true}},"condition":{"op":"gt","left":{"stat":"event_total_damage"},"right":0},"effects":[{"kind":"apply_power","target":"event.subject","power":"weak","amount":1}]}]}
+      ]
+    },
+    {
+      "name": "恶兆裂痕", "type": "power", "rarity": "rare",
+      "forms": [
+        {"cost":{"energy":2},"rules":[{"trigger":{"event":"power_amount_changed","where":{"actor":"self","target":"enemy","power_type":"debuff","temporary":false}},"effects":[{"kind":"damage","target":"event.target","amount":3}]}]},
+        {"cost":{"energy":2},"rules":[{"trigger":{"event":"power_amount_changed","where":{"actor":"self","target":"enemy","power_type":"debuff","temporary":false}},"effects":[{"kind":"damage","target":"event.target","amount":5}]}]}
+      ]
+    },
+    {
+      "name": "锻火护身", "type": "power", "rarity": "uncommon",
+      "forms": [
+        {"cost":{"energy":1},"rules":[{"trigger":{"event":"forged","where":{"source_kind":"card","source":"self"}},"effects":[{"kind":"block","amount":{"stat":"event_amount"}}]}]},
+        {"cost":{"energy":1},"rules":[{"trigger":{"event":"forged","where":{"source_kind":"card","source":"self"}},"effects":[{"kind":"block","amount":{"mul":[{"stat":"event_amount"},2]}}]}]}
+      ]
+    },
+    {
+      "name": "星光护幕", "type": "power", "rarity": "uncommon",
+      "forms": [
+        {"cost":{"energy":1},"rules":[{"trigger":{"event":"stars_gained"},"effects":[{"kind":"block","amount":{"stat":"event_amount"}}]}]},
+        {"cost":{"energy":1},"rules":[{"trigger":{"event":"stars_gained"},"effects":[{"kind":"block","amount":{"mul":[{"stat":"event_amount"},2]}}]}]}
+      ]
+    },
+    {
+      "name": "星火迸发", "type": "power", "rarity": "rare",
+      "forms": [
+        {"cost":{"energy":2},"rules":[{"trigger":{"event":"stars_spent"},"effects":[{"kind":"damage","target":"all_enemies","amount":{"mul":[{"stat":"event_amount"},2]}}]}]},
+        {"cost":{"energy":2},"rules":[{"trigger":{"event":"stars_spent"},"effects":[{"kind":"damage","target":"all_enemies","amount":{"mul":[{"stat":"event_amount"},3]}}]}]}
+      ]
+    },
+    {
+      "name": "星轨余波", "type": "power", "rarity": "uncommon",
+      "forms": [
+        {"cost":{"energy":1},"rules":[{"trigger":{"event":"card_played","where":{"last_in_series":true}},"condition":{"op":"gt","left":{"stat":"event_paid_stars"},"right":0},"effects":[{"kind":"damage","target":"all_enemies","amount":4}]}]},
+        {"cost":{"energy":1},"rules":[{"trigger":{"event":"card_played","where":{"last_in_series":true}},"condition":{"op":"gt","left":{"stat":"event_paid_stars"},"right":0},"effects":[{"kind":"damage","target":"all_enemies","amount":6}]}]}
+      ]
+    },
+    {
+      "name": "雷电余响", "type": "power", "rarity": "uncommon",
+      "forms": [
+        {"cost":{"energy":1},"rules":[{"trigger":{"event":"orb_evoked","where":{"orb":"lightning"}},"effects":[{"kind":"damage","target":"event.targets","amount":3}]}]},
+        {"cost":{"energy":1},"rules":[{"trigger":{"event":"orb_evoked","where":{"orb":"lightning"}},"effects":[{"kind":"damage","target":"event.targets","amount":5}]}]}
+      ]
+    }
+  ]
+}

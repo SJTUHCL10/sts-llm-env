@@ -18,9 +18,18 @@ internal sealed class GeneratedExecutionContext
     internal NeowGeneratedCard Source { get; }
     internal PlayerChoiceContext Choice { get; }
     internal CardPlay? Play { get; }
+    internal AbstractModel EffectSource { get; init; }
     internal CardModel? EventCard { get; init; }
     internal CardModel? OriginCard { get; init; }
     internal Creature? EventTarget { get; init; }
+    internal Creature? EventActor { get; init; }
+    internal Creature? EventSource { get; init; }
+    internal Creature? EventSubject { get; init; }
+    internal Creature[] EventTargets { get; init; } = [];
+    internal decimal EventTotalDamage { get; init; }
+    internal decimal EventUnblockedDamage { get; init; }
+    internal int EventPaidEnergy { get; init; }
+    internal int EventPaidStars { get; init; }
     internal decimal EventAmount { get; init; }
     internal bool Triggered { get; init; }
     internal bool ResolvingFatal { get; set; }
@@ -31,14 +40,19 @@ internal sealed class GeneratedExecutionContext
     internal Dictionary<string, CardModel[]> Selections { get; } = new(StringComparer.Ordinal);
     internal GeneratedExecutionContext(NeowGeneratedCard source, PlayerChoiceContext choice, CardPlay? play = null, decimal[]? amounts = null)
     {
-        Source = source; Choice = choice; Play = play;
+        Source = source; EffectSource = source; Choice = choice; Play = play;
         PaidEnergy = play?.Resources.EnergySpent ?? 0; PaidStars = play?.Resources.StarsSpent ?? 0;
         Amounts = amounts ?? source.ActiveForm.AllEffects.Select((_, i) => source.DynamicVars[$"E{i}"].BaseValue).ToArray();
     }
     internal decimal Read(NumberExpression n, Creature? target = null)
     {
         var owner = Source.Owner;
-        var creature = n.Of switch { "osty" => owner.Osty, "target" => target ?? EventTarget ?? Play?.Target, _ => owner.Creature };
+        var creature = n.Of switch
+        {
+            "osty" => owner.Osty, "target" => target ?? EventTarget ?? Play?.Target,
+            "event.target" => EventTarget, "event.actor" => EventActor, "event.source" => EventSource, "event.subject" => EventSubject,
+            _ => owner.Creature
+        };
         return n.Stat switch
         {
             "hp" => creature?.CurrentHp ?? 0, "max_hp" => creature?.MaxHp ?? 0, "gold" => owner.Gold, "block" => creature?.Block ?? 0,
@@ -48,6 +62,8 @@ internal sealed class GeneratedExecutionContext
             "discard_size" => PileType.Discard.GetPile(owner).Cards.Count, "exhaust_size" => PileType.Exhaust.GetPile(owner).Cards.Count,
             "orb_count" => owner.PlayerCombatState?.OrbQueue.Orbs.Count ?? 0, "orb_capacity" => owner.PlayerCombatState?.OrbQueue.Capacity ?? 0,
             "paid_energy" => PaidEnergy, "paid_stars" => PaidStars, "event_amount" => EventAmount, "damage_dealt" => DamageDealt,
+            "event_total_damage" => EventTotalDamage, "event_unblocked_damage" => EventUnblockedDamage,
+            "event_paid_energy" => EventPaidEnergy, "event_paid_stars" => EventPaidStars, "event_target_count" => EventTargets.Length,
             _ => throw new FormatException("Unknown stat.")
         };
     }
@@ -167,6 +183,10 @@ internal static class GeneratedEffectExecutor
             null or "self" => [owner.Creature], "osty" => owner.Osty is { IsAlive: true } osty ? [osty] : [],
             "enemy" => c.Play?.Target is { IsAlive: true, IsHittable: true } enemy ? [enemy] : [],
             "event.target" => c.EventTarget is { IsAlive: true } eventTarget ? [eventTarget] : [],
+            "event.targets" => c.EventTargets.Where(t => t.IsAlive).Distinct().ToArray(),
+            "event.actor" => c.EventActor is { IsAlive: true } eventActor ? [eventActor] : [],
+            "event.source" => c.EventSource is { IsAlive: true } eventSource ? [eventSource] : [],
+            "event.subject" => c.EventSubject is { IsAlive: true } eventSubject ? [eventSubject] : [],
             "all_enemies" => enemies, "random_enemy" => enemies.Length > 0 ? [owner.RunState.Rng.CombatTargets.NextItem(enemies)!] : [], _ => []
         };
         if (e.Kind == EffectKind.Damage)
@@ -190,7 +210,7 @@ internal static class GeneratedEffectExecutor
                     await PowerCmd.Apply(c.Choice, power.ToMutable(), target, e.Until == LifetimeKind.Turn ? Math.Abs(amount) : amount, owner.Creature, source);
                     break;
                 case EffectKind.Summon: await OstyCmd.Summon(c.Choice, owner, amount, source); break;
-                case EffectKind.Forge: await ForgeCmd.Forge(EffectRules.Count(amount), owner, source); break;
+                case EffectKind.Forge: await ForgeCmd.Forge(EffectRules.Count(amount), owner, c.EffectSource); break;
                 case EffectKind.Channel:
                     for (int n = 0, count = EffectRules.Count(amount); n < count; n++) { Step(); await NativeMechanics.Channel(c.Choice, owner, e.Orb!); }
                     break;
@@ -256,8 +276,8 @@ internal static class GeneratedEffectExecutor
         }
         else
         {
-            var results = all ? await CreatureCmd.Damage(c.Choice, combat.HittableEnemies.ToArray(), amount, ValueProp.Unpowered, attacker)
-                : await CreatureCmd.Damage(c.Choice, target!, amount, ValueProp.Unpowered, attacker);
+            var results = all ? await CreatureCmd.Damage(c.Choice, combat.HittableEnemies.ToArray(), amount, ValueProp.Unpowered, attacker, source, c.Play)
+                : await CreatureCmd.Damage(c.Choice, target!, amount, ValueProp.Unpowered, attacker, source, c.Play);
             return results.ToArray();
         }
     }
@@ -272,8 +292,8 @@ internal static class GeneratedEffectExecutor
         bool Filter(CardModel card) => card != c.Source && NativeMechanics.Matches(card, target.Filter)
             && (kind != EffectKind.Upgrade || card.IsUpgradable) && (kind != EffectKind.Transform || card.IsTransformable);
         var candidates = pile.Cards.Where(Filter).ToArray();
-        int count = Math.Min(candidates.Length, c.Count(target.Count));
         if (target.Pick == SelectionMode.All) return candidates;
+        int count = target.Pick == SelectionMode.Any ? candidates.Length : Math.Min(candidates.Length, c.Count(target.Count));
         if (count == 0) return [];
         if (target.Pick == SelectionMode.First) return candidates.Take(count).ToArray();
         if (target.Pick == SelectionMode.Last) return candidates.TakeLast(count).Reverse().ToArray();
@@ -284,7 +304,8 @@ internal static class GeneratedEffectExecutor
             return selected.ToArray();
         }
         var prompt = kind switch { EffectKind.Discard => CardSelectorPrefs.DiscardSelectionPrompt, EffectKind.Exhaust => CardSelectorPrefs.ExhaustSelectionPrompt, EffectKind.Upgrade => CardSelectorPrefs.UpgradeSelectionPrompt, EffectKind.Transform => CardSelectorPrefs.TransformSelectionPrompt, _ => new MegaCrit.Sts2.Core.Localization.LocString("card_selection", "HAND_TO_DRAW") };
-        var prefs = new CardSelectorPrefs(prompt, target.UpTo == true ? 0 : count, count) { Cancelable = target.UpTo == true };
+        bool optional = target.Pick == SelectionMode.Any || target.UpTo == true;
+        var prefs = new CardSelectorPrefs(prompt, optional ? 0 : count, count) { Cancelable = optional };
         var result = pile.Type == PileType.Hand
             ? kind == EffectKind.Discard ? await CardSelectCmd.FromHandForDiscard(c.Choice, owner, prefs, Filter, c.Source)
                 : await CardSelectCmd.FromHand(c.Choice, owner, prefs, Filter, c.Source)
