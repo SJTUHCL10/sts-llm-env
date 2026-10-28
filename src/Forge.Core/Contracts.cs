@@ -32,7 +32,7 @@ public enum EffectKind
 }
 public enum CardPileName { Hand, Draw, Discard, Exhaust }
 public enum SelectionMode { Random, Choose, All, First, Last, Any }
-public enum RuleEvent { TurnStart, TurnEnd, CardPlayed, CardDrawn, CardDiscarded, CardExhausted, CardGenerated, DamageReceived, AttackCompleted, Summoned, OrbChanneled, OrbEvoked, BlockGained, DamageGiven, PowerAmountChanged, Forged, StarsGained, StarsSpent }
+public enum RuleEvent { TurnStart, TurnEnd, CardPlayed, CardDrawn, CardDiscarded, CardExhausted, CardGenerated, DamageReceived, Summoned, OrbChanneled, OrbEvoked, BlockGained, DamageGiven, PowerAmountChanged, Forged, StarsGained, StarsSpent }
 public enum CounterScope { Turn, Combat }
 public enum LifetimeKind { Turn, NextTurn, Combat }
 public enum Comparison { Eq, Ne, Gt, Ge, Lt, Le }

@@ -26,7 +26,7 @@ internal static class NativeMechanics
     };
     internal static PowerModel Power(string id) => id switch
     {
-        "strength" => ModelDb.Power<StrengthPower>(), "dexterity" => ModelDb.Power<DexterityPower>(), "weak" => ModelDb.Power<WeakPower>(), "vulnerable" => ModelDb.Power<VulnerablePower>(), "frail" => ModelDb.Power<FrailPower>(), "poison" => ModelDb.Power<PoisonPower>(), "doom" => ModelDb.Power<DoomPower>(), "focus" => ModelDb.Power<FocusPower>(), "vigor" => ModelDb.Power<VigorPower>(), "thorns" => ModelDb.Power<ThornsPower>(), "plating" => ModelDb.Power<PlatingPower>(), "intangible" => ModelDb.Power<IntangiblePower>(), "artifact" => ModelDb.Power<ArtifactPower>(), "buffer" => ModelDb.Power<BufferPower>(), "retain_block" => ModelDb.Power<BarricadePower>(), _ => throw new FormatException("Unknown power alias.")
+        "strength" => ModelDb.Power<StrengthPower>(), "dexterity" => ModelDb.Power<DexterityPower>(), "weak" => ModelDb.Power<WeakPower>(), "vulnerable" => ModelDb.Power<VulnerablePower>(), "frail" => ModelDb.Power<FrailPower>(), "poison" => ModelDb.Power<PoisonPower>(), "doom" => ModelDb.Power<DoomPower>(), "focus" => ModelDb.Power<FocusPower>(), "vigor" => ModelDb.Power<VigorPower>(), "thorns" => ModelDb.Power<ThornsPower>(), "plating" => ModelDb.Power<PlatingPower>(), "intangible" => ModelDb.Power<IntangiblePower>(), "artifact" => ModelDb.Power<ArtifactPower>(), "buffer" => ModelDb.Power<BufferPower>(), _ => throw new FormatException("Unknown power alias.")
     };
     internal static bool Matches(CardModel card, CardFilter? filter) => filter is null
         || (filter.Id is null || card.Id == Card(filter.Id).Id)

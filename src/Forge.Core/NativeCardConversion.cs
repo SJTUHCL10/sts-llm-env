@@ -79,7 +79,6 @@ public static class NativeCardConversion
                     "BodySlam" => [new() { Kind = EffectKind.Damage, Target = "enemy", Amount = new() { Stat = "block", Of = "self" } }],
                     "Feed" => [Damage() with { OnFatal = [new() { Kind = EffectKind.GainMaxHp, Amount = V("MaxHp") }] }],
                     "Inflame" => [Power("strength", "StrengthPower")],
-                    "Barricade" => [new() { Kind = EffectKind.ApplyPower, Power = "retain_block", Amount = 1 }],
                     "DeadlyPoison" => [Power("poison", "PoisonPower", "enemy")],
                     "BouncingFlask" => [Power("poison", "PoisonPower", "random_enemy") with { Repeat = V("Repeat") }],
                     "BladeDance" => [Shivs()],
@@ -131,7 +130,7 @@ public static class NativeCardConversion
                 forms.Add(new() { Cost = native.Cost, Keywords = keywords.ToArray(), Effects = effects, Rules = rules.Length > 0 ? rules : null });
             }
             if (card.ClassName is "TwinStrike" or "Whirlwind")
-                reasons.Add("repeat 会创建多次独立攻击，原版 WithHitCount 是一次多段攻击；AttackCompleted 事件次数和攻击级钩子可能不同。");
+                reasons.Add("repeat 会创建多次独立攻击，原版 WithHitCount 是一次多段攻击；原生攻击级钩子（如活力消耗）的交互可能不同。");
             if (card.ClassName == "Whirlwind")
                 reasons.Add("paid_energy 是实付能量，原版 ResolveEnergyXValue 还应用 X 值修正；有相关修正时不等价。");
             if (card.ClassName == "Feed") reasons.Add("协议未保留 CanBeGeneratedInCombat=false 的原生生成限制。");
@@ -152,6 +151,7 @@ public static class NativeCardConversion
     private static NativeConversion Unavailable(string reason) => new(NativeConversionStatus.Unsupported, null, [reason]);
     private static readonly Dictionary<string, string> Gaps = new(StringComparer.Ordinal)
     {
+        ["Barricade"] = "协议不支持跨回合保留格挡的原生状态。",
         ["Afterimage"] = "原生余像在 BeforeCardPlayed 快照层数，AfterCardPlayed 按快照结算；协议只有打出后的事件，无法准确保留叠加及自身打出时序。",
         ["Darkness"] = "需要按 DarkOrb 类型筛选球并触发被动；协议只能首球／末球／全部球。",
         ["Flatten"] = "卡进入战斗或奥斯提攻击后自行降费；协议缺少未打出卡的这些监听及奥斯提本回合攻击历史。",

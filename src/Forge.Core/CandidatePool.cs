@@ -29,7 +29,7 @@ public sealed class CandidatePool
         _historyCapacity = Math.Max(100, historyLimit);
         _snapshot = File.Exists(path) ? Wire.Decode<CandidatePoolSnapshot>(File.ReadAllText(path))
             : new() { RunKey = runKey };
-        if (_snapshot.SchemaVersion != 2 || _snapshot.CardProtocol is not (7 or MechanicCatalog.ProtocolVersion) || _snapshot.RunKey != runKey || _snapshot.Candidates is null
+        if (_snapshot.SchemaVersion != 2 || _snapshot.CardProtocol != MechanicCatalog.ProtocolVersion || _snapshot.RunKey != runKey || _snapshot.Candidates is null
             || _snapshot.History is null || _snapshot.Seen is null || _snapshot.Rewards is null)
             throw new FormatException("Invalid candidate pool snapshot.");
         foreach (var candidate in _snapshot.Candidates.Concat(_snapshot.History)) CardValidator.Validate(candidate.Card);
@@ -38,7 +38,6 @@ public sealed class CandidatePool
             if (reward is null || reward.Length > 3) throw new FormatException("Invalid pool reward.");
             foreach (var card in reward) CardValidator.Validate(card);
         }
-        _snapshot = _snapshot with { CardProtocol = MechanicCatalog.ProtocolVersion };
     }
 
     public static string Fingerprint(CardDefinition card) => AtomicStore.Key(Wire.Encode(card with { Name = "", Flavor = "" }));
@@ -99,8 +98,9 @@ public sealed class CandidatePool
                 .TakeLast(8).Select(c => Shape(c.Card)).ToList();
             for (int i = 0; restored is null && i < count && candidates.Count > 0; i++)
             {
-                // Stable selection prefers unseen mechanic shapes; ties keep the oldest candidate.
-                var next = candidates.OrderBy(c => recentShapes.Count(s => s == Shape(c.Card))).First();
+                // Prefer this combat's cards, then mechanic variety; ties keep the oldest candidate.
+                var next = candidates.OrderBy(c => c.CombatKey == key ? 0 : 1)
+                    .ThenBy(c => recentShapes.Count(s => s == Shape(c.Card))).First();
                 candidates.Remove(next); selected.Add(next); recentShapes.Add(Shape(next.Card));
             }
             var reward = restored is null ? selected.Select(c => c.Card).ToArray() : restored.Select(CardValidator.Validate).ToArray();

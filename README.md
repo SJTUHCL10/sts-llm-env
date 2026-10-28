@@ -22,7 +22,7 @@ Store your key in the local `provider.api_key` field or the `NEOWS_COMPANY_API_K
 
 By default, generation starts immediately on entering the run's first combat; later combats start after the first enemy turn ends, with up to two requests per combat and at least 15 seconds between requests. Valid cards enter the current run's candidate pool. When a reward opens, one available candidate is added alongside the original options. If no candidate is ready, the original reward appears immediately. Rewards never wait for the network or change while you are choosing. Late results can appear after later combats.
 
-New cards use protocol v8: two complete upgrade forms, general card selection and creation/transformation, rule groups, dynamic expressions, maximum HP/gold gains and losses, damage-bound Fatal groups, and Block/damage/power/Forge/Stars event filters with source and target context. Supported character mechanics include Osty/Souls/Doom, Orbs/Focus, Forge/Stars, and Shivs/Sly. The LLM can combine implemented effects but cannot return executable code. There is no power budget; balance needs to be evaluated through play. Protocol v7 definitions, rule snapshots and candidate pools remain readable; earlier candidate protocols have no migration path.
+New cards use protocol v9: two complete upgrade forms, general card selection and creation/transformation, rule groups, dynamic expressions, maximum HP/gold gains and losses, damage-bound Fatal groups, and Block/damage/power/Forge/Stars event filters with source and target context. Supported character mechanics include Osty/Souls/Doom, Orbs/Focus, Forge/Stars, and Shivs/Sly. The LLM can combine implemented effects but cannot return executable code. There is no power budget; balance needs to be evaluated through play. Whole-attack events are not exposed; damage events resolve per hit and target. Previous candidate protocols are rejected, and old cards using removed events are not migrated.
 
 Generated card definitions are stored with the game's native card saves, so loading them does not require another model call. The candidate pool and frozen rewards are stored separately in `data/runs`; retain this directory to restore rewards for an ongoing run. Keep the mod enabled when loading saves containing generated cards.
 
@@ -81,7 +81,7 @@ Most detailed documentation is in Chinese; the architecture guide is in English:
 
 - [Configuration and troubleshooting](docs/CONFIGURATION.md): settings, data directories, and common failure causes.
 - [LLM protocol](docs/LLM_PROTOCOL.md): request context, output, and candidate pool rules.
-- [Card protocol](docs/CARD_PROGRAM.md): v8 forms, actions, targets, Fatal groups, and event/filter semantics.
+- [Card protocol](docs/CARD_PROGRAM.md): v9 forms, actions, targets, Fatal groups, and event/filter semantics.
 - [Architecture](docs/ARCHITECTURE.md): module boundaries, threading, saves, and game hooks.
 - [Validation guide](docs/VALIDATION.md): automated checks and in-game acceptance steps.
 

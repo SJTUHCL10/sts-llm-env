@@ -118,6 +118,15 @@ internal static class GeneratedEffectPreview
     }
 }
 internal interface IGeneratedPreviewVar { void SetUpgradeHighlight(bool value); }
+internal sealed class GeneratedRuleLimitVar(string name, int count) : DynamicVar(name, count), IGeneratedPreviewVar
+{
+    public override void UpdateCardPreview(CardModel card, CardPreviewMode previewMode, Creature? target, bool runGlobalHooks)
+    {
+        PreviewValue = BaseValue;
+        EnchantedValue = BaseValue;
+    }
+    public void SetUpgradeHighlight(bool value) => WasJustUpgraded = value;
+}
 internal sealed class GeneratedDamageVar(string name, decimal amount, CardEffect effect, int index) : DamageVar(name, amount, GeneratedEffectPreview.DamageProps(effect)), IGeneratedPreviewVar
 {
     public override void UpdateCardPreview(CardModel card, CardPreviewMode previewMode, Creature? target, bool runGlobalHooks) => GeneratedEffectPreview.Update((NeowGeneratedCard)card, index, this, previewMode, target, runGlobalHooks);

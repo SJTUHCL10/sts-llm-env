@@ -7,6 +7,7 @@
   <ItemGroup>
     <!-- One DLL for the native mod loader; the core remains independently buildable/testable. -->
     <Compile Include="..\Forge.Core\*.cs" Link="Core\%(Filename)%(Extension)" />
+    <EmbeddedResource Include="Assets\Powers\*.png" LogicalName="NeowsCompany.Assets.Powers.%(Filename)%(Extension)" />
     <Reference Include="sts2"><HintPath>$(Sts2LibDir)\sts2.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="GodotSharp"><HintPath>$(Sts2LibDir)\GodotSharp.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="0Harmony"><HintPath>$(Sts2LibDir)\0Harmony.dll</HintPath><Private>false</Private></Reference>

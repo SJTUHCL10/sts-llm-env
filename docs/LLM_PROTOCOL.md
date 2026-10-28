@@ -63,16 +63,16 @@ history 按生成先后顺序取最新 k 张，再按从旧到新输出；k 为 
 
 ## 客户端元信息与审计
 
-请求修订号、combat_key、协议版本、耗时、候选 ID 等保留在客户端会话和审计中，不进入模型设计数据。generation_request/generation_ready 使用 card_protocol:8；候选池使用自己的 schema_version 和 card_protocol。v7 候选池经原定义校验后兼容读取，下次写入标记为 8。卡牌的内部实例标识服务于原生保存与规则引用，不由 LLM 生成。
+请求修订号、combat_key、协议版本、耗时、候选 ID 等保留在客户端会话和审计中，不进入模型设计数据。generation_request/generation_ready 使用 card_protocol:9；候选池使用自己的 schema_version 和 card_protocol。候选池仅接受当前 v9 协议，旧版本不迁移。卡牌的内部实例标识服务于原生保存与规则引用，不由 LLM 生成。
 
 ProviderDiagnostics 仅提取模型 content、reasoning_content、finish_reason、数值 usage 与缓存使用信息；缺少 content 或 reasoning 时记录 null。content 在去除空白、代码围栏及解析卡牌之前记录，截断或无效卡牌 JSON 也可查看。已知凭据和服务地址在 content 与 reasoning 中脱敏；请求头、完整响应信封、任意 HTTP 错误正文不写入日志。提示词和 reasoning 的记录分别遵守配置开关，content 随 record_generation 保存。generation_ready 的 card_texts 按卡牌、形态顺序保存共享 CardText 渲染器的中文效果文本，不改变卡牌定义或存档格式。
 
 ## 奖励与候选池
 
-每批有效结果进入本局候选池。执行定义忽略名称/风味后计算指纹；近期已展示机制形状影响选择顺序，其中包括目标和触发事件。奖励冻结与候选移除使用同一原子快照，已展示奖励包括空奖励保持固定。迟到结果进入后续奖励，不修改已打开的奖励界面。
+每批有效结果进入本局候选池。执行定义忽略名称/风味后计算指纹。奖励优先展示当前层、本场战斗生成的候选（按 combat_key 匹配），不足时从旧候选池补齐；两组内部均优先选择近期较少展示的机制形状，其中包括目标和触发事件，同分时先选较早生成的候选。展示数量上限为 generated_cards_per_reward。奖励冻结与候选移除使用同一原子快照，已展示奖励包括空奖励保持固定。迟到结果进入后续奖励，不修改已打开的奖励界面。
 
 v7 增加 gain_max_hp/lose_max_hp、gain_gold/lose_gold、gold 数值与 damage.on_fatal。斩杀组允许全部动作，嵌套动作计入动作预算，沿用原生 Fatal 资格与 DamageResult；最后一击在伤害内部结算收益。详情见 CARD_PROGRAM.md。
 
-v8 增加 block_gained/damage_given/power_amount_changed/forged/stars_gained/stars_spent；trigger.where 区分执行者、来源生物、受影响对象、来源模型类别、攻击性质、回合、能力和球类型，以及抽牌/消耗/连打信息。事件实付资源与安装规则时的资源分开，攻击/激发球保留完整目标集合，卡牌筛选支持费用区间和原生标签。只有本局开放储君机制时才提示/允许生成星和铸造事件。未知来源保留为空或 unknown；星原生回调无来源模型，付款后收益使用 card_played 的事件实付星数与 last_in_series。新增 where 不可与基于历史的 occurrence 混用，改用 limit 表达生效额度。保存定义和规则载荷保留 v7 兼容。
+v8 增加 block_gained/damage_given/power_amount_changed/forged/stars_gained/stars_spent；trigger.where 区分执行者、来源生物、受影响对象、来源模型类别、攻击性质、回合、能力和球类型，以及抽牌/消耗/连打信息。事件实付资源与安装规则时的资源分开，伤害事件保留单次命中目标，激发球保留完整目标集合，卡牌筛选支持费用区间和原生标签。只有本局开放储君机制时才提示/允许生成星和铸造事件。未知来源保留为空或 unknown；星原生回调无来源模型，付款后收益使用 card_played 的事件实付星数与 last_in_series。新增 where 不可与基于历史的 occurrence 混用，改用 limit 表达生效额度。v9 移除整次攻击事件；新响应、保存定义和规则载荷中的已移除事件均不再接受。auto_play/last_in_series 和事件实付资源仅用于 card_played。
 
 v6 将 Number 改为 decimal，div 改为普通除法；条件比较保留小数。旧候选池按协议版本隔离，不提供迁移，使用新局测试。已有原生保存卡牌可以被读取，但其 div 按当前普通除法语义执行，不承诺恢复旧整数除法行为。

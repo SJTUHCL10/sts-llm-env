@@ -10,7 +10,7 @@
 | `generated_cards_per_reward` | `1` | 每份战斗卡牌奖励追加 0–3 张牌，原版选项不减少 |
 | `generation_timing` | `"prefetch"` | 战斗中提前请求，只展示已完成结果；可选 `"wait_on_reward"`，打开奖励时请求并最多等待配置的超时 |
 | `max_requests_per_combat` | `2` | 每场最多请求次数，失败也占一次；没有自动网络重试 |
-| `prefetch_minimum_interval_seconds` | `15` | 两次请求启动的最小间隔；同一场最多一个请求在途 |
+| `prefetch_minimum_interval_seconds` | `15` | 两次请求启动的最小间隔，从上一次请求启动时计时；同一场最多一个请求在途。若上次请求耗时已超过此值，完成后下一个战斗事件即可触发新请求，不会额外等待此秒数 |
 | `prefetch_initial_card_plays` | `2` | 兼容旧配置的字段，现已忽略；本局第一场入场即调用，后续战斗等敌方首回合结束 |
 | `candidate_pool_capacity` | `24` | 本局未展示候选池容量，超出淘汰最旧候选 |
 | `active_style` | `"balanced"` | 使用 `styles` 中的哪个配置 |

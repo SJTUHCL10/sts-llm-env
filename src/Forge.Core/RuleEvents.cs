@@ -42,9 +42,9 @@ public sealed record RuleEventFacts
 public static class RuleEvents
 {
     public static bool IsCardEvent(RuleEvent e) => e is >= RuleEvent.CardPlayed and <= RuleEvent.CardGenerated;
-    public static bool CarriesCard(RuleEvent e) => IsCardEvent(e) || e is RuleEvent.DamageReceived or RuleEvent.AttackCompleted
+    public static bool CarriesCard(RuleEvent e) => IsCardEvent(e) || e is RuleEvent.DamageReceived
         or RuleEvent.BlockGained or RuleEvent.DamageGiven or RuleEvent.PowerAmountChanged or RuleEvent.Forged;
-    public static bool CarriesResources(RuleEvent e) => e is RuleEvent.CardPlayed or RuleEvent.AttackCompleted;
+    public static bool CarriesResources(RuleEvent e) => e == RuleEvent.CardPlayed;
     public static bool MatchesRelation(string filter, string? relation) => filter == "any" ? relation is not null
         : filter == "self_or_osty" ? relation is "self" or "osty" : filter == relation;
     public static bool Matches(EventFilter? filter, RuleEventFacts facts) => filter is null
@@ -79,10 +79,10 @@ public static class RuleEvents
         Require(w.Power is null && w.PowerType is null && w.Temporary is null || trigger.Event == RuleEvent.PowerAmountChanged, "Power filters require power_amount_changed.");
         Require(w.Orb is null || MechanicCatalog.Orbs.Contains(w.Orb) && w.Orb != "random"
             && trigger.Event is RuleEvent.OrbChanneled or RuleEvent.OrbEvoked, "Orb filter requires an orb event and concrete type.");
-        Require(w.Attack is null || trigger.Event is RuleEvent.DamageGiven or RuleEvent.DamageReceived or RuleEvent.AttackCompleted, "Attack filter requires a damage/attack event.");
+        Require(w.Attack is null || trigger.Event is RuleEvent.DamageGiven or RuleEvent.DamageReceived, "Attack filter requires a damage event.");
         Require(w.FromHandDraw is null || trigger.Event == RuleEvent.CardDrawn, "Draw origin requires card_drawn.");
         Require(w.CausedByEthereal is null || trigger.Event == RuleEvent.CardExhausted, "Exhaust cause requires card_exhausted.");
-        Require(w.AutoPlay is null && w.LastInSeries is null || CarriesResources(trigger.Event), "Play facts require card_played or attack_completed.");
+        Require(w.AutoPlay is null && w.LastInSeries is null || CarriesResources(trigger.Event), "Play facts require card_played.");
         Require(w.SourceKind is null || CarriesCard(trigger.Event) || trigger.Event is RuleEvent.OrbChanneled or RuleEvent.OrbEvoked, "This native event exposes no source model.");
         Require(w.Source is null || CarriesCard(trigger.Event) || trigger.Event is RuleEvent.OrbChanneled or RuleEvent.OrbEvoked, "This native event exposes no source creature.");
     }

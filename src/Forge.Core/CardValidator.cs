@@ -2,8 +2,8 @@ namespace Forge.Core;
 
 public static class MechanicCatalog
 {
-    public const int ProtocolVersion = 8;
-    public static readonly string[] Powers = ["strength", "dexterity", "weak", "vulnerable", "frail", "poison", "doom", "focus", "vigor", "thorns", "plating", "intangible", "artifact", "buffer", "retain_block"];
+    public const int ProtocolVersion = 9;
+    public static readonly string[] Powers = ["strength", "dexterity", "weak", "vulnerable", "frail", "poison", "doom", "focus", "vigor", "thorns", "plating", "intangible", "artifact", "buffer"];
     // Generation policy only: keep the full catalog for existing saved definitions.
     public static readonly string[] OstyPowers = ["strength", "weak", "poison", "doom", "vigor", "intangible", "artifact", "buffer"];
     public static readonly string[] Cards = ["soul", "shiv", "wound", "dazed", "burn", "void", "slimed", "fuel", "debris", "minion_strike", "minion_sacrifice", "minion_dive", "sovereign_blade"];
@@ -196,8 +196,8 @@ public static class CardValidator
         void Number(NumberExpression? n)
         {
             if (n is null) return;
-            if (n.Stat is "event_paid_energy" or "event_paid_stars") Require(RuleEvents.CarriesResources(rule.Trigger.Event), "Event resources require a play/attack event.");
-            if (n.Stat is "event_total_damage" or "event_unblocked_damage") Require(rule.Trigger.Event is RuleEvent.DamageGiven or RuleEvent.DamageReceived or RuleEvent.AttackCompleted, "Damage facts require damage/attack.");
+            if (n.Stat is "event_paid_energy" or "event_paid_stars") Require(RuleEvents.CarriesResources(rule.Trigger.Event), "Event resources require card_played.");
+            if (n.Stat is "event_total_damage" or "event_unblocked_damage") Require(rule.Trigger.Event is RuleEvent.DamageGiven or RuleEvent.DamageReceived, "Damage facts require a damage event.");
             foreach (var child in n.Add ?? n.Sub ?? n.Mul ?? n.Div ?? []) Number(child);
         }
         void Condition(EffectCondition? c)

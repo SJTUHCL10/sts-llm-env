@@ -81,6 +81,7 @@ static class Smoke
                      new() { Cost = new() { Energy = 1, Stars = 1 }, Keywords = [ForgeKeyword.Retain], Effects = [new() { Kind = EffectKind.Damage, Target = "all_enemies", Amount = 13 }, new() { Kind = EffectKind.Block, Amount = 7 }] }]
         };
         var card = (NeowGeneratedCard)ModelDb.Card<NeowGeneratedCard>().ToMutable();
+        _ = ModelDb.Card<NeowGeneratedCard>().Pool; _ = card.Pool;
         _ = card.EnergyCost; _ = card.DynamicVars; _ = card.Keywords;
         card.DefinitionPayload = Wire.Encode(definition);
         Check(card.EnergyCost.Canonical == 2 && card.BaseStarCost == 2 && card.TargetType == TargetType.AnyEnemy && card.Keywords.Contains(CardKeyword.Exhaust));
@@ -161,8 +162,19 @@ static class Smoke
         Check(Harmony.GetPatchInfo(original)!.Prefixes.Any(p => p.owner == harmony.Id));
         Check(Harmony.GetPatchInfo(AccessTools.Method(typeof(CombatHistory), "Add"))!.Prefixes.Any(p => p.owner == harmony.Id));
         Check(power.PackedIconPath == ModelDb.Power<DexterityPower>().PackedIconPath);
+        foreach (string property in new[] { nameof(PowerModel.Icon), nameof(PowerModel.BigIcon) })
+            Check(Harmony.GetPatchInfo(AccessTools.PropertyGetter(typeof(PowerModel), property))!.Prefixes.Any(p => p.owner == harmony.Id));
+        foreach (bool large in new[] { false, true })
+        {
+            byte[] png = GeneratedPowerIcons.ReadPng(large);
+            Check(png.AsSpan(0, 8).SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }));
+            int size = large ? 256 : 64;
+            Check(System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(png.AsSpan(16, 4)) == size);
+            Check(System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(png.AsSpan(20, 4)) == size);
+            Check(png[24] == 8 && png[25] == 6); // 8-bit RGBA, without initializing Godot.
+        }
         harmony.UnpatchAll(harmony.Id);
-        Console.WriteLine("PASS native Harmony reward/history/description hooks and placeholder power icons");
+        Console.WriteLine("PASS native Harmony reward/history/description hooks and embedded 64/256px power icon contracts");
         Console.WriteLine("PASS game API smoke checks (rendered UI/live combat not exercised)");
     }
     private static void CheckPlanningCapture()
@@ -545,10 +557,16 @@ static class Smoke
             damage.AfterDamageGiven(choice, owner.Creature, hit, ValueProp.Move, enemy, sourceCard).GetAwaiter().GetResult();
             damage.AfterDamageGiven(choice, owner.Creature, new(second, ValueProp.Move) { UnblockedDamage = 7 }, ValueProp.Move, second, sourceCard).GetAwaiter().GetResult();
             Check(Activations(damage) == 1); // The per-hit unblocked amount differs on the second target.
+            Check(damage.RuntimeDescriptionText(true).Contains("每当你对敌人造成攻击伤害时"));
+            Check(!damage.RuntimeDescriptionText(true).Contains("执行者为"));
+            Check(typeof(GeneratedEffectPower).GetMethod("AfterAttack")!.DeclaringType != typeof(GeneratedEffectPower));
             var repeated = Listen(new() { Event = RuleEvent.DamageGiven, Where = new() { Attack = true } }, Eq("event_amount", 7));
-            repeated.AfterDamageGiven(choice, owner.Creature, hit, ValueProp.Move, enemy, sourceCard).GetAwaiter().GetResult();
-            repeated.AfterDamageGiven(choice, owner.Creature, hit, ValueProp.Move, enemy, sourceCard).GetAwaiter().GetResult();
-            Check(Activations(repeated) == 2);
+            for (int i = 0; i < 2; i++)
+                foreach (var target in new[] { enemy, second })
+                    repeated.AfterDamageGiven(choice, owner.Creature, new(target, ValueProp.Move) { UnblockedDamage = 7 }, ValueProp.Move, target, sourceCard).GetAwaiter().GetResult();
+            Check(Activations(repeated) == 4);
+            repeated.AfterDamageGiven(choice, owner.Creature, new(enemy, ValueProp.Move) { BlockedDamage = 7 }, ValueProp.Move, enemy, sourceCard).GetAwaiter().GetResult();
+            Check(Activations(repeated) == 5); // Fully blocked hits still produce damage events.
             var strength = (StrengthPower)ModelDb.Power<StrengthPower>().ToMutable(); strength.ApplyInternal(enemy, -2, silent: true);
             var changed = Listen(new() { Event = RuleEvent.PowerAmountChanged, Where = new() { Power = "strength", PowerType = "debuff", Temporary = false, Target = "enemy", Actor = "self" } }, Eq("event_amount", -2));
             changed.AfterPowerAmountChanged(choice, strength, -2, owner.Creature, sourceCard).GetAwaiter().GetResult();
@@ -569,14 +587,6 @@ static class Smoke
             var play = new CardPlay { Card = sourceCard, Player = owner, Target = enemy, Resources = new() { EnergySpent = 2, StarsSpent = 3, EnergyValue = 2, StarValue = 3 }, ResultPile = PileType.Discard, PlayCount = 2, PlayIndex = 1, IsAutoPlay = false };
             var spending = Listen(new() { Event = RuleEvent.CardPlayed, Where = new() { LastInSeries = true, AutoPlay = false } }, new() { All = [Eq("event_paid_energy", 2), Eq("event_paid_stars", 3)] });
             spending.AfterCardPlayed(choice, play).GetAwaiter().GetResult(); Check(Activations(spending) == 1);
-            var command = DamageCmd.Attack(7).FromCard(sourceCard, play).TargetingAllOpponents(combat);
-            var results = (List<List<DamageResult>>)AccessTools.Field(typeof(AttackCommand), "_results").GetValue(command)!;
-            results.Add([hit, new(second, ValueProp.Move) { UnblockedDamage = 7 }]);
-            var completed = Listen(new() { Event = RuleEvent.AttackCompleted, Where = new() { Actor = "self", LastInSeries = true } }, new()
-            {
-                All = [Eq("event_amount", 14), Eq("event_target_count", 2), Eq("event_unblocked_damage", 11), Eq("event_paid_stars", 3)]
-            });
-            completed.AfterAttack(choice, command).GetAwaiter().GetResult(); Check(Activations(completed) == 1);
             var received = Listen(new() { Event = RuleEvent.DamageReceived, Where = new() { Target = "self", Actor = "enemy" } }, new()
             {
                 All = [Eq("event_amount", 4), new() { Op = Comparison.Eq, Left = new() { Stat = "hp", Of = "event.target" }, Right = 50 },
@@ -722,6 +732,7 @@ static class Smoke
     }
     private static void CheckQuantityAndDecimalContracts(Player owner, Player other, CombatState combat)
     {
+        CheckRuleLimitPreviewContracts(owner, combat);
         var card = combat.CreateCard<NeowGeneratedCard>(owner);
         CardForm Form(int count) => new()
         {
@@ -795,6 +806,47 @@ static class Smoke
         owner.PlayerCombatState.Hand.RemoveInternal(card);
         Console.WriteLine("PASS quantity upgrade highlights and reload, generated origins, decimal HP comparisons and native draw preview");
     }
+    private static void CheckRuleLimitPreviewContracts(Player owner, CombatState combat)
+    {
+        foreach (var scope in new[] { CounterScope.Turn, CounterScope.Combat })
+        {
+            CardForm Form(int count) => new()
+            {
+                Cost = new() { Energy = 1 }, Rules = [new()
+                {
+                    Trigger = new() { Event = RuleEvent.OrbChanneled, Limit = new() { Count = count, Within = scope } },
+                    Condition = new() { Op = Comparison.Ge, Left = new() { Stat = "orb_count" }, Right = new() { Stat = "orb_capacity" } },
+                    Effects = [new() { Kind = EffectKind.Draw, Amount = 1 }]
+                }]
+            };
+            var card = combat.CreateCard<NeowGeneratedCard>(owner);
+            card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "溢流阀", Type = ForgeCardType.Power, Rarity = ForgeRarity.Uncommon, Forms = [Form(1), Form(2)] });
+            Check(card.GetDescriptionForUpgradePreview().Contains("最多生效1次"));
+            card.UpgradeInternal(); card.FinalizeUpgradeInternal();
+            var restored = (NeowGeneratedCard)CardModel.FromSerializable(card.ToSerializable()); restored.Owner = owner;
+            foreach (var preview in new[] { card, restored })
+            {
+                Check(preview.GetDescriptionForPile(PileType.Deck).Contains("最多生效2次"));
+                var flags = preview.BeginUpgradePreview();
+                try
+                {
+                    string text = preview.GetDescriptionForUpgradePreview();
+                    Check(text.Contains("最多生效[green]2[/green]次") && text.Contains("抽1张牌") && !text.Contains("[green]1[/green]"));
+                    Check(preview.RuntimeDescriptionText(false).Contains("at most {L0:diff()} activations"));
+                }
+                finally { preview.EndUpgradePreview(flags); }
+                Check(preview.DynamicVars.Values.All(v => !v.WasJustUpgraded));
+                preview.DowngradeInternal();
+                Check(preview.GetDescriptionForUpgradePreview().Contains("最多生效1次"));
+            }
+            card.DefinitionPayload = Wire.Encode(card.Definition with { Forms = [Form(2), Form(2)] });
+            card.UpgradeInternal(); card.FinalizeUpgradeInternal();
+            var unchanged = card.BeginUpgradePreview();
+            try { Check(!card.GetDescriptionForUpgradePreview().Contains("[green]")); }
+            finally { card.EndUpgradePreview(unchanged); }
+        }
+        Console.WriteLine("PASS rule limit upgrade highlights, unchanged counts, reload and downgrade for turn/combat quotas");
+    }
     private static void CheckOstyContracts(NeowGeneratedCard card, Player owner, Player attacker, CombatState combat)
     {
         var osty = combat.CreateCreature(ModelDb.Monster<Osty>().ToMutable(), CombatSide.Player, null);
@@ -842,7 +894,7 @@ static class Smoke
         Check(description.GetDescriptionForPile(PileType.Hand).Contains("点格挡"));
         var ruleForm = form with { Effects = null, Rules = [new() { Trigger = new() { Event = RuleEvent.Summoned }, Effects = [new() { Kind = EffectKind.Damage, Actor = "osty", Target = "random_enemy", Amount = new() { Stat = "event_amount" } }] }] };
         description.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "噬魂回响", Type = ForgeCardType.Power, Rarity = ForgeRarity.Uncommon, Forms = [ruleForm, ruleForm] });
-        Check(description.RuntimeDescriptionText(true) == "召唤后，奥斯提对随机敌人造成等量于本次召唤量的伤害。");
+        Check(description.RuntimeDescriptionText(true) == "每当你召唤时，奥斯提对随机敌人造成等量于本次召唤量的伤害。");
         var restored = (NeowGeneratedCard)CardModel.FromSerializable(description.ToSerializable());
         Check(restored.RuntimeDescriptionText(true) == description.RuntimeDescriptionText(true));
         combat.RemoveCreature(osty);
@@ -1091,6 +1143,8 @@ static class Smoke
             var owner = Player.CreateForNewRun(character, UnlockState.all, 10);
             // Text requires an owner for the native character energy icon, no inventory or combat effects.
             var card = (NeowGeneratedCard)ModelDb.Card<NeowGeneratedCard>().ToMutable(); card.Owner = owner;
+            Check(card.Pool == character.CardPool && card.VisualCardPool == character.CardPool);
+            Check(((NeowGeneratedCard)card.ClonePreservingMutability()).Pool == character.CardPool);
             var rule = new CardRule { Trigger = new() { Event = RuleEvent.CardPlayed, Filter = new() { Cost = 0 } }, Effects = [new() { Kind = EffectKind.GainEnergy, Amount = 2 }, new() { Kind = EffectKind.GainStars, Amount = 3 }, new() { Kind = EffectKind.Block, Amount = 1 }] };
             var form = new CardForm { Cost = new() { Energy = 1 }, Rules = [rule] };
             card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "费用图标", Type = ForgeCardType.Power, Rarity = ForgeRarity.Rare, Forms = [form, form] });
@@ -1107,7 +1161,7 @@ static class Smoke
             text = card.RuntimeDescriptionText(true);
             Check(text.Contains("耗能为0" + icon + "的牌") && !text.Contains("本场战斗"));
         }
-        Console.WriteLine("PASS all five native character energy icons in card/upgrade/power text and captured listener amounts");
+        Console.WriteLine("PASS all five character card/visual pools, cloned pools, energy icons in card/upgrade/power text and captured listener amounts");
     }
     private static void CheckNativeConversionContracts()
     {

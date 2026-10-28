@@ -30,7 +30,7 @@ await Test("native conversion distinguishes unknown implementations, known gaps 
         Forms = [new() { Cost = new() { Energy = 1 }, Variables = [] }, new() { Cost = new() { Energy = 0 }, Variables = [] }]
     };
     Check(NativeCardConversion.Convert(Snapshot("UnreviewedCard")).Status == NativeConversionStatus.Unreviewed);
-    foreach (string name in new[] { "Afterimage", "Darkness", "Flatten", "Shiv", "PerfectedStrike", "DarkEmbrace", "MachineLearning" })
+    foreach (string name in new[] { "Barricade", "Afterimage", "Darkness", "Flatten", "Shiv", "PerfectedStrike", "DarkEmbrace", "MachineLearning" })
     {
         var result = NativeCardConversion.Convert(Snapshot(name));
         Check(result.Status == NativeConversionStatus.Unsupported && result.Definition is null && result.Reasons.Length > 0);
@@ -226,6 +226,31 @@ await Test("powers support Retain and Sly with the existing character gate", asy
     CharacterMechanics.FromRun(JsonSerializer.SerializeToElement(new { character = "SILENT" })).Validate(sly);
     await Reject(() => CharacterMechanics.FromRun(context.Run).Validate(sly));
 });
+await Test("rule quota rendering preserves listener indices and independent action slots", () =>
+{
+    var rule = new CardRule { Trigger = new() { Event = RuleEvent.OrbChanneled }, Effects = [new() { Kind = EffectKind.Draw, Amount = 1 }] };
+    var form = new CardForm { Cost = new(), Effects = [new() { Kind = EffectKind.Block, Amount = 3 }], Rules =
+    [
+        rule,
+        rule with { Trigger = rule.Trigger with { Limit = new() { Count = 2 } } },
+        rule with { Trigger = rule.Trigger with { Limit = new() { Count = 4, Within = CounterScope.Combat } } }
+    ] };
+    foreach (bool chinese in new[] { true, false })
+    {
+        var slots = new List<int>();
+        var limits = new List<int>();
+        string text = CardText.Render(form, chinese, i => { slots.Add(i); return $"E{i}"; }, limit: (i, count) =>
+        {
+            limits.Add(i);
+            return $"[green]{count}[/green]";
+        });
+        Check(slots.SequenceEqual(new[] { 0, 1, 2, 3 }) && limits.SequenceEqual(new[] { 1, 2 }));
+        Check(text.Contains(chinese ? "每回合最多生效[green]2[/green]次" : "at most [green]2[/green] activations per turn"));
+        Check(text.Contains(chinese ? "本场战斗最多生效[green]4[/green]次" : "at most [green]4[/green] activations per combat"));
+        Check(!CardText.Render(form, chinese).Contains("[green]"));
+    }
+    return Task.CompletedTask;
+});
 await Test("description keeps turn-start duration, choices, repeated effects and removal semantics explicit", () =>
 {
     var rule = new CardRule { Trigger = new() { Event = RuleEvent.TurnStart }, Lifetime = LifetimeKind.Turn, Turns = 2, Effects = [new() { Kind = EffectKind.Block, Amount = 1 }] };
@@ -262,6 +287,10 @@ await Test("repeat text scopes native count phrases, attack hits and general exp
     var attack = new CardEffect { Kind = EffectKind.Damage, Target = "random_enemy", Amount = 3, Repeat = 3 };
     Check(CardText.RenderEffect(attack, true) == "随机对敌人造成3点伤害3次。");
     Check(CardText.RenderEffect(attack with { Actor = "osty", Target = "all_enemies", Repeat = 2.9m }, true) == "奥斯提对所有敌人造成3点伤害2次。");
+    Check(CardText.RenderEffect(attack with { Actor = "osty", Target = "all_enemies", Amount = 2, Repeat = hand }, true)
+        == "手牌中每有一张牌，奥斯提就对所有敌人造成2点伤害。");
+    Check(CardText.RenderEffect(attack with { Actor = "osty", Target = "enemy", Amount = 2, Repeat = hand }, true)
+        == "手牌中每有一张牌，奥斯提就造成2点伤害。");
     Check(CardText.RenderEffect(attack with { Repeat = 0 }, true) == "随机对敌人造成3点伤害0次。");
     Check(CardText.RenderEffect(attack with { OnFatal = [new() { Kind = EffectKind.GainGold, Amount = 1 }] }, true)
         == "随机对敌人造成3点伤害3次。\n斩杀时，获得1枚金币。");
@@ -302,6 +331,7 @@ await Test("reject missing forms, old fields, mixed targets, irrelevant slots an
         new() { Kind = EffectKind.Move, Target = "selected:missing", To = CardPileName.Hand },
         new() { Kind = EffectKind.CreateCard, Card = new() { Id = "script" }, To = CardPileName.Hand },
         new() { Kind = EffectKind.ApplyPower, Power = "arbitrary_type", Amount = 1 },
+        new() { Kind = EffectKind.ApplyPower, Power = "retain_block", Amount = 1 },
         new() { Kind = EffectKind.Block, Amount = new() { Add = [1, 2], Mul = [2, 3] } },
         new() { Kind = EffectKind.Block, Amount = new() { Div = [4, 0] } }
     }) await Reject(() => CardValidator.Validate(valid with { Type = ForgeCardType.Skill, Forms = valid.Forms.Select(f => f with { Effects = [bad] }).ToArray() }));
@@ -502,10 +532,10 @@ await Test("symbolic damage and block use equal amounts while numeric previews r
     Check(CardText.RenderEffect(block with { Amount = 6 }, true) == "获得6点格挡。");
     var damage = new CardEffect { Kind = EffectKind.Damage, Target = "random_enemy", Actor = "osty", Amount = new() { Stat = "event_amount" } };
     var rule = new CardRule { Trigger = new() { Event = RuleEvent.Summoned }, Effects = [damage] };
-    Check(CardText.RenderRule(rule, true, combatIsImplicit: true) == "召唤后，奥斯提对随机敌人造成等量于本次召唤量的伤害。");
+    Check(CardText.RenderRule(rule, true, combatIsImplicit: true) == "每当你召唤时，奥斯提对随机敌人造成等量于本次召唤量的伤害。");
     Check(CardText.RenderRule(rule with { Effects = [damage with { Amount = new() { Add = [damage.Amount!, 2] } }] }, true).Contains("造成等量于(本次召唤量 + 2)的伤害"));
     Check(CardText.RenderRule(rule with { Trigger = new() { Event = RuleEvent.DamageReceived } }, true).Contains("等量于本次受到的未格挡伤害的伤害"));
-    Check(CardText.RenderRule(rule with { Trigger = new() { Event = RuleEvent.AttackCompleted } }, true).Contains("等量于本次攻击造成的总伤害的伤害"));
+    Check(CardText.RenderRule(rule with { Trigger = new() { Event = RuleEvent.DamageGiven } }, true).Contains("等量于本次伤害（含被格挡部分）的伤害"));
     Check(CardText.RenderRule(rule, false).Contains("the amount summoned"));
     Check(CardText.RenderEffect(damage with { Amount = hp, Target = "all_enemies" }, true) == "奥斯提对所有敌人造成等量于奥斯提的当前生命值的伤害。");
     Check(CardText.RenderEffect(damage with { Amount = new() { Stat = "paid_energy" } }, true, cost: new() { EnergyX = true }).Contains("造成X点伤害"));
@@ -597,6 +627,23 @@ await Test("design projection groups cards, preserves useful mechanics and omits
     Check(projected.GetProperty("history")[0].GetProperty("text").GetString()!.Contains("伤害"));
     Check(projected.GetProperty("history")[0].GetProperty("type").GetString() == "attack");
     Check(projected.GetProperty("history")[0].GetProperty("rarity").GetString() == "common");
+    return Task.CompletedTask;
+});
+await Test("prompt exposes character mechanics only when enabled by character, relic or native deck", () =>
+{
+    void CheckMechanics(object run, bool stars, bool osty, bool defect)
+    {
+        string system = PromptBuilder.Build(config, context with { Run = JsonSerializer.SerializeToElement(run) }).System;
+        Check(system.Contains("Stars", StringComparison.OrdinalIgnoreCase) == stars);
+        Check(system.Contains("Osty", StringComparison.OrdinalIgnoreCase) == osty);
+        Check(system.Contains("fuel", StringComparison.OrdinalIgnoreCase) == defect);
+        Check(system.Contains("starts at 4") == defect);
+    }
+    foreach (string character in new[] { "IRONCLAD", "SILENT", "REGENT", "NECROBINDER", "DEFECT" })
+        CheckMechanics(new { character }, character == "REGENT", character == "NECROBINDER", character == "DEFECT");
+    CheckMechanics(new { character = "DEFECT", relics = new[] { new { id = "PRISMATIC_GEM" } } }, true, true, true);
+    CheckMechanics(new { character = "DEFECT", deck = new[] { new { pool = "REGENT_CARD_POOL" }, new { pool = "NECROBINDER_CARD_POOL" } } }, true, true, true);
+    CheckMechanics(new { character = "DEFECT", deck = new[] { new { origin = "generated", pool = "REGENT_CARD_POOL" }, new { origin = "generated", pool = "NECROBINDER_CARD_POOL" } } }, false, false, true);
     return Task.CompletedTask;
 });
 await Test("prompt trims only optional history and rejects an insufficient budget", async () =>
@@ -807,6 +854,20 @@ await Test("first combat prefetch starts on entry and respects pending, interval
     Check(prompts.Count == 2 && prompts[1].Revision == 2);
     Check(!session.TryPrefetch(context, now.AddSeconds(4), firstCombatStarted: true));
     Check(session.Freeze().Single().Name == valid.Name);
+});
+await Test("prefetch interval counts from request start without an extra cooldown after a slow response", async () =>
+{
+    var completion = new TaskCompletionSource<CardBatch>(TaskCreationOptions.RunContinuationsAsynchronously);
+    using var session = new GenerationSession(context.CombatKey, config with { PrefetchMinimumIntervalSeconds = 15 },
+        new FakeGenerator((_, _) => completion.Task), (_, _) => { });
+    var start = DateTimeOffset.UtcNow;
+    Check(session.TryPrefetch(context, start));
+    Check(!session.TryPrefetch(context, start.AddSeconds(30))); // Even past the interval, never overlap requests.
+    completion.SetResult(new() { Cards = [valid] });
+    await session.WaitForPendingAsync();
+    Check(!session.TryPrefetch(context, start.AddSeconds(15).AddTicks(-1)));
+    Check(session.TryPrefetch(context, start.AddSeconds(15))); // No cooldown measured from completion.
+    await session.WaitForPendingAsync();
 });
 await Test("later combat initial prefetch waits for the enemy turn, not opening plays, without spending budget", async () =>
 {
@@ -1310,6 +1371,55 @@ await Test("candidate pool retains multiple batches, deduplicates mechanics and 
     Directory.Delete(directory, true);
     return Task.CompletedTask;
 });
+await Test("reward prefers current combat candidates over older unseen mechanics and stays frozen after reload", () =>
+{
+    string directory = TestDirectory(); string path = Path.Combine(directory, "pool.json");
+    var pool = new CandidatePool(path, "run", 24);
+    pool.Add("previous", [valid]); pool.FreezeReward("previous", 1);
+    pool.Add("older", [engine, complex]);
+    CardDefinition Card(int amount) => valid with { Name = "本层牌" + amount, Forms = valid.Forms.Select(f => f with
+        { Effects = f.Immediate.Select(effect => effect with { Amount = amount }).ToArray() }).ToArray() };
+    var first = Card(12); var second = Card(13); var late = Card(14);
+    pool.Add("current", [first]); pool.Add("current", [second]);
+    pool = new CandidatePool(path, "run", 24);
+    var reward = pool.FreezeReward("current", 2);
+    Check(reward.Select(c => c.Name).SequenceEqual(new[] { first.Name, second.Name }));
+    Check(pool.History().Where(c => c.CombatKey == "older").All(c => c.Status == "candidate"));
+    pool.Add("current", [late]);
+    Check(Wire.Encode(pool.FreezeReward("current", 3)) == Wire.Encode(reward));
+    pool = new CandidatePool(path, "run", 24);
+    Check(Wire.Encode(pool.FreezeReward("current", 2)) == Wire.Encode(reward));
+    Check(pool.FreezeReward("next", 3).Select(c => c.Name).ToHashSet().SetEquals(new[] { engine.Name, complex.Name, late.Name }));
+    Directory.Delete(directory, true); return Task.CompletedTask;
+});
+await Test("reward preserves mechanic variety within current candidates and fills spare slots from older candidates", () =>
+{
+    string directory = TestDirectory();
+    var pool = new CandidatePool(Path.Combine(directory, "pool.json"), "run", 24);
+    var oldAttack = valid with { Name = "旧攻击", Forms = valid.Forms.Select(f => f with
+        { Effects = f.Immediate.Select(effect => effect with { Amount = 12 }).ToArray() }).ToArray() };
+    var currentAttack = valid with { Name = "本层攻击", Forms = valid.Forms.Select(f => f with
+        { Effects = f.Immediate.Select(effect => effect with { Amount = 13 }).ToArray() }).ToArray() };
+    pool.Add("seed", [valid]); pool.FreezeReward("seed", 1);
+    pool.Add("previous", [oldAttack, engine]);
+    pool.Add("current", [currentAttack, complex]);
+    var reward = pool.FreezeReward("current", 3);
+    Check(reward.Select(c => c.Name).SequenceEqual(new[] { complex.Name, currentAttack.Name, engine.Name }));
+    Check(pool.History().Single(c => c.Card.Name == oldAttack.Name).Status == "candidate");
+    Directory.Delete(directory, true); return Task.CompletedTask;
+});
+await Test("reward without current candidates keeps mechanic variety and oldest-first ties", () =>
+{
+    string directory = TestDirectory();
+    var pool = new CandidatePool(Path.Combine(directory, "pool.json"), "run", 24);
+    pool.Add("previous", [valid]); pool.FreezeReward("previous", 1);
+    var attacks = new[] { 12, 13 }.Select(amount => valid with { Name = "旧攻击" + amount, Forms = valid.Forms.Select(f => f with
+        { Effects = f.Immediate.Select(effect => effect with { Amount = amount }).ToArray() }).ToArray() }).ToArray();
+    pool.Add("older", attacks); pool.Add("older", [engine]);
+    Check(pool.FreezeReward("current", 3).Select(c => c.Name).SequenceEqual(new[] { engine.Name, attacks[0].Name, attacks[1].Name }));
+    Check(!pool.HasCandidates);
+    Directory.Delete(directory, true); return Task.CompletedTask;
+});
 await Test("prompt history selects latest generated cards regardless of status and preserves order after reload", () =>
 {
     string directory = TestDirectory(); string path = Path.Combine(directory, "pool.json");
@@ -1448,12 +1558,16 @@ await Test("event filters reject unavailable fields and unsupported historical c
         new() { Event = RuleEvent.StarsSpent, Where = new() { LastInSeries = true } },
         new() { Event = RuleEvent.StarsGained, Where = new() { SourceKind = "card" } },
         new() { Event = RuleEvent.StarsSpent, Where = new() { Source = "self" } },
+        new() { Event = RuleEvent.DamageGiven, Where = new() { LastInSeries = true } },
+        new() { Event = RuleEvent.DamageReceived, Where = new() { AutoPlay = false } },
         new() { Event = RuleEvent.TurnStart, Where = new() { OwnTurn = false } },
         new() { Event = RuleEvent.DamageGiven, Where = new() { Actor = "owner" } },
         new() { Event = RuleEvent.CardDrawn, Where = new() { FromHandDraw = false }, Occurrence = new() { Every = 2 } }
     }) await Reject(() => CardValidator.Validate(Card(trigger)));
     foreach (string stat in new[] { "event_paid_stars", "event_paid_energy", "event_total_damage", "event_unblocked_damage" })
         await Reject(() => CardValidator.Validate(Card(new() { Event = RuleEvent.Forged }, new() { Kind = EffectKind.Block, Amount = new() { Stat = stat } })));
+    foreach (string stat in new[] { "event_paid_stars", "event_paid_energy" })
+        await Reject(() => CardValidator.Validate(Card(new() { Event = RuleEvent.DamageGiven }, new() { Kind = EffectKind.Block, Amount = new() { Stat = stat } })));
     await Reject(() => CardValidator.Validate(valid with { Forms = valid.Forms.Select(f => f with { Effects = [new() { Kind = EffectKind.Block, Target = "event.actor", Amount = 1 }] }).ToArray() }));
     await Reject(() => CardValidator.ValidateNumber(new() { Stat = "hp", Of = "event.source" }));
     foreach (var filter in new CardFilter[] { new() { MinCost = -1 }, new() { MinCost = 3, MaxCost = 2 }, new() { Cost = 2, MinCost = 1 }, new() { Tag = "unknown" } })
@@ -1493,24 +1607,82 @@ await Test("event filters and source references render all meaningful restrictio
         Effects = [new() { Kind = EffectKind.Damage, Target = "event.subject", Amount = new() { Stat = "event_amount" } }]
     };
     string text = CardText.RenderRule(rule, true);
-    foreach (string phrase in new[] { "易伤", "负面状态", "排除临时能力", "你的回合", "来源为卡牌", "耗能至少", "打击", "事件受影响生物", "能力层数变化量" }) Check(text.Contains(phrase));
+    foreach (string phrase in new[] { "易伤", "负面状态", "排除临时能力", "你的回合", "由卡牌引发", "耗能至少", "打击", "该敌人", "能力层数变化量" }) Check(text.Contains(phrase));
     Check(CardText.Number(new() { Stat = "hp", Of = "event.actor" }, true).Contains("事件执行者"));
     Check(CardText.Target("event.targets", false) == "all event targets");
     Check(CardText.RenderRule(rule with { Trigger = new() { Event = RuleEvent.StarsSpent } }, true).Contains("花费星"));
     return Task.CompletedTask;
 });
-await Test("protocol seven candidate rewards and history survive additive protocol upgrade", () =>
+await Test("event descriptions use native-style subjects and preserve damage and source restrictions", () =>
 {
-    string directory = TestDirectory(), path = Path.Combine(directory, "pool.json");
-    var snapshot = new CandidatePoolSnapshot { CardProtocol = 7, RunKey = "compatibility", Candidates = [new("old", "combat", valid, "candidate")], Rewards = new() { ["reward"] = [engine] } };
-    File.WriteAllText(path, Wire.Encode(snapshot));
-    var pool = new CandidatePool(path, "compatibility", 10);
-    Check(pool.HasCandidates && pool.HasReward("reward"));
-    Check(pool.FreezeReward("reward", 1)[0].Name == engine.Name);
-    pool.Add("next", [complex]);
-    Check(Wire.Decode<CandidatePoolSnapshot>(File.ReadAllText(path)).CardProtocol == MechanicCatalog.ProtocolVersion);
-    Directory.Delete(directory, true);
+    var mark = new CardRule
+    {
+        Trigger = new() { Event = RuleEvent.DamageGiven, Where = new() { Actor = "osty", Target = "enemy", Attack = true } },
+        Effects = [new() { Kind = EffectKind.ApplyPower, Target = "event.target", Power = "doom", Amount = new() { Stat = "event_unblocked_damage" } }]
+    };
+    string text = CardText.RenderRule(mark, true, combatIsImplicit: true);
+    Check(text == "每当奥斯提对敌人造成攻击伤害时，对该敌人给予等量于本次未被格挡的伤害的灾厄。");
+    Check(CardText.RenderRule(mark, false).Contains("After Osty deals attack damage to an enemy"));
+    var block = mark with
+    {
+        Trigger = new() { Event = RuleEvent.BlockGained },
+        Effects = [new() { Kind = EffectKind.Damage, Target = "random_enemy", Amount = 5 }]
+    };
+    Check(CardText.RenderRule(block, true, combatIsImplicit: true) == "每当你获得格挡时，对随机敌人造成5点伤害。");
+    var received = mark with
+    {
+        Trigger = new() { Event = RuleEvent.DamageReceived, Where = new() { Actor = "enemy", Target = "osty", Source = "enemy", SourceKind = "card", Attack = false, OwnTurn = false } },
+        Effects = [new() { Kind = EffectKind.Damage, Target = "event.target", Amount = new() { Stat = "hp", Of = "event.subject" } }]
+    };
+    text = CardText.RenderRule(received, true);
+    foreach (string phrase in new[] { "奥斯提受到敌人造成的非攻击伤害", "由敌人的卡牌引发", "仅在敌方回合", "对该敌人造成等量于奥斯提的当前生命值的伤害" }) Check(text.Contains(phrase));
+    foreach (string phrase in new[] { "执行者", "受影响者", "来源生物", "事件目标", "事件受影响" }) Check(!text.Contains(phrase));
+    var selfDamage = received with { Trigger = new() { Event = RuleEvent.DamageReceived } };
+    text = CardText.RenderRule(selfDamage, false);
+    Check(text.Contains("After you take damage") && text.Contains("your hp") && !text.Contains("you's"));
     return Task.CompletedTask;
+});
+await Test("recipient-only power changes keep unknown appliers and card actors stay explicit in text", () =>
+{
+    var rule = new CardRule
+    {
+        Trigger = new() { Event = RuleEvent.PowerAmountChanged, Where = new() { Target = "enemy", Power = "strength", PowerType = "debuff" } },
+        Effects = [new() { Kind = EffectKind.Damage, Target = "event.actor", Amount = new() { Stat = "hp", Of = "event.subject" } }]
+    };
+    string text = CardText.RenderRule(rule, true, combatIsImplicit: true);
+    Check(text.StartsWith("每当敌人的力量层数改变时（仅计入负面状态变化）"));
+    Check(text.Contains("对改变状态层数的生物造成等量于该敌人的当前生命值的伤害"));
+    var played = rule with { Trigger = new() { Event = RuleEvent.CardPlayed, Where = new() { Actor = "enemy", AutoPlay = true, LastInSeries = false } } };
+    text = CardText.RenderRule(played, true);
+    foreach (string phrase in new[] { "每当敌人打出一张牌", "仅限自动打出", "排除连打的最后一次" }) Check(text.Contains(phrase));
+    Check(CardText.RenderRule(played, false).Contains("Whenever an enemy plays a card"));
+    var evoke = rule with { Trigger = new() { Event = RuleEvent.OrbEvoked, Where = new() { Orb = "lightning", Target = "enemy" } } };
+    text = CardText.RenderRule(evoke, true);
+    Check(text.Contains("每当你激发闪电充能球时（至少影响敌人）"));
+    evoke = evoke with { Effects = [new() { Kind = EffectKind.Damage, Target = "event.target", Amount = new() { Stat = "hp", Of = "event.subject" } }] };
+    text = CardText.RenderRule(evoke, true);
+    Check(text.Contains("对该生物造成等量于该生物的当前生命值的伤害") && !text.Contains("该敌人"));
+    return Task.CompletedTask;
+});
+await Test("protocol nine rejects previous pools and whole-attack events", async () =>
+{
+    Check(MechanicCatalog.ProtocolVersion == 9);
+    string system = PromptBuilder.Build(config, context).System;
+    Check(!system.Contains("attack_completed"));
+    var necro = context with { Run = JsonSerializer.SerializeToElement(new { character = "NECROBINDER" }) };
+    Check(!PromptBuilder.Build(config, necro).System.Contains("attack_completed"));
+    Check(!Enum.GetNames<RuleEvent>().Contains("AttackCompleted"));
+    try { Wire.Decode<EffectTrigger>("{\"event\":\"attack_completed\"}"); throw new Exception("Removed event accepted."); }
+    catch (JsonException) { }
+    string directory = TestDirectory(), path = Path.Combine(directory, "pool.json");
+    foreach (int protocol in new[] { 7, 8 })
+    {
+        File.WriteAllText(path, Wire.Encode(new CandidatePoolSnapshot { CardProtocol = protocol, RunKey = "old" }));
+        await Reject(() => new CandidatePool(path, "old", 10));
+    }
+    File.WriteAllText(path, Wire.Encode(new CandidatePoolSnapshot { RunKey = "current", Candidates = [new("new", "combat", valid, "candidate")] }));
+    Check(new CandidatePool(path, "current", 10).HasCandidates);
+    Directory.Delete(directory, true);
 });
 Console.WriteLine($"PASS: {passed} tests");
 

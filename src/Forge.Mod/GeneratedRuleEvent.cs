@@ -48,7 +48,7 @@ internal sealed record GeneratedRuleEvent(RuleEvent Kind)
         {
             RuleEvent.DamageReceived => trigger.Where?.Target is not null || Subject == owner,
             RuleEvent.BlockGained => trigger.Where?.Actor is not null || trigger.Where?.Target is not null || Subject == owner,
-            RuleEvent.DamageGiven or RuleEvent.AttackCompleted => trigger.Where?.Actor is not null || Actor == owner || Actor is not null && Actor == owner.Player?.Osty,
+            RuleEvent.DamageGiven => trigger.Where?.Actor is not null || Actor == owner || Actor is not null && Actor == owner.Player?.Osty,
             RuleEvent.PowerAmountChanged => trigger.Where?.Actor is not null || trigger.Where?.Target is not null || Actor == owner,
             _ => trigger.Where?.Actor is not null || Actor == owner
         };

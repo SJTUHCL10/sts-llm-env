@@ -7,13 +7,13 @@ public static class CardText
     {
         ["strength"]="力量", ["dexterity"]="敏捷", ["weak"]="虚弱", ["vulnerable"]="易伤", ["frail"]="脆弱",
         ["poison"]="中毒", ["doom"]="灾厄", ["focus"]="集中", ["vigor"]="活力", ["thorns"]="荆棘",
-        ["plating"]="覆甲", ["intangible"]="无实体", ["artifact"]="人工制品", ["buffer"]="缓冲", ["retain_block"]="保留格挡",
+        ["plating"]="覆甲", ["intangible"]="无实体", ["artifact"]="人工制品", ["buffer"]="缓冲",
         ["soul"]="灵魂", ["shiv"]="小刀", ["wound"]="伤口", ["dazed"]="晕眩", ["burn"]="灼伤", ["void"]="虚空", ["slimed"]="黏液", ["fuel"]="燃料", ["debris"]="碎屑", ["minion_strike"]="仆从打击", ["minion_sacrifice"]="仆从捐躯", ["minion_dive"]="仆从俯冲", ["sovereign_blade"]="君王之剑",
         ["lightning"]="闪电", ["frost"]="冰霜", ["dark"]="黑暗", ["plasma"]="等离子", ["glass"]="玻璃", ["random"]="随机",
         ["hp"]="当前生命值", ["max_hp"]="最大生命值", ["gold"]="金币", ["block"]="格挡", ["energy"]="能量", ["stars"]="星", ["hand_size"]="手牌数", ["draw_size"]="抽牌堆牌数", ["discard_size"]="弃牌堆牌数", ["exhaust_size"]="消耗堆牌数", ["orb_count"]="充能球数", ["orb_capacity"]="充能球栏位数", ["paid_energy"]="本次消耗能量", ["paid_stars"]="本次消耗星", ["event_amount"]="本次事件数值", ["damage_dealt"]="攻击造成的伤害",
         ["attack"]="攻击", ["skill"]="技能", ["power"]="能力", ["status"]="状态", ["curse"]="诅咒",
         ["exhaust"]="消耗", ["ethereal"]="虚无", ["retain"]="保留", ["innate"]="固有", ["sly"]="奇巧",
-        ["event_total_damage"]="本次事件的总伤害", ["event_unblocked_damage"]="本次事件的未格挡伤害", ["event_paid_energy"]="触发事件的出牌实际花费的能量", ["event_paid_stars"]="触发事件的出牌实际花费的星", ["event_target_count"]="本次事件的目标数"
+        ["event_total_damage"]="本次伤害（含被格挡部分）", ["event_unblocked_damage"]="本次未被格挡的伤害", ["event_paid_energy"]="打出该牌实际花费的能量", ["event_paid_stars"]="打出该牌实际花费的星", ["event_target_count"]="本次影响的生物数量"
     };
     public static string Name(string id, bool chinese) => chinese ? Names.GetValueOrDefault(id, id) : id.Replace('_', ' ');
     private static bool UsesX(NumberExpression? number, CardCost? cost) => number is not null
@@ -92,8 +92,8 @@ public static class CardText
             + (filter.Id is { } id ? Name(id, chinese) + (chinese ? "" : " ") : "");
     }
     public static string Pile(CardPileName pile, bool chinese) => chinese ? pile switch { CardPileName.Hand => "手牌", CardPileName.Draw => "抽牌堆", CardPileName.Discard => "弃牌堆", _ => "消耗堆" } : pile.ToString().ToLowerInvariant();
-    public static string Render(CardDefinition card, bool chinese, Func<int, string>? amount = null, bool upgraded = false, Func<string, string, string>? resource = null, Func<int, string, NumberExpression?, int, string>? quantity = null) => Render(card.Form(upgraded), chinese, amount, card.Type, resource, quantity);
-    public static string Render(CardForm form, bool chinese, Func<int, string>? amount = null, ForgeCardType? cardType = null, Func<string, string, string>? resource = null, Func<int, string, NumberExpression?, int, string>? quantity = null)
+    public static string Render(CardDefinition card, bool chinese, Func<int, string>? amount = null, bool upgraded = false, Func<string, string, string>? resource = null, Func<int, string, NumberExpression?, int, string>? quantity = null, Func<int, int, string>? limit = null) => Render(card.Form(upgraded), chinese, amount, card.Type, resource, quantity, limit);
+    public static string Render(CardForm form, bool chinese, Func<int, string>? amount = null, ForgeCardType? cardType = null, Func<string, string, string>? resource = null, Func<int, string, NumberExpression?, int, string>? quantity = null, Func<int, int, string>? limit = null)
     {
         int index = 0;
         string Action(CardEffect effect)
@@ -103,7 +103,12 @@ public static class CardText
                 quantity is null ? null : (name, value, fallback) => quantity(slot, name, value, fallback), Action);
         }
         var lines = RenderEffects(form.Immediate, chinese, Action, resource, form.Cost).ToList();
-        foreach (var rule in form.Listeners) lines.Add(RenderRule(rule, chinese, Action, cardType == ForgeCardType.Power, resource, form.Cost));
+        for (int i = 0; i < form.Listeners.Length; i++)
+        {
+            int ruleIndex = i;
+            lines.Add(RenderRule(form.Listeners[i], chinese, Action, cardType == ForgeCardType.Power, resource, form.Cost,
+                limit is null ? null : count => limit(ruleIndex, count)));
+        }
         return string.Join("\n", lines);
     }
     private static bool ReadsStat(NumberExpression? number, string stat) => number is not null && (number.Stat == stat
@@ -138,31 +143,23 @@ public static class CardText
             i = end;
         }
     }
-    public static string RenderRule(CardRule rule, bool chinese, Func<CardEffect, string>? render = null, bool combatIsImplicit = false, Func<string, string, string>? resource = null, CardCost? cost = null)
+    public static string RenderRule(CardRule rule, bool chinese, Func<CardEffect, string>? render = null, bool combatIsImplicit = false, Func<string, string, string>? resource = null, CardCost? cost = null, Func<int, string>? limit = null)
     {
-        string actor = EventRelation(rule.Trigger.Where?.Actor ?? (rule.Trigger.Event is RuleEvent.DamageGiven or RuleEvent.AttackCompleted ? "self_or_osty" : "self"), chinese);
+        string actor = EventRelation(rule.Trigger.Where?.Actor ?? "self", chinese);
         string when = rule.Trigger.Event switch
         {
             RuleEvent.TurnStart => chinese ? "在你的回合开始时" : "At the start of your turn", RuleEvent.TurnEnd => chinese ? "在你的回合结束时" : "At the end of your turn",
             RuleEvent.CardPlayed => chinese ? "打出" : "play", RuleEvent.CardDrawn => chinese ? "抽到" : "draw", RuleEvent.CardDiscarded => chinese ? "丢弃" : "discard", RuleEvent.CardExhausted => chinese ? "消耗" : "exhaust", RuleEvent.CardGenerated => chinese ? "生成" : "create",
-            RuleEvent.DamageReceived => chinese ? "受到伤害后" : "After receiving damage", RuleEvent.AttackCompleted => chinese ? "攻击结算后" : "After an attack", RuleEvent.Summoned => chinese ? "召唤后" : "After Summon", RuleEvent.OrbChanneled => chinese ? "生成充能球后" : "After channeling", RuleEvent.OrbEvoked => chinese ? "激发充能球后" : "After evoking",
-            RuleEvent.BlockGained => chinese ? "获得格挡后" : "After gaining Block",
-            RuleEvent.DamageGiven => chinese ? $"每当{actor}造成一段伤害后" : $"After {actor} deals a hit of damage",
-            RuleEvent.PowerAmountChanged => rule.Trigger.Where is { Target: not null, Actor: null }
-                ? chinese ? "能力层数发生变化后" : "After a power amount changes"
-                : chinese ? $"每当{actor}改变能力层数后" : $"After {actor} changes a power amount",
-            RuleEvent.Forged => chinese ? $"每当{actor}铸造后" : $"After {actor} forges",
-            RuleEvent.StarsGained => chinese ? $"每当{actor}获得星后" : $"After {actor} gains Stars",
-            RuleEvent.StarsSpent => chinese ? $"每当{actor}花费星后" : $"After {actor} spends Stars",
-            _ => throw new FormatException("Unknown rule event.")
+            _ => EventWhen(rule.Trigger, chinese)
         };
         string verb = when;
         string card = Filter(rule.Trigger.Filter, chinese, resource) + (chinese ? rule.Trigger.Filter?.Id is null ? "牌" : "" : "card");
         if (rule.Trigger.Event is >= RuleEvent.CardPlayed and <= RuleEvent.CardGenerated)
-            when = (chinese ? "每当你" : "Whenever you ") + when + (chinese ? "一张" : " a ") + card;
-        var restrictions = EventRestrictions(rule.Trigger.Where, chinese).ToList();
+            when = (chinese ? "每当" + actor : "Whenever " + actor + " ") + (chinese ? when : EventVerb(when, actor))
+                + (chinese ? "一张" : " a ") + card;
+        var restrictions = EventRestrictions(rule.Trigger, chinese).ToList();
         if (!RuleEvents.IsCardEvent(rule.Trigger.Event) && rule.Trigger.Filter is not null)
-            restrictions.Add((chinese ? "来源牌为" : "source card: ") + card);
+            restrictions.Add(chinese ? "由一张" + card + "引发" : "caused by a " + card);
         if (restrictions.Count > 0) when += chinese ? "（" + string.Join("，", restrictions) + "）" : " (" + string.Join(", ", restrictions) + ")";
         string life = rule.Lifetime switch
         {
@@ -179,7 +176,7 @@ public static class CardText
                 : scope + (o.First is int first ? first == 1 ? "首次" : $"前{first}次" : $"第{o.Nth}次") + verb + "一张" + card + "时"
                 : scope + (o.First is int firstEnglish ? $"the first {firstEnglish} times you " : o.Nth is int nth ? $"the {nth}th time you " : $"{(scope.Length == 0 ? "Every" : "every")} {o.Every} times you ") + verb + " a " + card;
         }
-        string quota = rule.Trigger.Limit is { } limit ? chinese ? $"（{(limit.Within == CounterScope.Turn ? "每回合" : "本场战斗")}最多生效{limit.Count}次）" : $" (at most {limit.Count} activations per {limit.Within.ToString().ToLowerInvariant()})" : "";
+        string quota = rule.Trigger.Limit is { } quotaLimit ? chinese ? $"（{(quotaLimit.Within == CounterScope.Turn ? "每回合" : "本场战斗")}最多生效{limit?.Invoke(quotaLimit.Count) ?? quotaLimit.Count.ToString()}次）" : $" (at most {limit?.Invoke(quotaLimit.Count) ?? quotaLimit.Count.ToString()} activations per {quotaLimit.Within.ToString().ToLowerInvariant()})" : "";
         string condition = rule.Condition is null ? "" : (chinese ? "若" : "if ") + Condition(rule.Condition, chinese, resource, cost) + (chinese ? "，" : ": ");
         var effects = RenderEffects(rule.Effects, chinese, render ?? (e => RenderEffect(e, chinese, resource: resource, cost: cost)), resource, cost);
         string text = life + when + quota + (chinese ? "，" : ", ") + condition
@@ -188,8 +185,7 @@ public static class CardText
         {
             RuleEvent.Summoned => chinese ? "本次召唤量" : "the amount summoned",
             RuleEvent.DamageReceived => chinese ? "本次受到的未格挡伤害" : "the unblocked damage received",
-            RuleEvent.AttackCompleted => chinese ? "本次攻击造成的总伤害" : "the total damage dealt by this attack",
-            RuleEvent.DamageGiven => chinese ? "本段伤害的总伤害" : "the total damage of this hit",
+            RuleEvent.DamageGiven => chinese ? "本次伤害（含被格挡部分）" : "the total damage of this hit",
             RuleEvent.BlockGained => chinese ? "本次获得的格挡" : "the Block gained",
             RuleEvent.PowerAmountChanged => chinese ? "本次能力层数变化量" : "the signed power amount change",
             RuleEvent.Forged => chinese ? "本次铸造量" : "the amount forged",
@@ -197,24 +193,116 @@ public static class CardText
             RuleEvent.StarsSpent => chinese ? "本次花费的星数" : "the Stars spent",
             _ => chinese ? "本次事件数值" : "the event amount"
         };
-        return text.Replace(chinese ? "本次事件数值" : "the event amount", eventAmount, StringComparison.Ordinal);
+        text = text.Replace(chinese ? "本次事件数值" : "the event amount", eventAmount, StringComparison.Ordinal);
+        foreach (string role in new[] { "actor", "source", "subject", "target", "targets" })
+        {
+            string reference = Target("event." + role, chinese), resolved = EventReference(rule.Trigger, role, chinese);
+            if (!chinese) text = text.Replace(reference + "'s", Possessive(resolved), StringComparison.Ordinal);
+            text = text.Replace(reference, resolved, StringComparison.Ordinal);
+        }
+        return text;
     }
     private static string EventRelation(string relation, bool chinese) => chinese ? relation switch
     {
         "self" => "你", "osty" => "奥斯提", "self_or_osty" => "你或奥斯提", "enemy" => "敌人", _ => "任意生物"
     } : relation switch { "self" => "you", "osty" => "Osty", "self_or_osty" => "you or Osty", "enemy" => "an enemy", _ => "any creature" };
-    private static IEnumerable<string> EventRestrictions(EventFilter? w, bool chinese)
+    private static string EventVerb(string verb, string subject) => subject == "you" ? verb : verb + "s";
+    private static string Possessive(string subject) => subject == "you" ? "your" : subject + "'s";
+    private static string EventWhen(EffectTrigger trigger, bool chinese)
     {
+        var w = trigger.Where;
+        string actor = EventRelation(w?.Actor ?? (trigger.Event == RuleEvent.DamageGiven ? "self_or_osty" : "self"), chinese);
+        string recipient = EventRelation(w?.Target ?? "self", chinese);
+        string damage = chinese ? w?.Attack switch { true => "攻击伤害", false => "非攻击伤害", _ => "伤害" }
+            : w?.Attack switch { true => "attack damage", false => "non-attack damage", _ => "damage" };
+        string power = w?.Power is { } id ? Name(id, chinese) : chinese ? "状态" : "power";
+        string orb = (w?.Orb is { } kind ? Name(kind, chinese) : "") + (chinese ? "充能球" : " Orb");
+        string After(string verb, string english) => chinese ? $"每当{actor}{verb}时" : $"After {actor} {english}";
+        string Verb(string plain) => EventVerb(plain, actor);
+        return trigger.Event switch
+        {
+            RuleEvent.DamageGiven => After((w?.Target is null ? "" : "对" + recipient) + "造成" + damage,
+                Verb("deal") + " " + damage + (w?.Target is null ? "" : " to " + recipient)),
+            RuleEvent.DamageReceived => chinese ? $"每当{recipient}受到{(w?.Actor is null ? "" : actor + "造成的")}{damage}时"
+                : $"After {recipient} {(recipient == "you" || recipient == "you or Osty" ? "take" : "takes")} {damage}{(w?.Actor is null ? "" : " from " + actor)}",
+            RuleEvent.BlockGained => chinese ? $"每当{EventRelation(w?.Actor ?? w?.Target ?? "self", true)}获得格挡时"
+                : $"After {EventRelation(w?.Actor ?? w?.Target ?? "self", false)} {EventVerb("gain", EventRelation(w?.Actor ?? w?.Target ?? "self", false))} Block",
+            RuleEvent.PowerAmountChanged => w is { Target: not null, Actor: null }
+                ? chinese ? $"每当{recipient}的{power}层数改变时" : $"After {Possessive(recipient)} {power} amount changes"
+                : After("改变" + (w?.Target is null ? "" : recipient + "的") + power + "层数",
+                    Verb("change") + " " + (w?.Target is null ? "a " : Possessive(recipient) + " ") + power + " amount"),
+            RuleEvent.Summoned => After("召唤", Verb("summon")),
+            RuleEvent.OrbChanneled => After("生成" + orb, Verb("channel") + " a " + orb.Trim()),
+            RuleEvent.OrbEvoked => After("激发" + orb, Verb("evoke") + " a " + orb.Trim()),
+            RuleEvent.Forged => After("铸造", Verb("forge")),
+            RuleEvent.StarsGained => After("获得星", Verb("gain") + " Stars"),
+            RuleEvent.StarsSpent => After("花费星", Verb("spend") + " Stars"),
+            _ => throw new FormatException("Unknown rule event.")
+        };
+    }
+    // Resolve rule references by their gameplay role, rather than exposing protocol field names.
+    private static string EventReference(EffectTrigger trigger, string role, bool chinese)
+    {
+        var w = trigger.Where;
+        bool received = trigger.Event == RuleEvent.DamageReceived;
+        bool damage = received || trigger.Event == RuleEvent.DamageGiven;
+        bool block = trigger.Event == RuleEvent.BlockGained;
+        // A target filter only promises that some target matches on multi-target orb events.
+        string? targetRelation = trigger.Event == RuleEvent.OrbEvoked ? null : w?.Target;
+        string? relation = role switch
+        {
+            "actor" => w?.Actor ?? (damage || trigger.Event == RuleEvent.PowerAmountChanged && w?.Target is not null ? null : block ? w?.Target ?? "self" : "self"),
+            "source" => w?.Source,
+            "subject" => targetRelation ?? (received ? "self" : block ? w?.Actor ?? "self" : null),
+            "target" => received ? w?.Actor : targetRelation ?? (block ? w?.Actor ?? "self" : null),
+            _ => null
+        };
+        if (relation is "self" or "osty") return EventRelation(relation, chinese);
+        if (relation == "enemy")
+        {
+            if (role == "source") return chinese ? "引发此效果的敌人" : "the enemy causing this effect";
+            if (damage && w?.Actor == "enemy" && w.Target == "enemy")
+                return role == "actor" || role == "target" && received
+                    ? chinese ? "造成伤害的敌人" : "the enemy dealing damage"
+                    : chinese ? "承受伤害的敌人" : "the enemy taking damage";
+            return chinese ? "该敌人" : "that enemy";
+        }
+        return role switch
+        {
+            "actor" when damage => chinese ? "造成伤害的生物" : "the damage dealer",
+            "actor" when block => chinese ? "获得格挡的生物" : "the creature gaining Block",
+            "actor" when trigger.Event == RuleEvent.PowerAmountChanged => chinese ? "改变状态层数的生物" : "the creature changing the power",
+            "source" => chinese ? "引发此效果的生物" : "the creature causing this effect",
+            "target" when received => chinese ? "伤害来源" : "the damage dealer",
+            "target" or "subject" when damage => chinese ? "该目标" : "that target",
+            "target" or "subject" when block => chinese ? "获得格挡的生物" : "the creature gaining Block",
+            "targets" => chinese ? "本次影响的所有生物" : "all creatures affected this time",
+            _ => chinese ? "该生物" : "that creature"
+        };
+    }
+    private static IEnumerable<string> EventRestrictions(EffectTrigger trigger, bool chinese)
+    {
+        var w = trigger.Where;
         if (w is null) yield break;
-        if (w.Actor is { } actor) yield return (chinese ? "执行者为" : "actor: ") + EventRelation(actor, chinese);
-        if (w.Target is { } target) yield return (chinese ? "受影响者为" : "affected: ") + EventRelation(target, chinese);
-        if (w.Source is { } source) yield return (chinese ? "来源生物为" : "source creature: ") + EventRelation(source, chinese);
-        if (w.SourceKind is { } kind) yield return chinese ? "来源为" + (kind switch { "card" => "卡牌", "power" => "能力", "relic" => "遗物", "orb" => "充能球", "unknown" => "未知", _ => "其他效果" }) : "source: " + kind;
-        if (w.Power is { } power) yield return (chinese ? "仅限" : "power: ") + Name(power, chinese);
-        if (w.PowerType is { } type) yield return chinese ? type == "buff" ? "仅限正面状态" : "仅限负面状态" : "power type: " + type;
+        if (w.Target is { } target && (trigger.Event is not (RuleEvent.DamageGiven or RuleEvent.DamageReceived or RuleEvent.PowerAmountChanged or RuleEvent.BlockGained)
+            || trigger.Event == RuleEvent.BlockGained && w.Actor is not null && w.Actor != target))
+            yield return chinese ? trigger.Event == RuleEvent.BlockGained ? "仅计入" + EventRelation(target, true) + "获得的格挡" : "至少影响" + EventRelation(target, true)
+                : "affecting " + EventRelation(target, false);
+        if (w.Source is not null || w.SourceKind is not null)
+        {
+            string owner = w.Source is { } source ? chinese ? EventRelation(source, true) + "的" : Possessive(EventRelation(source, false)) + " " : "";
+            string cause = w.SourceKind switch
+            {
+                "card" => chinese ? "卡牌" : "card", "power" => chinese ? "能力" : "power",
+                "relic" => chinese ? "遗物" : "relic", "orb" => chinese ? "充能球" : "Orb",
+                "other" => chinese ? "其他效果" : "other effect", _ => chinese ? "效果" : "effect"
+            };
+            if (w.Source is not null || w.SourceKind != "unknown")
+                yield return chinese ? "由" + owner + cause + "引发" : "caused by " + owner + (owner.Length > 0 ? "" : w.SourceKind is "orb" or "other" ? "an " : "a ") + cause;
+            if (w.SourceKind == "unknown") yield return chinese ? "具体来源未知" : "specific cause unknown";
+        }
+        if (w.PowerType is { } type) yield return chinese ? type == "buff" ? "仅计入正面状态变化" : "仅计入负面状态变化" : type + " changes only";
         if (w.Temporary is bool temporary) yield return chinese ? temporary ? "仅限临时能力" : "排除临时能力" : temporary ? "temporary powers only" : "excluding temporary powers";
-        if (w.Orb is { } orb) yield return (chinese ? "仅限" : "orb: ") + Name(orb, chinese) + (chinese ? "充能球" : "");
-        if (w.Attack is bool attack) yield return chinese ? attack ? "仅限攻击伤害" : "仅限非攻击伤害" : attack ? "attack damage only" : "non-attack damage only";
         if (w.OwnTurn is bool own) yield return chinese ? own ? "仅在你的回合" : "仅在敌方回合" : own ? "during your turn" : "outside your turn";
         if (w.FromHandDraw is bool initial) yield return chinese ? initial ? "仅限回合初始抽牌" : "排除回合初始抽牌" : initial ? "initial turn draw only" : "excluding initial turn draw";
         if (w.CausedByEthereal is bool ethereal) yield return chinese ? ethereal ? "仅限虚无消耗" : "排除虚无消耗" : ethereal ? "Ethereal exhaust only" : "excluding Ethereal exhaust";
@@ -285,7 +373,7 @@ public static class CardText
             // A resolved preview must retain its count slot and upgrade highlighting.
             string? each = chinese && e.Condition is null && e.OnFatal is null && e.Until is null
                 && repeat == Number(e.Repeat, true, resource: resource, cost: cost) ? RepeatEach(e.Repeat!) : null;
-            text = each is not null ? each + "，就" + text
+            text = each is not null ? each + (text.StartsWith("奥斯提", StringComparison.Ordinal) ? "，奥斯提就" + text[3..] : "，就" + text)
                 : chinese ? $"重复{repeat}次：『{text.TrimEnd('。')}』。" : $"Repeat {repeat} times: “{text.TrimEnd('.')}”.";
         }
         return text;

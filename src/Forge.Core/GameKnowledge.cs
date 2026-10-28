@@ -8,7 +8,7 @@ public static class GameKnowledge
     {
         var notes = new List<string>
         {
-            "Attack and defense / 攻防: Direct damage, Block and efficient costs are valid core designs. Strength increases powered Attack damage and benefits repeated hits; Dexterity improves card Block. Weak reduces attack output, Vulnerable increases incoming attack damage, and Frail reduces card Block. Immediate defense, burst damage and combat-long scaling solve different problems.",
+            "Attack and defense / 攻防: Direct damage, Block and efficient costs are valid core designs. Strength increases powered Attack damage and benefits repeated hits; Dexterity improves card Block. Weak reduces attack output, Vulnerable increases incoming attack damage, and Frail reduces card Block. Plating (覆甲, plating) grants Block equal to its amount at the end of the affected creature's turn, then decreases by 1 at the start of its turn. Immediate defense, burst damage and combat-long scaling solve different problems.",
             "Card flow and resources / 运转与资源: Draw improves access to the deck; energy enables plays. Discard moves cards out of Hand without removing them from combat, allowing later redraws; it does not itself draw replacements. Exhaust removes a card from the normal draw/discard cycle for this combat and can support deck thinning or exhaust triggers. Retain keeps a card through ordinary end-of-turn discard, enabling timing and setup.",
             "Synergy and tradeoffs / 协同与取舍: Simple attacks, defensive skills, draw, energy, card manipulation, debuffs and persistent powers are equally valid building blocks. HP loss and healing trade immediate survival against payoff; permanent HP or gold changes affect the whole run. Use observed cards and relics to judge support for an engine; a mechanic being available alone does not establish synergy."
         };
@@ -19,7 +19,14 @@ public static class GameKnowledge
         if (mechanics.Necrobinder)
             notes.Add("Necrobinder / 亡灵契约师: Summon (召唤) brings back Osty (奥斯提) with the summoned HP, or increases his Max HP when already present, for this combat. Osty is an allied creature, not a card or orb; Summon is not an attack. His attacks need an explicit actor:osty damage action. Native base Souls (灵魂) cost 0, draw 2 and Exhaust. Doom (灾厄) is a death threshold: at the end of the enemy turn an enemy dies if its Doom is at least its current HP; Doom is not Poison or immediate damage.");
         if (mechanics.Defect)
-            notes.Add("Defect / 故障机器人: Orbs occupy slots and have native passive and evoke effects. Channeling into full slots evokes the oldest orb. Lightning (闪电, lightning) passively damages a random enemy at turn end and damages a random enemy on evoke. Frost (冰霜, frost) passively gains Block at turn end and gains Block on evoke. Dark (黑暗, dark) increases its stored damage at turn end and deals it to the lowest-HP enemy on evoke. Plasma (等离子, plasma) gains energy at turn start and on evoke, and is unaffected by Focus. Glass (玻璃, glass) damages ALL enemies with its passive and evoke; each positive passive activation reduces its base value by 1, to a minimum of 0, including extra orb_passive activations. Its normal turn-end trigger activates this passive. Glass evoke deals twice its current Focus-modified passive value to ALL enemies, so it decays rather than accumulating like Dark. Channel, evoke and orb_passive are different actions.");
+        {
+            notes.Add("Defect / 故障机器人: Fuel (燃料, fuel) is a 0-cost Skill that gains 1 energy (2 upgraded) and Exhausts. Orbs occupy slots; channeling into full slots evokes the oldest orb. Channel, evoke and orb_passive are different actions. Orb values below are base values before Focus; Focus modifies Lightning/Frost values, Dark's growth and Glass's current value, but not Plasma.");
+            notes.Add("- Lightning (闪电, lightning): passive deals 3 damage to a random enemy at turn end; evoke deals 8 to a random enemy.");
+            notes.Add("- Frost (冰霜, frost): passive gains 2 Block at turn end; evoke gains 5 Block.");
+            notes.Add("- Dark (黑暗, dark): starts with 6 stored damage; passive adds 6 at turn end; evoke deals stored damage to the lowest-HP enemy.");
+            notes.Add("- Plasma (等离子, plasma): passive gains 1 energy at turn start; evoke gains 2 energy.");
+            notes.Add("- Glass (玻璃, glass): starts at 4; passive deals its current Focus-modified value to ALL enemies at turn end; each positive activation (including orb_passive) reduces its base value by 1, minimum 0. Evoke deals twice its current Focus-modified value to ALL enemies.");
+        }
         return string.Join("\n", notes);
     }
 

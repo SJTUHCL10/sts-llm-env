@@ -38,6 +38,7 @@ public sealed class GenerationSession : IDisposable
             // Start the run's first combat immediately; later combats wait for the enemy opening or a quick win.
             if (_requests == 0 && _config.GenerationTiming == GenerationTiming.Prefetch
                 && !firstCombatStarted && !firstEnemyTurnEnded && !combatEnded) return false;
+            // Minimum start-to-start spacing, not a cooldown after the previous response.
             _lastStart = now;
             int revision = ++_requests;
             // Capture the observation on the main thread, move serialization/network off it.

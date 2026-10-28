@@ -56,7 +56,7 @@ public sealed class NeowGeneratedCard : CardModel
     public override bool HasStarCostX => ActiveForm.Cost.StarsX == true;
     public override int CanonicalStarCost => HasStarCostX ? 0 : ActiveForm.Cost.Stars ?? -1;
     public override string Title => _definition.Name + (IsUpgraded ? "+" : "");
-    public override CardPoolModel Pool => ModelDb.CardPool<TokenCardPool>();
+    public override CardPoolModel Pool => (IsMutable ? Owner?.Character.CardPool : null) ?? ModelDb.CardPool<TokenCardPool>();
     public override CardType Type => _definition.Type switch { ForgeCardType.Attack => CardType.Attack, ForgeCardType.Power => CardType.Power, _ => CardType.Skill };
     public override CardRarity Rarity => _definition.Rarity switch { ForgeRarity.Rare => CardRarity.Rare, ForgeRarity.Uncommon => CardRarity.Uncommon, _ => CardRarity.Common };
     public override TargetType TargetType => ActiveForm.ImmediateEffects.Any(e => e.Target?.Ref == "enemy") ? TargetType.AnyEnemy
@@ -83,6 +83,8 @@ public sealed class NeowGeneratedCard : CardModel
             if (e.Repeat is not null) yield return new GeneratedCountVar($"R{i}", e.Repeat, i);
             if (e.Target?.Pile is not null && e.Target.Pick is not (SelectionMode.All or SelectionMode.Any)) yield return new GeneratedCountVar($"T{i}", e.Target.Count, i);
         }
+        for (int i = 0; i < ActiveForm.Listeners.Length; i++)
+            if (ActiveForm.Listeners[i].Trigger.Limit is { } limit) yield return new GeneratedRuleLimitVar($"L{i}", limit.Count);
     }
     internal static NumberExpression? NumericSlot(CardEffect effect, char slot) => slot switch
     {
@@ -91,6 +93,9 @@ public sealed class NeowGeneratedCard : CardModel
     private bool ChangedNumericSlot(string name)
     {
         int index = int.Parse(name[1..], System.Globalization.CultureInfo.InvariantCulture);
+        if (name[0] == 'L')
+            return index >= _definition.Forms[0].Listeners.Length
+                || _definition.Forms[0].Listeners[index].Trigger.Limit?.Count != ActiveForm.Listeners[index].Trigger.Limit?.Count;
         var before = _definition.Forms[0].AllEffects;
         if (index >= before.Length) return true;
         var current = ActiveForm.AllEffects[index];
@@ -170,7 +175,8 @@ public sealed class NeowGeneratedCard : CardModel
         _definition.Type, (kind, value) => CardText.ResourceText(kind, value, EnergyIconHelper.GetPrefix(this)),
         (i, slot, value, fallback) => value?.Value is null && value is not null && !GeneratedEffectPreview.CanResolve(this, i)
             ? CardText.Number(value, chinese, fallback, cost: ActiveForm.Cost)
-            : $"{{{(slot == "count" ? 'C' : slot == "repeat" ? 'R' : 'T')}{i}:diff()}}");
+            : $"{{{(slot == "count" ? 'C' : slot == "repeat" ? 'R' : 'T')}{i}:diff()}}",
+        limit: (i, _) => $"{{L{i}:diff()}}");
     private static string DrawAmountText(DynamicVar variable)
     {
         decimal value = decimal.Ceiling(Math.Max(0, variable.PreviewValue));

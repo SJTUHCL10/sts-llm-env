@@ -1,6 +1,6 @@
-# 卡牌协议 v8
+# 卡牌协议 v9
 
-卡牌是受校验的数据程序，由游戏侧通过原生命令执行。LLM 返回 `{"cards":[...]}`；文本由程序生成，不参与执行。v8 增加格挡、逐段伤害、能力层数、铸造和星事件，以及事件来源/对象/筛选。v7 定义、规则快照和候选池可直接读取；候选池下次写入时标为 v8，不重写旧卡效果。v6 及更早候选池仍不迁移。
+卡牌是受校验的数据程序，由游戏侧通过原生命令执行。LLM 返回 `{"cards":[...]}`；文本由程序生成，不参与执行。v8 增加格挡、逐段伤害、能力层数、铸造和星事件，以及事件来源/对象/筛选。v9 移除整次攻击事件，伤害规则按每段、每目标结算；按出牌触发使用 card_played。旧候选池和含已移除事件的旧卡不迁移。
 
 ## 两个完整形态
 
@@ -73,7 +73,7 @@
 | artifact | 阻止直接施加给奥斯提的减益；不会代替角色阻止角色收到的减益 |
 | poison / doom | 中毒扣血／灾厄达到生命值时死亡，属于负面效果；中毒仍需启用静默机制 |
 
-禁止给奥斯提施加 dexterity/vulnerable/frail/focus/thorns/plating/retain_block：分别依赖自身格挡、原始受击目标、充能球或格挡保留，无法改善它的常规攻击与抵挡流程。该限制只约束新生成，不删除全局状态目录，也不自动重写已保存卡的无效效果。旧定义的读取与数值语义见下方 v6 说明；旧候选池不迁移。
+禁止给奥斯提施加 dexterity/vulnerable/frail/focus/thorns/plating：分别依赖自身格挡、原始受击目标或充能球，无法改善它的常规攻击与抵挡流程。该限制只约束新生成，不删除全局状态目录，也不自动重写已保存卡的无效效果。旧定义的读取与数值语义见下方 v6 说明；旧候选池不迁移。
 
 卡牌目标：`this_card`、`event.card`、`selected:名称`，或统一选择器：
 
@@ -128,7 +128,7 @@
 
 v6 直接替换旧 div 语义，旧候选池不迁移；读取已有卡牌时也使用普通除法。新的小数语义不改为伤害倍率钩子：表达式先算出基础效果数值，再进入原生修正流程。
 
-生物数值：hp/max_hp/block/power，of 默认 self，可为 target/osty；规则中还可用 event.actor/event.source/event.subject/event.target，power 必须带 id。玩家数值：gold/energy/stars/hand_size/draw_size/discard_size/exhaust_size/orb_count/orb_capacity。上下文数值：paid_energy/paid_stars（安装规则那次打出的实付资源快照）、event_amount、damage_dealt（最近一个伤害动作的 TotalDamage）。v8 新增 event_total_damage/event_unblocked_damage（伤害/整次攻击事件）、event_paid_energy/event_paid_stars（card_played/attack_completed 的触发出牌实付资源）、event_target_count（本次事件去重后的目标数，包括随后已死亡的目标）。状态在动作执行时读取。
+生物数值：hp/max_hp/block/power，of 默认 self，可为 target/osty；规则中还可用 event.actor/event.source/event.subject/event.target，power 必须带 id。玩家数值：gold/energy/stars/hand_size/draw_size/discard_size/exhaust_size/orb_count/orb_capacity。上下文数值：paid_energy/paid_stars（安装规则那次打出的实付资源快照）、event_amount、damage_dealt（最近一个伤害动作的 TotalDamage）。v8 新增 event_total_damage/event_unblocked_damage（逐段伤害事件）、event_paid_energy/event_paid_stars（card_played 的触发出牌实付资源）、event_target_count（本次事件去重后的目标数，包括随后已死亡的目标）。状态在动作执行时读取。
 
 条件为比较 `eq/ne/gt/ge/lt/le`，或 all/any/not。条件满足后执行动作；数值不存在的事件载荷为零，不存在的卡牌/目标不产生操作。目标相关条件按每个目标评估。
 
@@ -142,7 +142,7 @@ v6 直接替换旧 div 语义，旧候选池不迁移；读取已有卡牌时也
 }
 ```
 
-规则把触发器和一组效果分开，多个收益只占一次额度。旧事件：turn_start/turn_end/card_played/card_drawn/card_discarded/card_exhausted/card_generated/damage_received/attack_completed/summoned/orb_channeled/orb_evoked。v8 新增事件如下：
+规则把触发器和一组效果分开，多个收益只占一次额度。基础事件：turn_start/turn_end/card_played/card_drawn/card_discarded/card_exhausted/card_generated/damage_received/summoned/orb_channeled/orb_evoked。其余事件如下：
 
 | event | 触发点与 event_amount | 默认范围 |
 | --- | --- | --- |
@@ -153,7 +153,7 @@ v6 直接替换旧 div 语义，旧候选池不迁移；读取已有卡牌时也
 | stars_gained | AfterStarsGained，正数原生获得量 | 自己获得星 |
 | stars_spent | AfterStarsSpent，正数原生支出量，付款期间、出牌前 | 自己花费星 |
 
-`filter` 在五个卡牌事件中匹配事件卡；在 damage_received/damage_given/block_gained/power_amount_changed/attack_completed/forged 中匹配来源卡。来源卡不存在时不匹配，不用安装规则的卡补充。伤害动作现在向原生命令保留来源卡；原生没有提供来源卡的其他回调仍可能为空。
+`filter` 在五个卡牌事件中匹配事件卡；在 damage_received/damage_given/block_gained/power_amount_changed/forged 中匹配来源卡。来源卡不存在时不匹配，不用安装规则的卡补充。伤害动作现在向原生命令保留来源卡；原生没有提供来源卡的其他回调仍可能为空。
 
 抽到／丢弃／消耗／生成一张牌时的 event.card 是被操作的牌，不能据此推断“引起该动作的模型是卡牌”；这些回调没有暴露因果模型时 source_kind 保持 unknown。card_played 的来源模型则是正在执行的卡牌。生成牌回调可以知道 creator 生物，但仍不猜测引起生成的卡牌或能力。
 
@@ -164,12 +164,12 @@ v6 直接替换旧 div 语义，旧候选池不迁移；读取已有卡牌时也
 | actor / target / source | self/osty/self_or_osty/enemy/any，分别为执行者、受影响者和来源生物；any 仍要求有已知生物 |
 | source_kind | card/power/relic/orb/other/unknown，原生暴露的来源模型类别；未知不表示没有原因 |
 | own_turn | true 仅己方回合，false 仅非己方回合；不等同于 lifetime:turn |
-| attack | 原生 powered attack 性质，只用于 damage_given/damage_received/attack_completed；不是按来源卡的 type 猜测 |
+| attack | 原生 powered attack 性质，只用于 damage_given/damage_received；不是按来源卡的 type 猜测 |
 | power / power_type / temporary | 仅 power_amount_changed；power 为能力别名，power_type 为 buff/debuff，temporary 筛选 ITemporaryPower；按本次带符号变化判断正负面，减力量可以是 debuff |
 | orb | 仅两个球事件；lightning/frost/dark/plasma/glass |
 | from_hand_draw | 仅 card_drawn；true 为回合初始抽牌，false 排除初始抽牌 |
 | caused_by_ethereal | 仅 card_exhausted，是否由虚无造成 |
-| auto_play / last_in_series | 仅 card_played/attack_completed，是否自动打出／连打系列最后一次 |
+| auto_play / last_in_series | 仅 card_played，是否自动打出／连打系列最后一次 |
 
 显式 actor 可扩大默认执行者范围。damage_received/block_gained 的 target 可扩大默认受影响者范围；power_amount_changed 的 target 可观察指定对象接收的变化，即使 applier 未知。其余情况沿用默认范围。例如只写 own_turn 并不会将“自己造成伤害”扩大为“所有生物造成伤害”。多目标事件的 target 筛选表示任一目标匹配，event.targets 仍保留完整目标集合，不将其裁剪。turn_start/turn_end 的对象和阶段固定，不使用 where。原生星回调不提供来源卡、模型或来源生物，不能使用来源筛选；其他回调的未知来源也不会猜成卡牌、能力或遗物。
 
@@ -180,9 +180,9 @@ v6 直接替换旧 div 语义，旧候选池不迁移；读取已有卡牌时也
 }
 ```
 
-事件生物目标新增 `event.actor`、`event.source`、`event.subject`、`event.targets`。actor 为执行者（伤害施伤者／能力施加者；格挡为获得者），source 为已知来源生物，subject 为受影响生物，targets 为全部受影响生物，攻击/激发球时保留所有目标；多目标动作仅对去重后的存活目标执行。subject 在多目标事件中为首个目标，按目标读取数值可用 `of:target`。缺失引用不操作，缺失生物数值读 0。card_played 的 target 来自该次出牌，非单目标牌可以为空。
+事件生物目标新增 `event.actor`、`event.source`、`event.subject`、`event.targets`。actor 为执行者（伤害施伤者／能力施加者；格挡为获得者），source 为已知来源生物，subject 为受影响生物，targets 为全部受影响生物，逐段伤害事件只有单次命中目标，激发球时保留所有目标；多目标动作仅对去重后的存活目标执行。subject 在多目标事件中为首个目标，按目标读取数值可用 `of:target`。缺失引用不操作，缺失生物数值读 0。card_played 的 target 来自该次出牌，非单目标牌可以为空。
 
-damage_received 为保存兼容继续将 event.target 设为攻击者、event_amount 设为未格挡伤害；event.subject/event.targets 才是实际受伤者。其余新事件的 event.target 为受影响对象。damage_given 的 event_amount 为 TotalDamage，完全格挡仍可为正数；要求实际掉血时使用 event_unblocked_damage > 0。`where.target` 始终筛选真实受影响对象。
+damage_received 为保存兼容继续将 event.target 设为攻击者、event_amount 设为未格挡伤害；event.subject/event.targets 才是实际受伤者。其余新事件的 event.target 为受影响对象。damage_given 按每段、每个目标分别触发，event_amount 为 TotalDamage，完全格挡仍可为正数；要求实际掉血时使用 event_unblocked_damage > 0。`where.target` 始终筛选真实受影响对象。
 
 “黑洞”式支出后收益应使用 `card_played + where.last_in_series:true + condition event_paid_stars > 0`，避免连打重复结算实付星；不要同时给同一个支出收益再加 stars_spent 监听。stars_spent 适合“群星之子”式付款时立即获得格挡。可执行例子见 [event-cards.json](../examples/event-cards.json)。
 
@@ -190,13 +190,13 @@ damage_received 为保存兼容继续将 event.target 设为攻击者、event_am
 - `limit:{count:N,within:turn|combat}` 表示规则满足自身条件后最多生效次数，默认按回合。失败条件不消耗额度；没有 limit 就不限次。它替代旧 max_per_turn，和“第几张牌”语义不同。
 - `lifetime` 默认为 combat。turn 包含建立当回合，turns 默认 1；turn_start 的有限时长计数未来回合开始。next_turn 仅允许 turn_start，下一回合检查一次后到期，条件失败也到期。
 - 规则在即时动作之后建立，忽略建立它的那一次打出。每次打出创建独立实例并捕获当时形态、变量与实付资源，之后升级来源牌不会改写已建立规则。
-- event.card 来自卡牌事件；card_played 还提供目标。damage_received 提供攻击者与未格挡伤害；attack_completed 提供来源卡、首个命中目标与总伤害；summoned 提供数量；orb_evoked 提供首个目标。
+- event.card 来自卡牌事件；card_played 还提供目标。damage_received 提供攻击者与未格挡伤害；damage_given 提供单次命中的来源卡、目标与伤害；summoned 提供数量；orb_evoked 提供首个目标。
 
 防止自递归重入，并限制触发深度和单次解析操作数量。它们是防卡死保护，不是卡牌强度限制。
 
 ## 原生状态与角色范围
 
-状态别名：strength/dexterity/weak/vulnerable/frail/poison/doom/focus/vigor/thorns/plating/intangible/artifact/buffer/retain_block。状态本身使用原生持续与叠加规则。until:turn 的力量/集中增减交给原生临时能力，在目标方回合结束时恢复。
+状态别名：strength/dexterity/weak/vulnerable/frail/poison/doom/focus/vigor/thorns/plating/intangible/artifact/buffer。状态本身使用原生持续与叠加规则。until:turn 的力量/集中增减交给原生临时能力，在目标方回合结束时恢复。
 
 奥斯提、灵魂、灾厄仅在亡灵范围开放；充能球、集中、燃料在机器人范围开放；星、铸造与储君衍生牌在储君范围开放；毒、小刀、奇巧在静默范围开放。棱彩宝石或牌组中已存在对应原生卡池可开放扩展，生成牌不作为解锁证据。扩展是可选能力，没有频率或必选主题。
 

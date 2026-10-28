@@ -152,17 +152,6 @@ public sealed class GeneratedEffectPower : PowerModel
         Actor = applier, Source = applier, SourceModel = cardSource, Subject = power.Owner, Target = power.Owner, Targets = [power.Owner], Card = cardSource,
         Amount = amount, Power = GeneratedRuleEvent.PowerAlias(power), PowerType = power.GetTypeForAmount(amount).ToString().ToLowerInvariant(), Temporary = power is ITemporaryPower
     }) : Task.CompletedTask;
-    public override Task AfterAttack(PlayerChoiceContext choiceContext, AttackCommand command)
-    {
-        var results = command.Results.SelectMany(r => r).ToArray();
-        var targets = results.Select(r => r.Receiver).Distinct().ToArray();
-        return Fire(choiceContext, new(RuleEvent.AttackCompleted)
-        {
-            Actor = command.Attacker, Source = command.Attacker, SourceModel = command.ModelSource, Card = command.CardPlay?.Card, Play = command.CardPlay,
-            Target = targets.FirstOrDefault(), Subject = targets.FirstOrDefault(), Targets = targets,
-            Amount = results.Sum(r => r.TotalDamage), TotalDamage = results.Sum(r => r.TotalDamage), UnblockedDamage = results.Sum(r => r.UnblockedDamage), Attack = command.DamageProps.IsPoweredAttack()
-        });
-    }
     public override Task AfterSummon(PlayerChoiceContext choiceContext, Player summoner, decimal amount) => Fire(choiceContext, new(RuleEvent.Summoned) { Actor = summoner.Creature, Amount = amount });
     public override Task AfterForge(decimal amount, Player forger, AbstractModel? source) => amount > 0 ? Fire(new BlockingPlayerChoiceContext(), new(RuleEvent.Forged)
     {
@@ -274,6 +263,7 @@ internal static class GeneratedHistoryFactsPatch
 {
     private static void Prefix(CombatHistoryEntry entry) => GeneratedEventFacts.Capture(entry);
 }
+// Keep valid native paths for metadata/preloading; UI texture getters use embedded Ciallo artwork.
 [HarmonyPatch(typeof(PowerModel), nameof(PowerModel.PackedIconPath), MethodType.Getter)]
 internal static class GeneratedPowerIconPatch
 {
