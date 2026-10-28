@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | `enabled` | `true` | 是否生成和追加新牌；已有生成牌仍可正常使用 |
 | `generated_cards_per_reward` | `1` | 每份战斗卡牌奖励追加 0–3 张牌，原版选项不减少 |
-| `generation_timing` | `"prefetch"` | 战斗中提前请求，只展示已完成结果；可选 `"wait_on_reward"`，打开奖励时请求并最多等待配置的超时 |
+| `generation_timing` | `"prefetch"` | 战斗中提前请求，只展示已完成结果；可选 `"wait_on_reward"`，原版创建奖励列表前请求并最多等待配置的超时 |
 | `max_requests_per_combat` | `2` | 每场最多请求次数，失败也占一次；没有自动网络重试 |
 | `prefetch_minimum_interval_seconds` | `15` | 两次请求启动的最小间隔，从上一次请求启动时计时；同一场最多一个请求在途。若上次请求耗时已超过此值，完成后下一个战斗事件即可触发新请求，不会额外等待此秒数 |
 | `prefetch_initial_card_plays` | `2` | 兼容旧配置的字段，现已忽略；本局第一场入场即调用，后续战斗等敌方首回合结束 |
@@ -69,7 +69,7 @@
 
 ## 没有出现生成牌
 
-先检查 Mod 已启用、配置有效、服务可访问且模型名正确。默认模式只展示打开奖励时已经完成并通过校验的结果；慢请求可能到后续战斗才出现。奖励首次打开即冻结，空结果也会保存，读档不会重新生成。
+先检查 Mod 已启用、配置有效、服务可访问且模型名正确。默认模式只展示原版创建奖励候选牌时已经完成并通过校验的结果；慢请求可能到后续战斗才出现。奖励首次创建即冻结，空结果也会保存，读档不会重新生成。
 
 在 `data/generation` 中查找 `generation_request`、`generation_ready`、`generation_failed`；失败条目包含 `stage`、`reason`、`elapsed_ms` 和可用的 `http_status`。连接异常另记录安全枚举 `http_request_error`（例如 NameResolutionError、ConnectionError、SecureConnectionError）；不记录异常消息、服务地址或任意 HTTP 错误正文。旧日志缺少此字段时，只有 HttpRequestException 与空 http_status 无法区分 DNS、连接和 TLS 失败。
 
@@ -81,4 +81,4 @@
 | `provider_timeout` | 检查响应耗时与超时设置 |
 | `reward_frozen_or_session_ended` | 会话已结束或取消；当前默认模式冻结奖励本身不会取消在途请求 |
 
-`wait_on_reward` 会在打开奖励时等待请求，但不能绕过服务错误、校验失败或已经冻结的空奖励。
+`wait_on_reward` 会在原版创建奖励列表前等待请求，但不能绕过服务错误、校验失败或已经冻结的空奖励。

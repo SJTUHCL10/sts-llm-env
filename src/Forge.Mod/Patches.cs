@@ -1,12 +1,9 @@
 using System.Reflection;
-using System.Runtime.CompilerServices;
 using Forge.Core;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Combat.History;
 using MegaCrit.Sts2.Core.Entities.Cards;
-using MegaCrit.Sts2.Core.Entities.CardRewardAlternatives;
-using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
 using MegaCrit.Sts2.Core.Rewards;
 using MegaCrit.Sts2.Core.Runs;
 
@@ -31,65 +28,64 @@ internal static class ResetPatch
     private static void Postfix() => Bootstrap.Safe(() => Bootstrap.Runtime?.Reset());
 }
 
-// The original async method must begin only after definitions are attached, before it creates its screen.
+// Prepare network results before vanilla creates any reward cards or consumes reward RNG.
+[HarmonyPatch(typeof(RewardsSet), nameof(RewardsSet.GenerateWithoutOffering))]
+internal static class RewardPreparationPatch
+{
+    private static bool Prefix(RewardsSet __instance, ref Task __result)
+    {
+        if (Bootstrap.Runtime is not { Eligible: true } runtime
+            || runtime.Config.GenerationTiming != GenerationTiming.WaitOnReward
+            || __instance.Room is not MegaCrit.Sts2.Core.Rooms.CombatRoom
+            || __instance.Rewards.OfType<CardReward>().All(r => r.IsPopulated)) return true;
+        __result = PrepareAndGenerate(__instance, runtime);
+        return false;
+    }
+    private static async Task PrepareAndGenerate(RewardsSet rewards, ForgeRuntime runtime)
+    {
+        try { await runtime.PrepareReward(rewards.Player); }
+        catch (Exception ex) { runtime.Audit("reward_generation_failed", new { category = ex.GetType().Name }); }
+        await Original(rewards);
+    }
+    [HarmonyReversePatch]
+    [HarmonyPatch(typeof(RewardsSet), nameof(RewardsSet.GenerateWithoutOffering))]
+    internal static Task Original(RewardsSet instance) => throw new NotSupportedException("Harmony reverse patch not installed.");
+}
+
+[HarmonyPatch(typeof(CardReward), nameof(CardReward.Populate))]
+internal static class RewardPopulatePatch
+{
+    private static readonly FieldInfo Manual = AccessTools.Field(typeof(CardReward), "_cardsWereManuallySet");
+    private static readonly FieldInfo Rerolled = AccessTools.Field(typeof(CardReward), "_hasBeenRerolled");
+    private static readonly FieldInfo Options = AccessTools.Field(typeof(CardReward), "<Options>k__BackingField");
+    private static readonly FieldInfo RerollOptions = AccessTools.Field(typeof(CardReward), "<RerollOptions>k__BackingField");
+    private static void Prefix(CardReward __instance, out GeneratedRewardCreation? __state)
+    {
+        __state = null;
+        if (Bootstrap.Runtime is not { Eligible: true } runtime || Manual.GetValue(__instance) is true
+            || __instance.IsPopulated) return;
+        var options = (CardCreationOptions?)(Rerolled.GetValue(__instance) is true
+            ? RerollOptions.GetValue(__instance) : Options.GetValue(__instance));
+        if (options?.Source != CardCreationSource.Encounter) return;
+        __state = new GeneratedRewardCreation(__instance.Player, options, () => runtime.FreezeReward(__instance.Player));
+    }
+    private static void Postfix(CardReward __instance, GeneratedRewardCreation? __state)
+    {
+        if (__state is not { Extended: true } || Bootstrap.Runtime is not { } runtime) return;
+        Bootstrap.Safe(() => runtime.Audit("reward_shown", new { original_count = __state.OriginalCount,
+            generated_count = __state.GeneratedCount, options = runtime.CaptureCards(__instance.Cards) }));
+    }
+    private static void Finalizer(GeneratedRewardCreation? __state) => __state?.Dispose();
+}
+
 [HarmonyPatch(typeof(CardReward), "OnSelect")]
 internal static class RewardSelectPatch
 {
-    private sealed class Marker;
-    private static readonly ConditionalWeakTable<CardReward, Marker> Attached = new();
-    private static readonly FieldInfo Options = AccessTools.Field(typeof(CardReward), "<Options>k__BackingField");
-    private static readonly FieldInfo Cards = AccessTools.Field(typeof(CardReward), "_cards");
-    private static readonly FieldInfo Manual = AccessTools.Field(typeof(CardReward), "_cardsWereManuallySet");
-    private static bool Prefix(CardReward __instance, ref Task<bool> __result)
-    {
-        try
-        {
-            if (Bootstrap.Runtime is not { Eligible: true } runtime || Manual.GetValue(__instance) is true
-                || Options.GetValue(__instance) is not CardCreationOptions options || options.Source != CardCreationSource.Encounter
-                || ((List<CardCreationResult>)Cards.GetValue(__instance)!).Count == 0) return true;
-            if (runtime.Config.GenerationTiming == GenerationTiming.Prefetch)
-            {
-                EnsureAttached(__instance, runtime);
-                // Default mode runs the original method normally, preserving other Harmony patches.
-                return true;
-            }
-            __result = Select(__instance, runtime);
-            return false;
-        }
-        catch (Exception ex)
-        {
-            Bootstrap.Runtime?.Audit("reward_generation_failed", new { category = ex.GetType().Name });
-            return true;
-        }
-    }
-
-    private static async Task<bool> Select(CardReward reward, ForgeRuntime runtime)
-    {
-        if (!Attached.TryGetValue(reward, out _))
-        {
-            try
-            {
-                await runtime.PrepareReward(reward.Player);
-                if (runtime.Eligible) EnsureAttached(reward, runtime);
-            }
-            catch (Exception ex) { runtime.Audit("reward_generation_failed", new { category = ex.GetType().Name }); }
-        }
-        return await Original(reward);
-    }
-
-    private static void EnsureAttached(CardReward reward, ForgeRuntime runtime)
-    {
-        if (Attached.TryGetValue(reward, out _)) return;
-        AppendCards(reward, runtime);
-        Attached.Add(reward, new Marker());
-    }
-
     private static void Postfix(CardReward __instance, ref Task<bool> __result)
     {
-        if (Attached.TryGetValue(__instance, out _) && Bootstrap.Runtime is { } runtime)
+        if (__instance.Cards.Any(c => c is NeowGeneratedCard) && Bootstrap.Runtime is { } runtime)
             __result = Observe(__result, __instance, runtime);
     }
-
     private static async Task<bool> Observe(Task<bool> original, CardReward reward, ForgeRuntime runtime)
     {
         bool selected = await original;
@@ -100,50 +96,6 @@ internal static class RewardSelectPatch
         });
         return selected;
     }
-
-    private static void AppendCards(CardReward reward, ForgeRuntime runtime)
-    {
-        var cards = (List<CardCreationResult>)Cards.GetValue(reward)!;
-        if (cards.Any(c => c.Card is NeowGeneratedCard)) return;
-        var definitions = runtime.FreezeReward(reward.Player);
-        // Configure detached mutable models first, register them only after the entire batch is valid.
-        var additions = definitions.Select(definition =>
-        {
-            var card = (NeowGeneratedCard)MegaCrit.Sts2.Core.Models.ModelDb.Card<NeowGeneratedCard>().ToMutable();
-            card.DefinitionPayload = Wire.Encode(definition);
-            return card;
-        }).ToArray();
-        foreach (var card in additions)
-        {
-            reward.Player.RunState.AddCard(card, reward.Player);
-            card.AfterCreated();
-        }
-        var results = additions.Select(card => new CardCreationResult(card)).ToArray();
-        foreach (var result in results)
-            GeneratedRewardModifiers.Apply(result, cards, reward.Player.RunState.CloneCard);
-        cards.AddRange(results);
-        Bootstrap.Safe(() => runtime.Audit("reward_shown", new { original_count = cards.Count - additions.Length,
-            generated_count = additions.Length, options = runtime.CaptureCards(cards.Select(c => c.Card)) }));
-    }
-
-    [HarmonyReversePatch]
-    [HarmonyPatch(typeof(CardReward), "OnSelect")]
-    internal static Task<bool> Original(CardReward instance) => throw new NotSupportedException("Harmony reverse patch not installed.");
-
-    internal static void AfterPopulate(CardReward reward)
-    {
-        if (!Attached.TryGetValue(reward, out _) || Bootstrap.Runtime is not { Eligible: true } runtime) return;
-        AppendCards(reward, runtime);
-        var screen = (NCardRewardSelectionScreen?)AccessTools.Field(typeof(CardReward), "_currentlyShownScreen").GetValue(reward);
-        screen?.RefreshOptions((List<CardCreationResult>)Cards.GetValue(reward)!, CardRewardAlternative.Generate(reward));
-    }
-}
-
-[HarmonyPatch(typeof(CardReward), nameof(CardReward.Populate))]
-internal static class RewardPopulatePatch
-{
-    private static void Postfix(CardReward __instance) => Bootstrap.Safe(() => RewardSelectPatch.AfterPopulate(__instance));
-    // Populate runs during an open-screen reroll: reattach frozen cards and refresh that screen immediately.
 }
 
 [HarmonyPatch(typeof(RunManager), nameof(RunManager.CleanUp))]

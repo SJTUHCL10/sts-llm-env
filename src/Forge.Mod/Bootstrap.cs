@@ -72,8 +72,9 @@ public static class Bootstrap
             (typeof(MegaCrit.Sts2.Core.Localization.LocTable), "_translations"),
             (typeof(MegaCrit.Sts2.Core.Rewards.CardReward), "_cards"),
             (typeof(MegaCrit.Sts2.Core.Rewards.CardReward), "<Options>k__BackingField"),
+            (typeof(MegaCrit.Sts2.Core.Rewards.CardReward), "<RerollOptions>k__BackingField"),
             (typeof(MegaCrit.Sts2.Core.Rewards.CardReward), "_cardsWereManuallySet"),
-            (typeof(MegaCrit.Sts2.Core.Rewards.CardReward), "_currentlyShownScreen")
+            (typeof(MegaCrit.Sts2.Core.Rewards.CardReward), "_hasBeenRerolled")
         })
             if (AccessTools.Field(type, name) is null) throw new MissingFieldException(type.FullName, name);
     }

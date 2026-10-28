@@ -61,7 +61,8 @@ public sealed class NeowGeneratedCard : CardModel
     public override CardRarity Rarity => _definition.Rarity switch { ForgeRarity.Rare => CardRarity.Rare, ForgeRarity.Uncommon => CardRarity.Uncommon, _ => CardRarity.Common };
     public override TargetType TargetType => ActiveForm.ImmediateEffects.Any(e => e.Target?.Ref == "enemy") ? TargetType.AnyEnemy
         : ActiveForm.ImmediateEffects.Any(e => e.Target?.Ref == "all_enemies") ? TargetType.AllEnemies : TargetType.Self;
-    public override bool GainsBlock => ActiveForm.AllEffects.Any(e => e.Kind == EffectKind.Block);
+    // Listener block is produced by a power, not by playing this card.
+    public override bool GainsBlock => ActiveForm.ImmediateEffects.Any(e => e.Kind == EffectKind.Block);
     public override string PortraitPath => MissingPortraitPath;
     public override string BetaPortraitPath => PortraitPath;
     public override IEnumerable<CardKeyword> CanonicalKeywords => ActiveForm.Tags.Select(NativeKeyword);
@@ -169,14 +170,23 @@ public sealed class NeowGeneratedCard : CardModel
         return new LocString("cards", key);
     }
     internal string RuntimeDescriptionText(bool chinese) => CardText.Render(ActiveForm, chinese,
-        i => ActiveForm.AllEffects[i].Amount?.Value is null && !GeneratedEffectPreview.CanResolve(this, i) ? CardText.Number(ActiveForm.AllEffects[i].Amount, chinese, resource: (kind, value) => CardText.ResourceText(kind, value, EnergyIconHelper.GetPrefix(this)))
+        i => ActiveForm.AllEffects[i].Amount?.Value is null && !GeneratedEffectPreview.CanResolve(this, i) ? FormulaText(i, 'E', ActiveForm.AllEffects[i].Amount, chinese, 1)
             : ActiveForm.AllEffects[i].Kind == EffectKind.Draw ? DrawAmountText(DynamicVars[$"E{i}"])
             : ActiveForm.AllEffects[i].Kind is EffectKind.GainEnergy or EffectKind.GainStars or EffectKind.SetCost or EffectKind.OrbSlots ? DynamicVars[$"E{i}"].ToHighlightedString(false) : $"{{E{i}:diff()}}",
         _definition.Type, (kind, value) => CardText.ResourceText(kind, value, EnergyIconHelper.GetPrefix(this)),
         (i, slot, value, fallback) => value?.Value is null && value is not null && !GeneratedEffectPreview.CanResolve(this, i)
-            ? CardText.Number(value, chinese, fallback, cost: ActiveForm.Cost)
+            ? FormulaText(i, slot == "count" ? 'C' : slot == "repeat" ? 'R' : 'T', value, chinese, fallback)
             : $"{{{(slot == "count" ? 'C' : slot == "repeat" ? 'R' : 'T')}{i}:diff()}}",
         limit: (i, _) => $"{{L{i}:diff()}}");
+    private string FormulaText(int index, char slot, NumberExpression? value, bool chinese, int fallback)
+    {
+        string Resource(string kind, string amount) => CardText.ResourceText(kind, amount, EnergyIconHelper.GetPrefix(this));
+        if (!IsUpgraded || !DynamicVars[$"{slot}{index}"].WasJustUpgraded)
+            return CardText.Number(value, chinese, fallback, Resource, ActiveForm.Cost);
+        var before = _definition.Forms[0].AllEffects;
+        var baseline = index < before.Length && before[index].Kind == ActiveForm.AllEffects[index].Kind ? NumericSlot(before[index], slot) : null;
+        return CardText.NumberUpgrade(value, baseline, chinese, fallback, Resource, ActiveForm.Cost);
+    }
     private static string DrawAmountText(DynamicVar variable)
     {
         decimal value = decimal.Ceiling(Math.Max(0, variable.PreviewValue));

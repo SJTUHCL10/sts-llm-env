@@ -101,21 +101,6 @@ static class Smoke
         restored.DowngradeInternal();
         Check(restored.TargetType == TargetType.AnyEnemy && restored.DynamicVars.Count() == 1 && restored.EnergyCost.Canonical == 2 && restored.BaseStarCost == 2 && restored.Keywords.Contains(CardKeyword.Exhaust));
         Console.WriteLine("PASS native upgrade/save/load/downgrade changes effect shape, target, costs and keywords");
-        var crucible = (SilverCrucible)ModelDb.Relic<SilverCrucible>().ToMutable();
-        crucible.TimesUsed = 3;
-        var nativeReward = new CardCreationResult(restored);
-        nativeReward.ModifyCard(card, crucible);
-        var generatedReward = new CardCreationResult(restored);
-        GeneratedRewardModifiers.Apply(generatedReward, [nativeReward], model => (CardModel)model.ClonePreservingMutability());
-        Check(generatedReward.Card.IsUpgraded && generatedReward.Card.DynamicVars["E0"].BaseValue == 13
-            && generatedReward.Card.TargetType == TargetType.AllEnemies && !generatedReward.originalCard.IsUpgraded
-            && generatedReward.ModifyingRelics.Single() == crucible && crucible.TimesUsed == 3);
-        GeneratedRewardModifiers.Apply(generatedReward, [nativeReward], model => (CardModel)model.ClonePreservingMutability());
-        Check(generatedReward.Card.CurrentUpgradeLevel == 1 && crucible.TimesUsed == 3);
-        var unmodifiedReward = new CardCreationResult(restored);
-        GeneratedRewardModifiers.Apply(unmodifiedReward, [new CardCreationResult(card)], model => (CardModel)model.ClonePreservingMutability());
-        Check(!unmodifiedReward.Card.IsUpgraded);
-        Console.WriteLine("PASS Silver Crucible reward upgrade changes the complete form without consuming another charge");
         var x = (NeowGeneratedCard)ModelDb.Card<NeowGeneratedCard>().ToMutable();
         x.DefinitionPayload = Wire.Encode(definition with { Forms = definition.Forms.Select(f => f with { Cost = new() { EnergyX = true, StarsX = true } }).ToArray() });
         x.UpgradeInternal(); x.FinalizeUpgradeInternal();
@@ -159,7 +144,9 @@ static class Smoke
         typeof(Bootstrap).GetMethod("VerifyCompatibility", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, null);
         harmony.PatchAll(typeof(Bootstrap).Assembly);
         var original = typeof(MegaCrit.Sts2.Core.Rewards.CardReward).GetMethod("OnSelect", BindingFlags.Instance | BindingFlags.NonPublic)!;
-        Check(Harmony.GetPatchInfo(original)!.Prefixes.Any(p => p.owner == harmony.Id));
+        Check(Harmony.GetPatchInfo(original)!.Postfixes.Any(p => p.owner == harmony.Id));
+        Check(Harmony.GetPatchInfo(AccessTools.Method(typeof(MegaCrit.Sts2.Core.Rewards.RewardsSet), "GenerateWithoutOffering"))!
+            .Prefixes.Any(p => p.owner == harmony.Id));
         Check(Harmony.GetPatchInfo(AccessTools.Method(typeof(CombatHistory), "Add"))!.Prefixes.Any(p => p.owner == harmony.Id));
         Check(power.PackedIconPath == ModelDb.Power<DexterityPower>().PackedIconPath);
         foreach (string property in new[] { nameof(PowerModel.Icon), nameof(PowerModel.BigIcon) })
@@ -487,6 +474,8 @@ static class Smoke
             Console.WriteLine("PASS X-energy/X-star descriptions retain symbols in hand/draw piles and through upgrade/save/load");
             CheckBlockContracts(card, owner, guard);
             CheckTextContracts();
+            CheckFormulaUpgradeContracts(owner);
+            CheckRewardCreationContracts();
             CheckOstyContracts(card, owner, other, combat);
             CheckFatalContracts(card, owner, combat);
             var effect = new CardEffect { Kind = EffectKind.Damage, Target = "all_enemies", Amount = 7 };
@@ -939,6 +928,114 @@ static class Smoke
         card.DowngradeInternal();
         Console.WriteLine("PASS native Dexterity/Frail apply to direct block only, with matching executor/preview/upgrade/save properties");
     }
+    private static int _generatedUpgradeRolls;
+    private static void CaptureUpgradeRoll(CardModel card)
+    {
+        if (card is NeowGeneratedCard) { Check(!card.IsUpgraded); _generatedUpgradeRolls++; }
+    }
+    private static void ForceUpgradeOdds(ref decimal __result) => __result = 1;
+    private static bool UpgradeWithoutVisuals(CardModel card)
+    {
+        card.UpgradeInternal(); card.FinalizeUpgradeInternal(); return false;
+    }
+    private static bool SkipRewardButtons(ref IReadOnlyList<CardRewardAlternative> __result)
+    {
+        __result = []; return false;
+    }
+    private static void CheckRewardCreationContracts()
+    {
+        var guard = new Harmony("neowscompany.tests.reward-creation");
+        var factory = AccessTools.Method(typeof(MegaCrit.Sts2.Core.Factories.CardFactory), "CreateForReward",
+            [typeof(Player), typeof(int), typeof(CardCreationOptions)]);
+        guard.Patch(factory, transpiler: new HarmonyMethod(typeof(GeneratedRewardFactoryPatch), "Transpiler"));
+        guard.Patch(AccessTools.Method(typeof(MegaCrit.Sts2.Core.Factories.CardFactory), "RollForUpgrade",
+            [typeof(Player), typeof(CardModel), typeof(decimal), typeof(MegaCrit.Sts2.Core.Random.Rng)]),
+            prefix: new HarmonyMethod(typeof(Smoke), nameof(CaptureUpgradeRoll)));
+        guard.Patch(AccessTools.Method(typeof(Hook), nameof(Hook.ModifyCardRewardUpgradeOdds)),
+            postfix: new HarmonyMethod(typeof(Smoke), nameof(ForceUpgradeOdds)));
+        guard.Patch(AccessTools.Method(typeof(CardCmd), nameof(CardCmd.Upgrade),
+            [typeof(CardModel), typeof(MegaCrit.Sts2.Core.Nodes.CommonUi.CardPreviewStyle)]),
+            prefix: new HarmonyMethod(typeof(Smoke), nameof(UpgradeWithoutVisuals)));
+        guard.Patch(AccessTools.Method(typeof(CardRewardAlternative), nameof(CardRewardAlternative.Generate)),
+            prefix: new HarmonyMethod(typeof(Smoke), nameof(SkipRewardButtons)));
+        try
+        {
+            var owner = Player.CreateForNewRun<Regent>(UnlockState.all, 20);
+            _ = RunState.CreateForTest([owner], acts: [ModelDb.Act<Overgrowth>()], seed: "REWARD_PIPELINE");
+            var direct = new CardForm { Cost = new() { Energy = 1 }, Effects = [new() { Kind = EffectKind.Block, Amount = 5 }] };
+            var listener = new CardForm { Cost = new() { Energy = 1 }, Rules = [new() { Trigger = new() { Event = RuleEvent.TurnEnd }, Effects = [new() { Kind = EffectKind.Block, Amount = 4 }] }] };
+            var attack = direct with { Effects = [new() { Kind = EffectKind.Damage, Target = "enemy", Amount = 5 }] };
+            CardDefinition Definition(ForgeCardType type, CardForm form) => new()
+            {
+                Name = "奖励流程", Type = type, Rarity = ForgeRarity.Uncommon, Forms = [form, form]
+            };
+            CardDefinition[] definitions = [Definition(ForgeCardType.Skill, direct), Definition(ForgeCardType.Power, listener), Definition(ForgeCardType.Attack, attack)];
+            var options = CardCreationOptions.ForRoom(owner, RoomType.Monster)
+                .WithRarityOdds(CardRarityOddsType.Uniform).WithFlags(CardCreationFlags.IsCardReward);
+            List<CardCreationResult> Create(CardCreationOptions creationOptions)
+            {
+                using var scope = new GeneratedRewardCreation(owner, creationOptions, () => definitions);
+                return MegaCrit.Sts2.Core.Factories.CardFactory.CreateForReward(owner, 3, creationOptions).ToList();
+            }
+            _generatedUpgradeRolls = 0;
+            var results = Create(options);
+            Check(results.Count == 6 && results.Take(3).All(c => c.Card is not NeowGeneratedCard));
+            Check(_generatedUpgradeRolls == 3 && results.Skip(3).All(c => c.Card.IsUpgraded));
+            Check(MegaCrit.Sts2.Core.Factories.CardFactory.CreateForReward(owner, 3, options).All(c => c.Card is not NeowGeneratedCard));
+            _generatedUpgradeRolls = 0;
+            results = Create(options.WithFlags(CardCreationFlags.NoUpgradeRoll));
+            Check(_generatedUpgradeRolls == 0 && results.Skip(3).All(c => !c.Card.IsUpgraded));
+
+            foreach (var relic in new RelicModel[] { ModelDb.Relic<FrozenEgg>().ToMutable(), ModelDb.Relic<ToxicEgg>().ToMutable(), ModelDb.Relic<MoltenEgg>().ToMutable() })
+                owner.AddRelicInternal(relic, -1, true);
+            results = Create(options.WithFlags(CardCreationFlags.NoUpgradeRoll));
+            Check(results.Skip(3).All(c => c.Card.IsUpgraded && c.ModifyingRelics.Count() == 1));
+            results = Create(options.WithFlags(CardCreationFlags.NoUpgrades));
+            Check(results.Skip(3).All(c => !c.Card.IsUpgraded));
+            foreach (var relic in owner.Relics.ToArray()) owner.RemoveRelicInternal(relic, true);
+
+            owner.AddRelicInternal(ModelDb.Relic<FresnelLens>().ToMutable(), -1, true);
+            results = Create(options.WithFlags(CardCreationFlags.NoUpgradeRoll));
+            var blockCard = (NeowGeneratedCard)results[3].Card;
+            Check(blockCard.GainsBlock && blockCard.Enchantment is MegaCrit.Sts2.Core.Models.Enchantments.Nimble { Amount: 2 });
+            Check(GeneratedEffectPreview.EnchantBlock(blockCard, 5) == 7);
+            Check(!results[4].Card.GainsBlock && results[4].Card.Enchantment is null);
+            foreach (var type in new[] { ForgeCardType.Skill, ForgeCardType.Power })
+            {
+                var card = (NeowGeneratedCard)ModelDb.Card<NeowGeneratedCard>().ToMutable();
+                card.DefinitionPayload = Wire.Encode(Definition(type, listener));
+                Check(!card.GainsBlock);
+                card.DefinitionPayload = Wire.Encode(Definition(type, direct with { Rules = listener.Rules }));
+                Check(card.GainsBlock);
+                var nested = attack with { Effects = [attack.Effects![0] with { OnFatal = direct.Effects }] };
+                card.DefinitionPayload = Wire.Encode(Definition(ForgeCardType.Attack, nested));
+                Check(card.GainsBlock);
+            }
+            foreach (var relic in owner.Relics.ToArray()) owner.RemoveRelicInternal(relic, true);
+            var crucible = (SilverCrucible)ModelDb.Relic<SilverCrucible>().ToMutable();
+            crucible.TimesUsed = 2;
+            owner.AddRelicInternal(crucible, -1, true);
+            results = Create(options.WithFlags(CardCreationFlags.NoUpgradeRoll));
+            Check(crucible.TimesUsed == 3 && results.Skip(3).All(c => c.Card.IsUpgraded && c.ModifyingRelics.Single() == crucible));
+            foreach (var relic in owner.Relics.ToArray()) owner.RemoveRelicInternal(relic, true);
+            var reward = new MegaCrit.Sts2.Core.Rewards.CardReward(options, 3, owner, null);
+            using (new GeneratedRewardCreation(owner, options, () => definitions))
+            {
+                reward.Populate();
+                var cards = reward.Cards.ToArray();
+                Check(cards.Length == 6 && cards.Skip(3).All(c => c is NeowGeneratedCard));
+                reward.Populate();
+                Check(reward.Cards.SequenceEqual(cards));
+            }
+            using (new GeneratedRewardCreation(owner, options, () => []))
+                Check(MegaCrit.Sts2.Core.Factories.CardFactory.CreateForReward(owner, 3, options).Count() == 3);
+            // A failed definition batch leaves vanilla creation usable and unwinds the scope.
+            using (new GeneratedRewardCreation(owner, options, () => throw new FormatException("fixture")))
+                Check(MegaCrit.Sts2.Core.Factories.CardFactory.CreateForReward(owner, 3, options).Count() == 3);
+            Console.WriteLine("PASS generated rewards use native random upgrades, flags, all three eggs, Fresnel eligibility and one Silver Crucible charge; scope/failure isolation");
+        }
+        finally { guard.UnpatchAll(guard.Id); }
+    }
     private static class BlockCapture
     {
         internal static ValueProp Props;
@@ -1162,6 +1259,56 @@ static class Smoke
             Check(text.Contains("耗能为0" + icon + "的牌") && !text.Contains("本场战斗"));
         }
         Console.WriteLine("PASS all five character card/visual pools, cloned pools, energy icons in card/upgrade/power text and captured listener amounts");
+    }
+    private static void CheckFormulaUpgradeContracts(Player owner)
+    {
+        NumberExpression Event(int multiplier) => new() { Mul = [multiplier, new() { Stat = "event_amount" }] };
+        NumberExpression Hand(int multiplier) => new() { Add = [multiplier, new() { Mul = [multiplier, new() { Stat = "hand_size" }] }] };
+        NumberExpression Debuffs(int flat, int multiplier) => new() { Add = [flat,
+            new() { Mul = [multiplier, new() { Stat = "power", Of = "target", Id = "weak" }] },
+            new() { Mul = [multiplier, new() { Stat = "power", Of = "target", Id = "vulnerable" }] }] };
+        var fixtures = new[] { ("星轨回响", Event(2), Event(3), true, 1), ("星火燎原", Hand(2), Hand(3), false, 2),
+            ("双星裁决", Debuffs(4, 2), Debuffs(6, 3), false, 3) };
+        foreach (var (name, before, after, triggered, greenCount) in fixtures)
+        {
+            CardForm Form(NumberExpression expression)
+            {
+                var effect = new CardEffect { Kind = EffectKind.Damage, Target = triggered ? "random_enemy" : "enemy", Amount = expression };
+                return triggered ? new() { Cost = new() { Energy = 1 }, Rules = [new() { Trigger = new() { Event = RuleEvent.StarsSpent }, Effects = [effect] }] }
+                    : new() { Cost = new() { Energy = 1 }, Effects = [effect] };
+            }
+            var card = (NeowGeneratedCard)ModelDb.Card<NeowGeneratedCard>().ToMutable(); card.Owner = owner;
+            card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = name, Type = triggered ? ForgeCardType.Power : ForgeCardType.Attack,
+                Rarity = ForgeRarity.Uncommon, Forms = [Form(before), Form(after)] });
+            card.UpgradeInternal(); card.FinalizeUpgradeInternal();
+            Check(!card.RuntimeDescriptionText(true).Contains("[green]"));
+            void Preview(NeowGeneratedCard preview)
+            {
+                var flags = preview.BeginUpgradePreview();
+                try
+                {
+                    string text = preview.GetDescriptionForUpgradePreview();
+                    Check(text.Split("[green]").Length - 1 == greenCount && text.Contains("[green]3[/green]"));
+                    if (name == "双星裁决") Check(text.Contains("[green]6[/green]") && !text.Contains("[green]目标"));
+                    if (triggered) Check(text.Contains("花费[img]res://images/packed/sprite_fonts/star_icon.png[/img]时"));
+                }
+                finally { preview.EndUpgradePreview(flags); }
+            }
+            Preview(card);
+            var loaded = (NeowGeneratedCard)CardModel.FromSerializable(card.ToSerializable()); loaded.Owner = owner;
+            Preview(loaded);
+            card.DowngradeInternal();
+            var baseFlags = card.BeginUpgradePreview();
+            try { Check(!card.GetDescriptionForUpgradePreview().Contains("[green]")); }
+            finally { card.EndUpgradePreview(baseFlags); }
+        }
+        var furnaceForm = new CardForm { Cost = new() { Energy = 1 }, Rules = [new() { Trigger = new() { Event = RuleEvent.StarsSpent, Limit = new() { Count = 2, Within = CounterScope.Turn } }, Effects = [new() { Kind = EffectKind.Forge, Amount = 1 }] }] };
+        var furnace = (NeowGeneratedCard)ModelDb.Card<NeowGeneratedCard>().ToMutable(); furnace.Owner = owner;
+        furnace.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "星火熔炉", Type = ForgeCardType.Power, Rarity = ForgeRarity.Uncommon, Forms = [furnaceForm, furnaceForm] });
+        var power = (GeneratedEffectPower)ModelDb.Power<GeneratedEffectPower>().ToMutable(); power.Configure(furnace); power.ApplyInternal(owner.Creature, 1, silent: true);
+        const string iconTrigger = "每当你花费[img]res://images/packed/sprite_fonts/star_icon.png[/img]时";
+        Check(furnace.RuntimeDescriptionText(true).Contains(iconTrigger) && power.RuntimeDescriptionText(true).Contains(iconTrigger));
+        Console.WriteLine("PASS all three Regent formula upgrades highlight changed coefficients through native descriptions/save/load/downgrade; star event icons in card and power text");
     }
     private static void CheckNativeConversionContracts()
     {

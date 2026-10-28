@@ -18,13 +18,15 @@ OBSERVATION_JSON:
 | --- | --- |
 | 局状态 | 角色、进阶、章节、楼层、金币 |
 | 当前幕与遭遇规划 | planning：当前幕 ID/名称、已分配 Boss（包括第二 Boss）、未来精英候选池及所属幕；遭遇及可能怪物的 ID/名称、已核对的定性机制；不暴露地图节点与连线 |
-| 牌组 | 合并相同卡牌后的名称、类型、费用、升级状态、效果说明、必要附魔/负面属性及张数 |
+| 牌组 | 合并相同卡牌后的 name、type、rarity（原生枚举小写）、协议结构 cost、升级状态、含关键词的 text、必要附魔/负面属性及张数 |
 | 遗物 | 名称、说明、有效计数 |
-| 生成历史 | name、status、type（attack/skill/power）、rarity（common/uncommon/rare）、基础 cost 与 text；最多 prompt_history_limit 项，默认 100 |
+| 生成历史 | name、status、type（attack/skill/power）、rarity（common/uncommon/rare）、基础 cost 与含基础形态关键词的 text；最多 prompt_history_limit 项，默认 100 |
 | 当前战斗 | encounter（类型、遭遇 ID、map/event 来源及事件 ID）、轮数、生命/格挡/能力、能量/星、球与球槽、盟友、敌人和意图 |
 | 战斗摘要 | 已打出牌计数、伤害/格挡/资源统计、事件计数和结束结果 |
 
 不发送 combat_key、schema_version、种子、运行实例标识、反射 state 树、完整牌堆、逐条原始事件、generated_definition 或重复的首次回合摘要。原生说明去掉显示标签；不把未知状态补成零。没有累计摘要的离线观测仅给出 observed_events 计数，避免冒充完整历史。
+
+deck 与 history 的 cost 均使用 `{energy?,stars?,energy_x?,stars_x?}`；deck 使用原生标准费用，X 标记替代对应固定费用，负值哨兵不作为固定费用发送。未知费用省略。原生 text 沿用含关键词的游戏说明；生成定义回退文本与 history 文本将关键词并入 text，不单列 keywords。
 
 combat.encounter.type 使用 monster/elite/boss；source 为 map/event。事件来源读取原生房间栈底的 EventRoom 或 CombatRoom.ParentEventId，因此事件里的精英战仍能同时表达 type:elite 和 source:event；地图问号直接遇怪不冒充事件战斗。旧离线观测仅有 room_type 时只投影已知 type。cards_played.origin 为 native/generated，表示原生卡/模组生成卡，不表示来自永久牌组还是临时生成；该字段经过事件压缩仍保留。summary.complete 在当前战斗摘要封口后为 true，won 为最终胜负，战斗中为 null。
 

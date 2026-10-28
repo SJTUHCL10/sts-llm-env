@@ -621,12 +621,50 @@ await Test("design projection groups cards, preserves useful mechanics and omits
         GenerationHistory = [JsonSerializer.SerializeToElement(new { card = valid, status = "selected", combat_key = "hidden" }, Wire.Json)]
     };
     var projected = ObservationProjector.Project(observed);
-    Check(projected.GetProperty("deck")[0].GetProperty("count").GetInt32() == 2 && projected.GetProperty("deck")[0].GetProperty("star_cost").GetInt32() == 2);
+    Check(projected.GetProperty("deck")[0].GetProperty("count").GetInt32() == 2 && projected.GetProperty("deck")[0].GetProperty("cost").GetProperty("stars").GetInt32() == 2);
     string text = projected.GetRawText();
     foreach (string removed in new[] { "combat_key", "schema_version", "instance", "piles", "generated_definition", "seed", "[gold]" }) Check(!text.Contains(removed));
     Check(projected.GetProperty("history")[0].GetProperty("text").GetString()!.Contains("伤害"));
     Check(projected.GetProperty("history")[0].GetProperty("type").GetString() == "attack");
     Check(projected.GetProperty("history")[0].GetProperty("rarity").GetString() == "common");
+    return Task.CompletedTask;
+});
+await Test("observation cards share protocol fields and history text includes base keywords", () =>
+{
+    var tagged = valid with { Forms = valid.Forms.Select((form, i) => form with
+        { Keywords = i == 0 ? [ForgeKeyword.Exhaust, ForgeKeyword.Ethereal, ForgeKeyword.Retain, ForgeKeyword.Innate, ForgeKeyword.Sly] : [] }).ToArray() };
+    var run = JsonSerializer.SerializeToElement(new
+    {
+        deck = new object[]
+        {
+            new { title = "普通攻击", type = "Attack", rarity = "Common", cost = 1, star_cost = -1, description = "伤害。消耗。" },
+            new { title = "双X", type = "Skill", rarity = "Rare", cost = -1, star_cost = 0, x_cost = true, star_x_cost = true },
+            new { id = "POWER", type = "Power", rarity = "Uncommon", cost = new { energy = 2, stars = 1 } },
+            new { id = "CURSE", type = "Curse", rarity = "Curse", cost = -1 },
+            new { title = "生成牌", upgraded = true, generated_definition = tagged },
+            "旧牌名"
+        }
+    }, Wire.Json);
+    var observed = context with { Run = run, GenerationHistory = [JsonSerializer.SerializeToElement(new { card = tagged, status = "selected" }, Wire.Json)] };
+    var projected = ObservationProjector.Project(observed);
+    var deck = projected.GetProperty("deck").EnumerateArray().ToDictionary(card => card.GetProperty("name").GetString()!);
+    var attack = deck["普通攻击"];
+    Check(attack.GetProperty("type").GetString() == "attack" && attack.GetProperty("rarity").GetString() == "common");
+    Check(attack.GetProperty("cost").GetProperty("energy").GetInt32() == 1 && !attack.GetProperty("cost").TryGetProperty("stars", out _));
+    Check(attack.GetProperty("text").GetString() == "伤害。消耗。");
+    var x = deck["双X"].GetProperty("cost");
+    Check(x.GetProperty("energy_x").GetBoolean() && x.GetProperty("stars_x").GetBoolean());
+    Check(!x.TryGetProperty("energy", out _) && !x.TryGetProperty("stars", out _));
+    Check(deck["双X"].GetProperty("type").GetString() == "skill" && deck["双X"].GetProperty("rarity").GetString() == "rare");
+    Check(deck["POWER"].GetProperty("type").GetString() == "power" && deck["POWER"].GetProperty("rarity").GetString() == "uncommon");
+    Check(deck["POWER"].GetProperty("cost").GetProperty("stars").GetInt32() == 1);
+    Check(!deck["CURSE"].TryGetProperty("cost", out _));
+    foreach (var card in deck.Values)
+        foreach (string old in new[] { "title", "star_cost", "x_cost", "star_x_cost", "keywords" }) Check(!card.TryGetProperty(old, out _));
+    string historyText = projected.GetProperty("history")[0].GetProperty("text").GetString()!;
+    foreach (string keyword in new[] { "消耗。", "虚无。", "保留。", "固有。", "奇巧。" }) Check(historyText.Contains(keyword));
+    Check(!deck["生成牌"].GetProperty("text").GetString()!.Contains("消耗。"));
+    Check(observed.Run.GetRawText() == run.GetRawText());
     return Task.CompletedTask;
 });
 await Test("prompt exposes character mechanics only when enabled by character, relic or native deck", () =>
@@ -1080,6 +1118,40 @@ await Test("combat powers omit the recurring turn prefix while retaining first, 
         (occurrence with { Every = null, Nth = 3 }, "每回合第3次"), (occurrence with { Within = CounterScope.Combat }, "本场战斗，每打出3张") })
         Check(CardText.RenderRule(rule with { Trigger = rule.Trigger with { Occurrence = counter } }, true, combatIsImplicit: true).StartsWith(prefix));
     Check(card.Forms[0].Listeners[0].Trigger.Occurrence!.Within == CounterScope.Turn);
+    return Task.CompletedTask;
+});
+await Test("formula upgrade rendering highlights changed terms and preserves unchanged references", () =>
+{
+    var stat = new NumberExpression { Stat = "hand_size" };
+    var before = new NumberExpression { Add = [2, new() { Mul = [2, stat] }] };
+    var after = new NumberExpression { Add = [3, new() { Mul = [3, stat] }] };
+    Check(CardText.NumberUpgrade(after, before, true) == "([green]3[/green] + ([green]3[/green] × 你的手牌数))");
+    Check(CardText.NumberUpgrade(before, before, true) == CardText.Number(before, true));
+    Check(CardText.NumberUpgrade(new() { Div = [stat, 2] }, new() { Mul = [stat, 2] }, false) == "[green](your hand size ÷ 2)[/green]");
+    Check(CardText.NumberUpgrade(new() { Add = [stat, new() { Mul = [-1, 3] }] }, new() { Sub = [stat, 2] }, true)
+        == "(你的手牌数 - [green]3[/green])");
+    var x = new NumberExpression { Stat = "paid_stars" };
+    var cost = new CardCost { StarsX = true };
+    var formula = new NumberExpression { Mul = [3, x] };
+    string highlighted = CardText.NumberUpgrade(formula, new() { Mul = [2, x] }, true, cost: cost);
+    Check(highlighted == "([green]3[/green] × X)");
+    Check(CardText.RenderEffect(new() { Kind = EffectKind.Block, Amount = formula }, true, highlighted, cost: cost).Contains(highlighted));
+    return Task.CompletedTask;
+});
+await Test("star event triggers and event amounts use shared resource icons in both languages", () =>
+{
+    string Icons(string kind, string value) => CardText.ResourceText(kind, value, "regent");
+    const string star = "[img]res://images/packed/sprite_fonts/star_icon.png[/img]";
+    foreach (var kind in new[] { RuleEvent.StarsSpent, RuleEvent.StarsGained })
+    {
+        var rule = new CardRule { Trigger = new() { Event = kind }, Effects = [new() { Kind = EffectKind.Forge, Amount = new() { Mul = [2, new() { Stat = "event_amount" }] } }] };
+        string text = CardText.RenderRule(rule, true, resource: Icons);
+        Check(text.Contains("每当你" + (kind == RuleEvent.StarsSpent ? "花费" : "获得") + star + "时"));
+        Check(text.Contains(star + "数量") && !text.Contains("星数") && !text.Contains("花费星") && !text.Contains("获得星"));
+        text = CardText.RenderRule(rule, false, resource: Icons);
+        Check(text.Contains(star) && !text.Contains("Stars"));
+        Check(CardText.RenderRule(rule, true).Contains(kind == RuleEvent.StarsSpent ? "花费星" : "获得星"));
+    }
     return Task.CompletedTask;
 });
 await Test("all numeric resource contexts use icons, preserve expressions and upgrade highlights", () =>
@@ -1607,7 +1679,7 @@ await Test("event filters and source references render all meaningful restrictio
         Effects = [new() { Kind = EffectKind.Damage, Target = "event.subject", Amount = new() { Stat = "event_amount" } }]
     };
     string text = CardText.RenderRule(rule, true);
-    foreach (string phrase in new[] { "易伤", "负面状态", "排除临时能力", "你的回合", "由卡牌引发", "耗能至少", "打击", "该敌人", "能力层数变化量" }) Check(text.Contains(phrase));
+    foreach (string phrase in new[] { "给予敌人易伤", "排除临时能力", "你的回合", "由卡牌引发", "耗能至少", "打击", "该敌人", "能力层数变化量" }) Check(text.Contains(phrase));
     Check(CardText.Number(new() { Stat = "hp", Of = "event.actor" }, true).Contains("事件执行者"));
     Check(CardText.Target("event.targets", false) == "all event targets");
     Check(CardText.RenderRule(rule with { Trigger = new() { Event = RuleEvent.StarsSpent } }, true).Contains("花费星"));
@@ -1650,7 +1722,7 @@ await Test("recipient-only power changes keep unknown appliers and card actors s
         Effects = [new() { Kind = EffectKind.Damage, Target = "event.actor", Amount = new() { Stat = "hp", Of = "event.subject" } }]
     };
     string text = CardText.RenderRule(rule, true, combatIsImplicit: true);
-    Check(text.StartsWith("每当敌人的力量层数改变时（仅计入负面状态变化）"));
+    Check(text.StartsWith("每当敌人的力量层数发生负面变化时，"));
     Check(text.Contains("对改变状态层数的生物造成等量于该敌人的当前生命值的伤害"));
     var played = rule with { Trigger = new() { Event = RuleEvent.CardPlayed, Where = new() { Actor = "enemy", AutoPlay = true, LastInSeries = false } } };
     text = CardText.RenderRule(played, true);
@@ -1662,6 +1734,46 @@ await Test("recipient-only power changes keep unknown appliers and card actors s
     evoke = evoke with { Effects = [new() { Kind = EffectKind.Damage, Target = "event.target", Amount = new() { Stat = "hp", Of = "event.subject" } }] };
     text = CardText.RenderRule(evoke, true);
     Check(text.Contains("对该生物造成等量于该生物的当前生命值的伤害") && !text.Contains("该敌人"));
+    return Task.CompletedTask;
+});
+await Test("power change polarity is part of the trigger and temporary durations stay with their effect", () =>
+{
+    var rule = new CardRule
+    {
+        Trigger = new() { Event = RuleEvent.PowerAmountChanged, Where = new() { Actor = "enemy", Target = "self", PowerType = "debuff" } },
+        Effects = [new() { Kind = EffectKind.ApplyPower, Power = "strength", Amount = 2 }]
+    };
+    Check(CardText.RenderRule(rule, true, combatIsImplicit: true) == "每当敌人使你的状态发生负面变化时，获得2点力量。");
+    var vulnerable = rule with
+    {
+        Trigger = new() { Event = RuleEvent.PowerAmountChanged, Where = new() { Power = "vulnerable", PowerType = "debuff" } },
+        Effects = [new() { Kind = EffectKind.Block, Amount = 4 }]
+    };
+    Check(CardText.RenderRule(vulnerable, true, combatIsImplicit: true) == "每当你给予易伤时，获得4点格挡。");
+    foreach (string power in new[] { "weak", "vulnerable", "frail", "poison", "doom" })
+    {
+        var trigger = vulnerable.Trigger with { Where = new() { Power = power, PowerType = "debuff", Actor = "self", Target = "enemy" } };
+        string powerName = CardText.Name(power, true);
+        Check(CardText.RenderRule(vulnerable with { Trigger = trigger }, true, combatIsImplicit: true) == $"每当你给予敌人{powerName}时，获得4点格挡。");
+        Check(CardText.RenderRule(vulnerable with { Trigger = trigger with { Where = trigger.Where! with { PowerType = "buff" } } }, true, combatIsImplicit: true)
+            == $"每当你减少敌人的{powerName}时，获得4点格挡。");
+        Check(CardText.RenderRule(vulnerable with { Trigger = trigger with { Where = trigger.Where! with { Actor = null } } }, true, combatIsImplicit: true)
+            == $"每当敌人获得{powerName}时，获得4点格挡。");
+        Check(CardText.RenderRule(vulnerable with { Trigger = trigger with { Where = trigger.Where! with { Actor = null, PowerType = "buff" } } }, true, combatIsImplicit: true)
+            == $"每当敌人的{powerName}减少时，获得4点格挡。");
+    }
+    var buff = rule with { Trigger = new() { Event = RuleEvent.PowerAmountChanged, Where = new() { Target = "self", Power = "strength", PowerType = "buff" } } };
+    Check(CardText.RenderRule(buff, true, combatIsImplicit: true) == "每当你的力量层数发生正面变化时，获得2点力量。");
+    var block = rule with
+    {
+        Trigger = new() { Event = RuleEvent.BlockGained, Limit = new() { Count = 2, Within = CounterScope.Turn } },
+        Effects = [new() { Kind = EffectKind.ApplyPower, Power = "strength", Amount = 2, Until = LifetimeKind.Turn }]
+    };
+    Check(CardText.RenderRule(block, true, combatIsImplicit: true) == "每当你获得格挡时（每回合最多生效2次），获得2点力量，持续至回合结束。");
+    Check(CardText.RenderEffect(new() { Kind = EffectKind.AddKeyword, Target = new() { Pile = CardPileName.Hand, Pick = SelectionMode.All }, Keyword = ForgeKeyword.Retain, Until = LifetimeKind.Turn }, true)
+        == "你的手牌中的所有牌获得保留，持续至回合结束。");
+    Check(CardText.RenderEffect(new() { Kind = EffectKind.ApplyPower, Target = "enemy", Power = "strength", Amount = -2, Until = LifetimeKind.Turn }, true)
+        == "对目标敌人给予-2点力量，持续至目标的回合结束。");
     return Task.CompletedTask;
 });
 await Test("protocol nine rejects previous pools and whole-attack events", async () =>

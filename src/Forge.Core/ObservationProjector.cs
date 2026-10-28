@@ -19,19 +19,30 @@ public static class ObservationProjector
     }
     private static JsonObject Card(JsonObject card)
     {
-        var result = Pick(card, "title", "type", "cost", "upgraded", "enchantment", "affliction");
-        if (card["star_cost"] is JsonValue stars && stars.TryGetValue<int>(out int number) && number >= 0) result["star_cost"] = number;
-        if (card["x_cost"]?.ToString() == "true") result["x_cost"] = true;
-        if (card["star_x_cost"]?.ToString() == "true") result["star_x_cost"] = true;
+        var result = Pick(card, "upgraded", "enchantment", "affliction");
+        if ((card["name"] ?? card["title"] ?? card["id"]) is { } name) result["name"] = name.DeepClone();
+        foreach (string key in new[] { "type", "rarity" })
+            if (card[key] is { } value) result[key] = value.ToString().ToLowerInvariant();
+        var cost = card["cost"] is JsonObject structured ? structured.DeepClone().AsObject() : new JsonObject();
+        void Resource(string source, string target, string xSource, string xTarget)
+        {
+            if (card[xSource]?.ToString() == "true") { cost[xTarget] = true; cost.Remove(target); }
+            else if (card[source] is JsonValue value && value.TryGetValue<int>(out int number) && number >= 0) cost[target] = number;
+        }
+        Resource("cost", "energy", "x_cost", "energy_x");
+        Resource("star_cost", "stars", "star_x_cost", "stars_x");
+        if (cost.Count > 0) result["cost"] = cost;
         if (card["description"] is { } description) result["text"] = Clean(description.ToString());
         else if (card["generated_definition"] is { } definition)
         {
             var parsed = Wire.Decode<CardDefinition>(definition.ToJsonString());
-            result["text"] = Clean(CardText.Render(parsed, true, upgraded: card["upgraded"]?.ToString() == "true"));
+            result["text"] = GeneratedText(parsed, card["upgraded"]?.ToString() == "true");
         }
-        if (!result.ContainsKey("title") && card["id"] is { } id) result["title"] = id.DeepClone();
         return result;
     }
+    private static string GeneratedText(CardDefinition card, bool upgraded = false) => Clean(string.Join("\n",
+        new[] { CardText.Render(card, true, upgraded: upgraded) }
+            .Concat(card.Form(upgraded).Tags.Select(keyword => CardText.Name(keyword.ToString().ToLowerInvariant(), true) + "。"))));
     private static JsonObject Creature(JsonObject value)
     {
         var result = Pick(value, "id", "hp", "max_hp", "block");
@@ -74,7 +85,7 @@ public static class ObservationProjector
             result["planning"] = future;
         }
         if (run["deck"] is JsonArray deck)
-            result["deck"] = new JsonArray(deck.Select(node => node is JsonObject card ? Card(card) : new JsonObject { ["title"] = node?.DeepClone() })
+            result["deck"] = new JsonArray(deck.Select(node => node is JsonObject card ? Card(card) : new JsonObject { ["name"] = node?.DeepClone() })
                 .Select((card, i) => (card, count: deck[i] is JsonObject original ? original["count"]?.GetValue<int>() ?? 1 : 1))
                 .GroupBy(item => item.card.ToJsonString()).OrderBy(group => group.Key, StringComparer.Ordinal)
                 .Select(group => { var card = group.First().card; card["count"] = group.Sum(item => item.count); return (JsonNode)card; }).ToArray());
@@ -101,7 +112,7 @@ public static class ObservationProjector
                     item["name"] = card.Name; item["cost"] = JsonSerializer.SerializeToNode(card.Forms[0].Cost, Wire.Json);
                     item["type"] = JsonSerializer.SerializeToNode(card.Type, Wire.Json);
                     item["rarity"] = JsonSerializer.SerializeToNode(card.Rarity, Wire.Json);
-                    item["text"] = Clean(CardText.Render(card, true));
+                    item["text"] = GeneratedText(card);
                 }
                 return (JsonNode)item;
             }).ToArray());

@@ -48,6 +48,23 @@ public static class CardText
     }
     private static NumberExpression? NegativeFactor(NumberExpression number) => number.Mul is { Length: 2 } factors
         ? factors[0].Value == -1 ? factors[1] : factors[1].Value == -1 ? factors[0] : null : null;
+    // Compare corresponding expression nodes; keep unchanged terms plain in upgrade previews.
+    public static string NumberUpgrade(NumberExpression? number, NumberExpression? baseline, bool chinese, int fallback = 1,
+        Func<string, string, string>? resource = null, CardCost? cost = null)
+    {
+        NumberExpression? Normalize(NumberExpression? expression) => expression?.Add is { Length: 2 } sum && NegativeFactor(sum[1]) is { } subtrahend
+            ? new() { Sub = [sum[0], subtrahend] } : expression;
+        number = Normalize(number); baseline = Normalize(baseline);
+        if (Wire.Encode(number) == Wire.Encode(baseline)) return Number(number, chinese, fallback, resource, cost);
+        string? Operator(NumberExpression? expression) => expression?.Add is not null ? " + " : expression?.Sub is not null ? " - "
+            : expression?.Mul is not null ? " × " : expression?.Div is not null ? " ÷ " : null;
+        var current = number?.Add ?? number?.Sub ?? number?.Mul ?? number?.Div;
+        var previous = baseline?.Add ?? baseline?.Sub ?? baseline?.Mul ?? baseline?.Div;
+        if (current is not null && previous is not null && current.Length == previous.Length && Operator(number) == Operator(baseline))
+            return "(" + string.Join(Operator(number), current.Select((term, i) => NumberUpgrade(term, previous[i], chinese, fallback, resource, cost))) + ")";
+        // A changed operator/reference or a new subtree has no reliable leaf correspondence.
+        return "[green]" + Number(number, chinese, fallback, resource, cost) + "[/green]";
+    }
     private static string CountNumber(NumberExpression? number, bool chinese, int fallback = 1, Func<string, string, string>? resource = null, CardCost? cost = null)
         => number?.Value is decimal value ? EffectRules.Count(value).ToString(System.Globalization.CultureInfo.InvariantCulture) : Number(number, chinese, fallback, resource, cost);
     public static string Condition(EffectCondition? condition, bool chinese, Func<string, string, string>? resource = null, CardCost? cost = null)
@@ -150,7 +167,7 @@ public static class CardText
         {
             RuleEvent.TurnStart => chinese ? "在你的回合开始时" : "At the start of your turn", RuleEvent.TurnEnd => chinese ? "在你的回合结束时" : "At the end of your turn",
             RuleEvent.CardPlayed => chinese ? "打出" : "play", RuleEvent.CardDrawn => chinese ? "抽到" : "draw", RuleEvent.CardDiscarded => chinese ? "丢弃" : "discard", RuleEvent.CardExhausted => chinese ? "消耗" : "exhaust", RuleEvent.CardGenerated => chinese ? "生成" : "create",
-            _ => EventWhen(rule.Trigger, chinese)
+            _ => EventWhen(rule.Trigger, chinese, resource)
         };
         string verb = when;
         string card = Filter(rule.Trigger.Filter, chinese, resource) + (chinese ? rule.Trigger.Filter?.Id is null ? "牌" : "" : "card");
@@ -189,8 +206,10 @@ public static class CardText
             RuleEvent.BlockGained => chinese ? "本次获得的格挡" : "the Block gained",
             RuleEvent.PowerAmountChanged => chinese ? "本次能力层数变化量" : "the signed power amount change",
             RuleEvent.Forged => chinese ? "本次铸造量" : "the amount forged",
-            RuleEvent.StarsGained => chinese ? "本次获得的星数" : "the Stars gained",
-            RuleEvent.StarsSpent => chinese ? "本次花费的星数" : "the Stars spent",
+            RuleEvent.StarsGained => resource is null ? chinese ? "本次获得的星数" : "the Stars gained"
+                : chinese ? "本次获得的" + resource("stars", "1") + "数量" : "the " + resource("stars", "1") + " gained",
+            RuleEvent.StarsSpent => resource is null ? chinese ? "本次花费的星数" : "the Stars spent"
+                : chinese ? "本次花费的" + resource("stars", "1") + "数量" : "the " + resource("stars", "1") + " spent",
             _ => chinese ? "本次事件数值" : "the event amount"
         };
         text = text.Replace(chinese ? "本次事件数值" : "the event amount", eventAmount, StringComparison.Ordinal);
@@ -208,7 +227,7 @@ public static class CardText
     } : relation switch { "self" => "you", "osty" => "Osty", "self_or_osty" => "you or Osty", "enemy" => "an enemy", _ => "any creature" };
     private static string EventVerb(string verb, string subject) => subject == "you" ? verb : verb + "s";
     private static string Possessive(string subject) => subject == "you" ? "your" : subject + "'s";
-    private static string EventWhen(EffectTrigger trigger, bool chinese)
+    private static string EventWhen(EffectTrigger trigger, bool chinese, Func<string, string, string>? resource)
     {
         var w = trigger.Where;
         string actor = EventRelation(w?.Actor ?? (trigger.Event == RuleEvent.DamageGiven ? "self_or_osty" : "self"), chinese);
@@ -216,9 +235,21 @@ public static class CardText
         string damage = chinese ? w?.Attack switch { true => "攻击伤害", false => "非攻击伤害", _ => "伤害" }
             : w?.Attack switch { true => "attack damage", false => "non-attack damage", _ => "damage" };
         string power = w?.Power is { } id ? Name(id, chinese) : chinese ? "状态" : "power";
+        string powerChange = power + (w?.Power is null ? "" : "层数") + "发生" + (w?.PowerType == "buff" ? "正面" : "负面") + "变化";
         string orb = (w?.Orb is { } kind ? Name(kind, chinese) : "") + (chinese ? "充能球" : " Orb");
         string After(string verb, string english) => chinese ? $"每当{actor}{verb}时" : $"After {actor} {english}";
         string Verb(string plain) => EventVerb(plain, actor);
+        string stars = resource?.Invoke("stars", "1") ?? (chinese ? "星" : "Stars");
+        // These native debuffs classify positive deltas as Debuff and negative deltas as Buff.
+        // Match native Vicious wording for applications, while retaining reductions and recipient-only filters.
+        string? namedDebuffChange = null;
+        if (chinese && w?.Power is "weak" or "vulnerable" or "frail" or "poison" or "doom" && w.PowerType is not null)
+        {
+            bool applied = w.PowerType == "debuff";
+            namedDebuffChange = w is { Target: not null, Actor: null }
+                ? applied ? $"每当{recipient}获得{power}时" : $"每当{recipient}的{power}减少时"
+                : $"每当{actor}{(applied ? "给予" : "减少")}{(w.Target is null ? "" : applied ? recipient : recipient + "的")}{power}时";
+        }
         return trigger.Event switch
         {
             RuleEvent.DamageGiven => After((w?.Target is null ? "" : "对" + recipient) + "造成" + damage,
@@ -227,16 +258,17 @@ public static class CardText
                 : $"After {recipient} {(recipient == "you" || recipient == "you or Osty" ? "take" : "takes")} {damage}{(w?.Actor is null ? "" : " from " + actor)}",
             RuleEvent.BlockGained => chinese ? $"每当{EventRelation(w?.Actor ?? w?.Target ?? "self", true)}获得格挡时"
                 : $"After {EventRelation(w?.Actor ?? w?.Target ?? "self", false)} {EventVerb("gain", EventRelation(w?.Actor ?? w?.Target ?? "self", false))} Block",
+            RuleEvent.PowerAmountChanged when namedDebuffChange is not null => namedDebuffChange,
             RuleEvent.PowerAmountChanged => w is { Target: not null, Actor: null }
-                ? chinese ? $"每当{recipient}的{power}层数改变时" : $"After {Possessive(recipient)} {power} amount changes"
-                : After("改变" + (w?.Target is null ? "" : recipient + "的") + power + "层数",
+                ? chinese ? w.PowerType is not null ? $"每当{recipient}的{powerChange}时" : $"每当{recipient}的{power}层数改变时" : $"After {Possessive(recipient)} {power} amount changes"
+                : After(w?.PowerType is not null ? "使" + (w.Target is null ? "" : recipient + "的") + powerChange : "改变" + (w?.Target is null ? "" : recipient + "的") + power + "层数",
                     Verb("change") + " " + (w?.Target is null ? "a " : Possessive(recipient) + " ") + power + " amount"),
             RuleEvent.Summoned => After("召唤", Verb("summon")),
             RuleEvent.OrbChanneled => After("生成" + orb, Verb("channel") + " a " + orb.Trim()),
             RuleEvent.OrbEvoked => After("激发" + orb, Verb("evoke") + " a " + orb.Trim()),
             RuleEvent.Forged => After("铸造", Verb("forge")),
-            RuleEvent.StarsGained => After("获得星", Verb("gain") + " Stars"),
-            RuleEvent.StarsSpent => After("花费星", Verb("spend") + " Stars"),
+            RuleEvent.StarsGained => After("获得" + stars, Verb("gain") + " " + stars),
+            RuleEvent.StarsSpent => After("花费" + stars, Verb("spend") + " " + stars),
             _ => throw new FormatException("Unknown rule event.")
         };
     }
@@ -301,7 +333,7 @@ public static class CardText
                 yield return chinese ? "由" + owner + cause + "引发" : "caused by " + owner + (owner.Length > 0 ? "" : w.SourceKind is "orb" or "other" ? "an " : "a ") + cause;
             if (w.SourceKind == "unknown") yield return chinese ? "具体来源未知" : "specific cause unknown";
         }
-        if (w.PowerType is { } type) yield return chinese ? type == "buff" ? "仅计入正面状态变化" : "仅计入负面状态变化" : type + " changes only";
+        if (!chinese && w.PowerType is { } type) yield return type + " changes only";
         if (w.Temporary is bool temporary) yield return chinese ? temporary ? "仅限临时能力" : "排除临时能力" : temporary ? "temporary powers only" : "excluding temporary powers";
         if (w.OwnTurn is bool own) yield return chinese ? own ? "仅在你的回合" : "仅在敌方回合" : own ? "during your turn" : "outside your turn";
         if (w.FromHandDraw is bool initial) yield return chinese ? initial ? "仅限回合初始抽牌" : "排除回合初始抽牌" : initial ? "initial turn draw only" : "excluding initial turn draw";
@@ -315,7 +347,8 @@ public static class CardText
         string? repeat = e.Repeat is null ? null : Quantity("repeat", e.Repeat);
         bool attackHits = chinese && e.Kind == EffectKind.Damage && e.Condition is null && e.Repeat is not null
             && (e.Repeat.Value is not null || UsesX(e.Repeat, cost));
-        string n = UsesX(e.Amount, cost) ? Number(e.Amount, chinese, resource: resource, cost: cost) : amount ?? Number(e.Amount, chinese, resource: resource, cost: cost);
+        string n = UsesX(e.Amount, cost) ? amount is not null && amount.Contains('X') ? amount : Number(e.Amount, chinese, resource: resource, cost: cost)
+            : amount ?? Number(e.Amount, chinese, resource: resource, cost: cost);
         if (e.Kind == EffectKind.Draw && decimal.TryParse(n, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out decimal draws))
             n = decimal.Ceiling(Math.Max(0, draws)).ToString(System.Globalization.CultureInfo.InvariantCulture);
         string quantity = ChineseQuantity(n);
@@ -359,6 +392,7 @@ public static class CardText
         if (e.Until == LifetimeKind.Turn && e.Kind is EffectKind.ApplyPower or EffectKind.AddKeyword)
         {
             bool ownTurn = e.Kind == EffectKind.AddKeyword || e.Target?.Ref is null or "self" or "osty";
+            if (chinese) text = text.TrimEnd('。') + "，";
             text += ownTurn ? chinese ? "持续至回合结束。" : " Until the end of your turn."
                 : chinese ? "持续至目标的回合结束。" : " Until the end of the target's turn.";
         }

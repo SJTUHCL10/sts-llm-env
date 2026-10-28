@@ -54,7 +54,7 @@ dotnet run --project src/Forge.Tool -- prompt config.example.json examples/conte
 
 使用测试存档，记录游戏/Mod 版本、配置及复现步骤；分享材料前检查凭据与日志内容。
 
-1. **生成时机**：本局第一场战斗入场时立即启动首次请求，无需出牌或结束回合；首战按本局房间历史判断，包括事件战斗，不限定第 2 层。后续战斗仍在敌方首回合结束后启动，包括完全格挡、敌方不攻击；未发起请求就获胜时应提交最终摘要。检查入场请求与回合/出牌触发不会重复并发、每场预算和请求间隔，读档及跨章节不会把后续战斗当作首战；已展示的奖励读档不应重新生成。`wait_on_reward` 模式仍仅在打开奖励时请求。
+1. **生成时机**：本局第一场战斗入场时立即启动首次请求，无需出牌或结束回合；首战按本局房间历史判断，包括事件战斗，不限定第 2 层。后续战斗仍在敌方首回合结束后启动，包括完全格挡、敌方不攻击；未发起请求就获胜时应提交最终摘要。检查入场请求与回合/出牌触发不会重复并发、每场预算和请求间隔，读档及跨章节不会把后续战斗当作首战；已展示的奖励读档不应重新生成。`wait_on_reward` 模式在原版创建奖励列表前请求并等待，随后与原版候选一同创建生成卡、判定随机升级并处理遗物。
 2. **奖励稳定**：可用候选追加到原版选项；慢请求或失败时默认模式立即给出原版奖励。晚到结果不改变已打开界面，可供之后战斗使用。
 3. **候选池与读档**：重新打开、跳过、重掷、保存/加载奖励，确认无重复且选项固定，包括空奖励。重开同种子新局不得沿用上一局候选。
 4. **生命周期**：死亡、放弃、退出和重新加载局时取消旧请求；结果不能进入新局。检查 `wait_on_reward` 和其他修改奖励的 Mod 共存。
@@ -91,3 +91,10 @@ v6 还需逐项实机验收：
 
 
 v7 实机验收：狂宴式单体伤害斩杀增最大生命与回血、贪婪之手式金币收益；击杀随从不触发、特殊分段敌人沿用原版资格；全体伤害击杀多名敌人只结算一次，目标表达式不同的拆分伤害同样一次；repeat 每次独立判定，最后一击仍结算全部斩杀收益。检查非永久战斗动作（抽牌、生成、状态、嵌套伤害）的原生结束阶段行为，普通后续动作不在战斗结束后执行。检查金币减少归零、最大生命减少及当前生命扣减，基础/升级斩杀数值高亮、手牌预览、规则描述与存档读写。
+
+### Native reward pipeline regression
+
+- Verify generated cards receive native random upgrades (including later acts), all three eggs, Fresnel Lens and Silver Crucible on the reward screen before selection. The crucible consumes one charge per reward, including its third charge.
+- Verify listener-only block cards cannot receive Nimble; immediate block, including nested on-fatal block, remains eligible. Mixed cards receive enchantment bonuses only on immediate block.
+- Verify prefetch never waits and freezes at reward creation; waiting mode waits before reward population. Reopening does not duplicate cards or relic charges. Native rerolls retain frozen generated definitions; pool replacement remains deferred.
+- Verify save/load retains generated definitions, native upgrades and enchantments; manual/event/shop rewards remain unchanged.
