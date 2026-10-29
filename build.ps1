@@ -47,8 +47,10 @@ try {
     Copy-Item -LiteralPath 'config.example.json' -Destination $package
     Copy-Item -LiteralPath 'README.md' -Destination $package
     Copy-Item -LiteralPath 'README.zh-CN.md' -Destination $package
-    Copy-Item -LiteralPath 'CHANGELOG.md' -Destination $package
-    Copy-Item -LiteralPath 'RELEASE_NOTES.md' -Destination $package
+    foreach ($name in @('CHANGELOG.md', 'RELEASE_NOTES.md')) {
+        $packagedFile = Join-Path $package $name
+        if (Test-Path -LiteralPath $packagedFile) { Remove-Item -LiteralPath $packagedFile -Force }
+    }
     foreach ($directory in @('docs', 'examples')) {
         $packagedDirectory = Join-Path $package $directory
         if (Test-Path -LiteralPath $packagedDirectory) {

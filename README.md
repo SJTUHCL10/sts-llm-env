@@ -6,7 +6,7 @@ Adds LLM-generated card rewards to Slay the Spire 2 singleplayer. Neow designs n
 
 Current mod version: `0.2.0`. Target game version: `v0.111.0`. Singleplayer only; compatibility needs to be checked again after game updates. Card artwork uses game placeholders, and no other mods are required.
 
-See the [v0.2.0 release notes](RELEASE_NOTES.md) for highlights and the [changelog](CHANGELOG.md) for details.
+See the [v0.2.0 release notes](https://github.com/SJTUHCL10/sts-llm-env/blob/v0.2.0/RELEASE_NOTES.md) for highlights and the [changelog](https://github.com/SJTUHCL10/sts-llm-env/blob/v0.2.0/CHANGELOG.md) for details.
 
 ## Installation
 

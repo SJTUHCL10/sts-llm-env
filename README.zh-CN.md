@@ -6,7 +6,7 @@
 
 当前 Mod 版本 `0.2.0`，目标游戏版本 `v0.111.0`。仅支持单人；游戏更新后需要重新检查兼容性。卡图使用游戏占位图，不需要额外 Mod 依赖。
 
-本次主要更新见 [v0.2.0 发布说明](RELEASE_NOTES.md)，详细变更见 [更新记录](CHANGELOG.md)。
+本次主要更新见 [v0.2.0 发布说明](https://github.com/SJTUHCL10/sts-llm-env/blob/v0.2.0/RELEASE_NOTES.md)，详细变更见 [更新记录](https://github.com/SJTUHCL10/sts-llm-env/blob/v0.2.0/CHANGELOG.md)。
 
 ## 安装
 
