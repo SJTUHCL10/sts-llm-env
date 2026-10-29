@@ -22,6 +22,7 @@ public sealed class NeowGeneratedCard : CardModel
     private static readonly MethodInfo StarCostSetter = AccessTools.PropertySetter(typeof(CardModel), nameof(BaseStarCost));
     private string _payload = "";
     private CardDefinition _definition = Fallback;
+    private int _upgradePreviewDepth;
     public static CardDefinition Fallback => new()
     {
         Name = "铸塔护卫", Type = ForgeCardType.Skill, Rarity = ForgeRarity.Common,
@@ -37,6 +38,7 @@ public sealed class NeowGeneratedCard : CardModel
     {
         base.DeepCloneFields();
         InstanceKey = Guid.NewGuid().ToString("N");
+        _upgradePreviewDepth = 0;
     }
     [SavedProperty]
     public string DefinitionPayload
@@ -127,8 +129,8 @@ public sealed class NeowGeneratedCard : CardModel
     {
         foreach (var id in form.AllEffects.Where(e => e.Power is not null).Select(e => e.Power!).Concat(form.Listeners.Where(r => r.Trigger.Where?.Power is not null).Select(r => r.Trigger.Where!.Power!)).Distinct())
             yield return HoverTipFactory.FromPower(NativeMechanics.Power(id));
-        foreach (var id in form.AllEffects.Where(e => e.Card?.Id is not null).Select(e => e.Card!.Id!).Distinct())
-            yield return HoverTipFactory.FromCard(NativeMechanics.Card(id));
+        foreach (var (id, upgraded) in form.AllEffects.Where(e => e.Card?.Id is not null).Select(e => (e.Card!.Id!, e.Card.Upgraded == true)).Distinct())
+            yield return HoverTipFactory.FromCard(NativeMechanics.Card(id), upgraded);
         foreach (var id in form.AllEffects.Where(e => e.Orb is not null && e.Orb != "random").Select(e => e.Orb!).Concat(form.Listeners.Where(r => r.Trigger.Where?.Orb is not null).Select(r => r.Trigger.Where!.Orb!)).Distinct())
             foreach (var tip in NativeMechanics.OrbTips(id)) yield return tip;
         if (form.AllEffects.Any(e => e.Kind == EffectKind.Forge) || form.Listeners.Any(r => r.Trigger.Event == RuleEvent.Forged)) foreach (var tip in HoverTipFactory.FromForge()) yield return tip;
@@ -177,7 +179,8 @@ public sealed class NeowGeneratedCard : CardModel
         (i, slot, value, fallback) => value?.Value is null && value is not null && !GeneratedEffectPreview.CanResolve(this, i)
             ? FormulaText(i, slot == "count" ? 'C' : slot == "repeat" ? 'R' : 'T', value, chinese, fallback)
             : $"{{{(slot == "count" ? 'C' : slot == "repeat" ? 'R' : 'T')}{i}:diff()}}",
-        limit: (i, _) => $"{{L{i}:diff()}}");
+        limit: (i, _) => $"{{L{i}:diff()}}",
+        upgradeBaseline: IsUpgraded && _upgradePreviewDepth > 0 ? _definition.Forms[0] : null);
     private string FormulaText(int index, char slot, NumberExpression? value, bool chinese, int fallback)
     {
         string Resource(string kind, string amount) => CardText.ResourceText(kind, amount, EnergyIconHelper.GetPrefix(this));
@@ -203,12 +206,14 @@ public sealed class NeowGeneratedCard : CardModel
     internal bool[] BeginUpgradePreview()
     {
         var previous = DynamicVars.Values.Select(v => v.WasJustUpgraded).ToArray();
+        _upgradePreviewDepth++;
         foreach (var variable in DynamicVars)
             ((IGeneratedPreviewVar)variable.Value).SetUpgradeHighlight(IsUpgraded && ChangedNumericSlot(variable.Key));
         return previous;
     }
     internal void EndUpgradePreview(bool[] previous)
     {
+        _upgradePreviewDepth--;
         int index = 0;
         foreach (var variable in DynamicVars.Values) ((IGeneratedPreviewVar)variable).SetUpgradeHighlight(previous[index++]);
     }

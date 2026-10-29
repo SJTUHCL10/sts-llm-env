@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <AssemblyName>NeowsCompany</AssemblyName>
+    <Version>0.2.0</Version>
     <Sts2GameDir Condition="'$(Sts2GameDir)' == ''">$(STS2_GAME_DIR)</Sts2GameDir>
     <Sts2LibDir>$(Sts2GameDir)\data_sts2_windows_x86_64</Sts2LibDir>
   </PropertyGroup>

@@ -147,7 +147,7 @@ v6 直接替换旧 div 语义，旧候选池不迁移；读取已有卡牌时也
 | event | 触发点与 event_amount | 默认范围 |
 | --- | --- | --- |
 | block_gained | AfterBlockGained，原生正数格挡增益量 | 自己获得格挡 |
-| damage_given | AfterDamageGiven，每段每目标，TotalDamage（含格挡） | 自己或奥斯提造成伤害 |
+| damage_given | AfterDamageGiven，每段每目标，TotalDamage（含格挡） | 自己造成伤害；包含奥斯提须显式指定 where.actor |
 | power_amount_changed | AfterPowerAmountChanged，非零带符号变化量 | 自己施加的能力变化 |
 | forged | AfterForge，正数原生铸造量 | 自己铸造 |
 | stars_gained | AfterStarsGained，正数原生获得量 | 自己获得星 |

@@ -4,9 +4,9 @@
 
 为《杀戮尖塔 2》单人模式添加 LLM 生成的卡牌奖励。涅奥根据你的卡组与战斗过程设计新牌，追加到原版战斗卡牌奖励中。
 
-当前 Mod 版本 `0.1.0`，目标游戏版本 `v0.111.0`。仅支持单人；游戏更新后需要重新检查兼容性。卡图使用游戏占位图，不需要额外 Mod 依赖。
+当前 Mod 版本 `0.2.0`，目标游戏版本 `v0.111.0`。仅支持单人；游戏更新后需要重新检查兼容性。卡图使用游戏占位图，不需要额外 Mod 依赖。
 
-上次公开版本以来的变更见 [更新记录](CHANGELOG.md)。
+本次主要更新见 [v0.2.0 发布说明](RELEASE_NOTES.md)，详细变更见 [更新记录](CHANGELOG.md)。
 
 ## 安装
 
@@ -41,7 +41,7 @@
 .\install.ps1 -GameDir 'C:\Games\Slay the Spire 2'
 ```
 
-`build.ps1` 默认运行核心测试和游戏 API 检查，输出 `build/NeowsCompany/` 与 `build/NeowsCompany-0.1.0.zip`。SDK 不在 PATH 时可传 `-DotnetExe '<dotnet.exe 路径>'`。安装脚本要求退出游戏，并保留已有配置和运行数据。
+`build.ps1` 默认运行核心测试和游戏 API 检查，输出 `build/NeowsCompany/` 与 `build/NeowsCompany-0.2.0.zip`。SDK 不在 PATH 时可传 `-DotnetExe '<dotnet.exe 路径>'`。安装脚本要求退出游戏，并保留已有配置和运行数据。
 
 无需游戏或真实 LLM 即可测试核心与生成链路：
 

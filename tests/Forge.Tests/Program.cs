@@ -1127,6 +1127,10 @@ await Test("formula upgrade rendering highlights changed terms and preserves unc
     var after = new NumberExpression { Add = [3, new() { Mul = [3, stat] }] };
     Check(CardText.NumberUpgrade(after, before, true) == "([green]3[/green] + ([green]3[/green] × 你的手牌数))");
     Check(CardText.NumberUpgrade(before, before, true) == CardText.Number(before, true));
+    var block = new NumberExpression { Stat = "block", Of = "self" };
+    Check(CardText.NumberUpgrade(new() { Add = [block, 4] }, block, true) == "(你的格挡 + [green]4[/green])");
+    Check(CardText.NumberUpgrade(new() { Add = [4, block] }, block, false) == "([green]4[/green] + your block)");
+    Check(CardText.NumberUpgrade(new() { Mul = [2, block] }, block, true) == "([green]2[/green] × 你的格挡)");
     Check(CardText.NumberUpgrade(new() { Div = [stat, 2] }, new() { Mul = [stat, 2] }, false) == "[green](your hand size ÷ 2)[/green]");
     Check(CardText.NumberUpgrade(new() { Add = [stat, new() { Mul = [-1, 3] }] }, new() { Sub = [stat, 2] }, true)
         == "(你的手牌数 - [green]3[/green])");
@@ -1136,6 +1140,64 @@ await Test("formula upgrade rendering highlights changed terms and preserves unc
     string highlighted = CardText.NumberUpgrade(formula, new() { Mul = [2, x] }, true, cost: cost);
     Check(highlighted == "([green]3[/green] × X)");
     Check(CardText.RenderEffect(new() { Kind = EffectKind.Block, Amount = formula }, true, highlighted, cost: cost).Contains(highlighted));
+    return Task.CompletedTask;
+});
+await Test("created card upgrades highlight names only when the source becomes upgraded", () =>
+{
+    CardForm Form(bool upgraded) => new() { Cost = new() { Energy = 1 }, Effects =
+    [
+        new() { Kind = EffectKind.CreateCard, Card = new() { Id = "minion_strike", Upgraded = upgraded }, To = CardPileName.Hand },
+        new() { Kind = EffectKind.CreateCard, Card = new() { Id = "minion_sacrifice", Upgraded = upgraded }, To = CardPileName.Hand }
+    ] };
+    var before = Form(false); var after = Form(true);
+    Check(CardText.Render(after, true, upgradeBaseline: before)
+        == "将1张[green]仆从打击+[/green]添加到你的手牌。\n将1张[green]仆从捐躯+[/green]添加到你的手牌。");
+    Check(CardText.Render(after, false, upgradeBaseline: before).Contains("[green]minion strike+[/green]"));
+    Check(!CardText.Render(before, true).Contains('+'));
+    Check(!CardText.Render(after, true).Contains("[green]"));
+    Check(!CardText.Render(after, true, upgradeBaseline: after).Contains("[green]"));
+    Check(!CardText.Render(before, true, upgradeBaseline: before).Contains("[green]"));
+    CardForm Nested(bool upgraded) => new() { Cost = new(), Rules = [new()
+    {
+        Trigger = new() { Event = RuleEvent.CardPlayed }, Effects = [new()
+        {
+            Kind = EffectKind.Damage, Target = "random_enemy", Amount = 1, OnFatal = Form(upgraded).Immediate
+        }]
+    }] };
+    Check(CardText.Render(Nested(true), true, upgradeBaseline: Nested(false)).Contains("[green]仆从捐躯+[/green]"));
+    return Task.CompletedTask;
+});
+await Test("upgrade conditions highlight changed operands through rules, grouped effects and fatal payoffs", () =>
+{
+    var before = new EffectCondition { Op = Comparison.Ge, Left = new() { Stat = "block" }, Right = 15 };
+    var after = before with { Right = 12 };
+    Check(CardText.Condition(after, true, upgradeBaseline: before, highlightUpgrade: true) == "你的格挡 ≥ [green]12[/green]");
+    Check(CardText.Condition(after, false, upgradeBaseline: before, highlightUpgrade: true) == "your block ≥ [green]12[/green]");
+    var compound = new EffectCondition { All = [before, new() { Not = before }] };
+    var changed = new EffectCondition { All = [after, new() { Not = after }] };
+    Check(CardText.Condition(changed, true, upgradeBaseline: compound, highlightUpgrade: true)
+        == "你的格挡 ≥ [green]12[/green]且不满足 你的格挡 ≥ [green]12[/green]");
+    CardForm Form(EffectCondition condition) => new() { Cost = new() { Energy = 2 }, Rules = [new()
+    {
+        Trigger = new() { Event = RuleEvent.TurnEnd }, Condition = condition,
+        Effects = [new() { Kind = EffectKind.Damage, Target = "all_enemies", Amount = 12 }]
+    }] };
+    Check(CardText.Render(Form(after), true, upgradeBaseline: Form(before)).Contains("若你的格挡 ≥ [green]12[/green]，"));
+    Check(!CardText.Render(Form(after), true).Contains("[green]"));
+    CardForm Group(EffectCondition condition) => new() { Cost = new(), Effects = [
+        new() { Kind = EffectKind.GainEnergy, Amount = 1, Condition = condition },
+        new() { Kind = EffectKind.GainStars, Amount = 1, Condition = condition }] };
+    Check(CardText.Render(Group(after), true, upgradeBaseline: Group(before)).StartsWith("若你的格挡 ≥ [green]12[/green]，"));
+    CardForm Fatal(EffectCondition condition) => new() { Cost = new(), Effects = [new()
+    {
+        Kind = EffectKind.Damage, Target = "enemy", Amount = 1,
+        OnFatal = [new() { Kind = EffectKind.Draw, Amount = 1, Condition = condition }]
+    }] };
+    Check(CardText.Render(Fatal(after), true, upgradeBaseline: Fatal(before)).Contains("斩杀时，若你的格挡 ≥ [green]12[/green]，抽1张牌"));
+    var energyBefore = before with { Left = new() { Stat = "energy" }, Right = 3 };
+    var energyAfter = energyBefore with { Right = 2 };
+    Check(CardText.Condition(energyAfter, true, (kind, value) => CardText.ResourceText(kind, value, "ironclad"),
+        upgradeBaseline: energyBefore, highlightUpgrade: true).Contains("[green][img]"));
     return Task.CompletedTask;
 });
 await Test("star event triggers and event amounts use shared resource icons in both languages", () =>
@@ -1670,6 +1732,11 @@ await Test("new event mechanics obey character gates and appear in provider inst
     var regent = context with { Run = JsonSerializer.SerializeToElement(new { character = "REGENT" }) };
     string regentSystem = PromptBuilder.Build(config, regent).System;
     foreach (string field in new[] { "forged", "stars_gained", "stars_spent", "event_paid_stars", "last_in_series" }) Check(regentSystem.Contains(field));
+    foreach (string character in new[] { "IRONCLAD", "NECROBINDER" })
+    {
+        string instructions = PromptBuilder.Build(config, context with { Run = JsonSerializer.SerializeToElement(new { character }) }).System;
+        Check(instructions.Contains("damage_given observes self;") && !instructions.Contains("damage_given observes self or Osty"));
+    }
 });
 await Test("event filters and source references render all meaningful restrictions", () =>
 {
@@ -1695,6 +1762,11 @@ await Test("event descriptions use native-style subjects and preserve damage and
     string text = CardText.RenderRule(mark, true, combatIsImplicit: true);
     Check(text == "每当奥斯提对敌人造成攻击伤害时，对该敌人给予等量于本次未被格挡的伤害的灾厄。");
     Check(CardText.RenderRule(mark, false).Contains("After Osty deals attack damage to an enemy"));
+    var defaultDamage = mark with { Trigger = new() { Event = RuleEvent.DamageGiven } };
+    Check(CardText.RenderRule(defaultDamage, true).Contains("每当你造成伤害时") && !CardText.RenderRule(defaultDamage, true).Contains("你或奥斯提"));
+    Check(CardText.RenderRule(defaultDamage, false).Contains("After you deal damage"));
+    Check(CardText.RenderRule(mark with { Trigger = new() { Event = RuleEvent.DamageGiven, Where = new() { Actor = "self_or_osty" } } }, true)
+        .Contains("每当你或奥斯提造成伤害时"));
     var block = mark with
     {
         Trigger = new() { Event = RuleEvent.BlockGained },

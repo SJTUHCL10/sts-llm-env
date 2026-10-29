@@ -395,7 +395,8 @@ static class Smoke
         // Use native localization/formatters with an in-memory table; no Godot assets or save initialization.
         var localization = (LocManager)RuntimeHelpers.GetUninitializedObject(typeof(LocManager));
         AccessTools.Field(typeof(LocManager), "_tables").SetValue(localization,
-            new Dictionary<string, LocTable> { ["cards"] = new("cards", new()) });
+            new Dictionary<string, LocTable> { ["cards"] = new("cards", new()),
+                ["card_keywords"] = new("card_keywords", new() { ["RETAIN.title"] = "保留", ["EXHAUST.title"] = "消耗", ["PERIOD"] = "。" }) });
         AccessTools.PropertySetter(typeof(LocManager), nameof(LocManager.Language)).Invoke(localization, ["zhs"]);
         AccessTools.PropertySetter(typeof(LocManager), nameof(LocManager.CultureInfo)).Invoke(localization, [System.Globalization.CultureInfo.InvariantCulture]);
         AccessTools.Method(typeof(LocManager), "LoadLocFormatters").Invoke(localization, null);
@@ -721,6 +722,7 @@ static class Smoke
     }
     private static void CheckQuantityAndDecimalContracts(Player owner, Player other, CombatState combat)
     {
+        CheckCreatedCardPreviewContracts(owner, combat);
         CheckRuleLimitPreviewContracts(owner, combat);
         var card = combat.CreateCard<NeowGeneratedCard>(owner);
         CardForm Form(int count) => new()
@@ -841,6 +843,18 @@ static class Smoke
         var osty = combat.CreateCreature(ModelDb.Monster<Osty>().ToMutable(), CombatSide.Player, null);
         combat.AddCreature(osty); owner.PlayerCombatState!.AddPetInternal(osty);
         osty.SetMaxHpInternal(30); osty.SetCurrentHpInternal(30);
+        var ownDamage = new GeneratedRuleEvent(RuleEvent.DamageGiven) { Actor = owner.Creature };
+        var ostyDamage = ownDamage with { Actor = osty };
+        var otherDamage = ownDamage with { Actor = attacker.Creature };
+        var defaultTrigger = new EffectTrigger { Event = RuleEvent.DamageGiven };
+        Check(ownDamage.Matches(defaultTrigger, owner.Creature, ownDamage.Facts(owner.Creature)));
+        Check(!ostyDamage.Matches(defaultTrigger, owner.Creature, ostyDamage.Facts(owner.Creature)));
+        Check(!otherDamage.Matches(defaultTrigger, owner.Creature, otherDamage.Facts(owner.Creature)));
+        Check(!ostyDamage.Matches(defaultTrigger with { Where = new() { SourceKind = "unknown" } }, owner.Creature, ostyDamage.Facts(owner.Creature)));
+        foreach (string actor in new[] { "osty", "self_or_osty" })
+            Check(ostyDamage.Matches(defaultTrigger with { Where = new() { Actor = actor } }, owner.Creature, ostyDamage.Facts(owner.Creature)));
+        Check(ownDamage.Matches(defaultTrigger with { Where = new() { Actor = "self_or_osty" } }, owner.Creature, ownDamage.Facts(owner.Creature)));
+        Console.WriteLine("PASS damage_given defaults to self with a live Osty; explicit Osty and combined actor filters remain supported");
         ((DieForYouPower)ModelDb.Power<DieForYouPower>().ToMutable()).ApplyInternal(osty, 1, silent: true);
         osty.GainBlockInternal(100);
         var thorns = (ThornsPower)ModelDb.Power<ThornsPower>().ToMutable(); thorns.ApplyInternal(osty, 3, silent: true);
@@ -927,6 +941,51 @@ static class Smoke
         }
         card.DowngradeInternal();
         Console.WriteLine("PASS native Dexterity/Frail apply to direct block only, with matching executor/preview/upgrade/save properties");
+    }
+    private static void CheckCreatedCardPreviewContracts(Player owner, CombatState combat)
+    {
+        CardForm Form(bool upgraded) => new() { Cost = new() { Energy = 1 }, Keywords = [ForgeKeyword.Exhaust], Effects =
+        [
+            new() { Kind = EffectKind.CreateCard, Card = new() { Id = "minion_strike", Upgraded = upgraded }, To = CardPileName.Hand },
+            new() { Kind = EffectKind.CreateCard, Card = new() { Id = "minion_sacrifice", Upgraded = upgraded }, To = CardPileName.Hand }
+        ] };
+        void CheckTips(NeowGeneratedCard card, bool upgraded)
+        {
+            var tips = NeowGeneratedCard.EffectHoverTips(card.ActiveForm).OfType<MegaCrit.Sts2.Core.HoverTips.CardHoverTip>().ToArray();
+            Check(tips.Length == 2 && tips.All(t => t.Card.IsUpgraded == upgraded));
+            Check(tips[0].Card.DynamicVars.Damage.BaseValue == (upgraded ? 9 : 6));
+            Check(tips[1].Card.DynamicVars.Block.BaseValue == (upgraded ? 10 : 7));
+        }
+        var card = combat.CreateCard<NeowGeneratedCard>(owner);
+        card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "点兵成阵", Type = ForgeCardType.Skill,
+            Rarity = ForgeRarity.Uncommon, Forms = [Form(false), Form(true)] });
+        CheckTips(card, false);
+        card.UpgradeInternal(); card.FinalizeUpgradeInternal();
+        var restored = (NeowGeneratedCard)CardModel.FromSerializable(card.ToSerializable()); restored.Owner = owner;
+        foreach (var preview in new[] { card, (NeowGeneratedCard)card.MutableClone(), restored })
+        {
+            CheckTips(preview, true);
+            var flags = preview.BeginUpgradePreview();
+            try
+            {
+                string text = preview.GetDescriptionForUpgradePreview();
+                Check(text.Contains("[green]仆从打击+[/green]") && text.Contains("[green]仆从捐躯+[/green]"));
+                Check(!text.Contains("[green]1[/green]"));
+            }
+            finally { preview.EndUpgradePreview(flags); }
+            Check(!preview.RuntimeDescriptionText(true).Contains("[green]"));
+        }
+        card.DowngradeInternal(); CheckTips(card, false);
+        var mixed = Form(false) with { Effects = [Form(false).Immediate[0], Form(true).Immediate[0], Form(true).Immediate[0]] };
+        var mixedTips = NeowGeneratedCard.EffectHoverTips(mixed).OfType<MegaCrit.Sts2.Core.HoverTips.CardHoverTip>().ToArray();
+        Check(mixedTips.Length == 2 && !mixedTips[0].Card.IsUpgraded && mixedTips[1].Card.IsUpgraded && mixedTips[0].Id != mixedTips[1].Id);
+        foreach (string id in new[] { "minion_strike", "minion_sacrifice", "minion_dive" })
+        {
+            var minion = NativeMechanics.Card(id);
+            Check(minion.IsCanonical && !minion.IsUpgraded && NativeMechanics.Matches(minion, new() { Tag = "minion" }));
+        }
+        Check(!NativeMechanics.Matches(NativeMechanics.Card("shiv"), new() { Tag = "minion" }));
+        Console.WriteLine("PASS created-card hover previews preserve upgrades, distinct forms, clone/save restoration and native Minion tags");
     }
     private static int _generatedUpgradeRolls;
     private static void CaptureUpgradeRoll(CardModel card)
@@ -1302,6 +1361,47 @@ static class Smoke
             try { Check(!card.GetDescriptionForUpgradePreview().Contains("[green]")); }
             finally { card.EndUpgradePreview(baseFlags); }
         }
+        var block = new NumberExpression { Stat = "block", Of = "self" };
+        CardForm Punch(NumberExpression amount) => new() { Cost = new() { Energy = 1 }, Keywords = [ForgeKeyword.Retain],
+            Effects = [new() { Kind = EffectKind.Damage, Target = "enemy", Amount = amount }] };
+        CardForm Barrage(int threshold, int damage) => new() { Cost = new() { Energy = 2 }, Rules = [new()
+        {
+            Trigger = new() { Event = RuleEvent.TurnEnd },
+            Condition = new() { Op = Comparison.Ge, Left = new() { Stat = "block" }, Right = threshold },
+            Effects = [new() { Kind = EffectKind.Damage, Target = "all_enemies", Amount = damage }]
+        }] };
+        foreach (var definition in new[]
+        {
+            new CardDefinition { Name = "蓄甲崩拳", Type = ForgeCardType.Attack, Rarity = ForgeRarity.Uncommon,
+                Forms = [Punch(block), Punch(new() { Add = [block, 4] })] },
+            new CardDefinition { Name = "壁垒炮击", Type = ForgeCardType.Power, Rarity = ForgeRarity.Rare,
+                Forms = [Barrage(15, 12), Barrage(12, 16)] }
+        })
+        {
+            var upgraded = (NeowGeneratedCard)ModelDb.Card<NeowGeneratedCard>().ToMutable(); upgraded.Owner = owner;
+            upgraded.DefinitionPayload = Wire.Encode(definition);
+            upgraded.UpgradeInternal(); upgraded.FinalizeUpgradeInternal();
+            var loaded = (NeowGeneratedCard)CardModel.FromSerializable(upgraded.ToSerializable()); loaded.Owner = owner;
+            foreach (var preview in new[] { upgraded, loaded })
+            {
+                Check(!preview.RuntimeDescriptionText(true).Contains("[green]"));
+                var flags = preview.BeginUpgradePreview();
+                try
+                {
+                    string text = preview.GetDescriptionForUpgradePreview();
+                    Check(!text.Contains("[green]你的格挡"));
+                    if (definition.Type == ForgeCardType.Attack)
+                        Check(text.Contains("(你的格挡 + [green]4[/green])") && text.Split("[green]").Length == 2);
+                    else
+                        Check(text.Contains("你的格挡 ≥ [green]12[/green]") && text.Contains("[green]16[/green]点伤害"));
+                }
+                finally { preview.EndUpgradePreview(flags); }
+                Check(!preview.RuntimeDescriptionText(true).Contains("[green]"));
+                preview.DowngradeInternal();
+                Check(!preview.GetDescriptionForUpgradePreview().Contains("[green]"));
+            }
+        }
+        Console.WriteLine("PASS added formula terms and rule thresholds highlight independently through native upgrade/save/load/downgrade previews");
         var furnaceForm = new CardForm { Cost = new() { Energy = 1 }, Rules = [new() { Trigger = new() { Event = RuleEvent.StarsSpent, Limit = new() { Count = 2, Within = CounterScope.Turn } }, Effects = [new() { Kind = EffectKind.Forge, Amount = 1 }] }] };
         var furnace = (NeowGeneratedCard)ModelDb.Card<NeowGeneratedCard>().ToMutable(); furnace.Owner = owner;
         furnace.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "星火熔炉", Type = ForgeCardType.Power, Rarity = ForgeRarity.Uncommon, Forms = [furnaceForm, furnaceForm] });

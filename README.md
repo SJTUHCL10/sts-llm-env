@@ -4,9 +4,9 @@ English | [简体中文](README.zh-CN.md)
 
 Adds LLM-generated card rewards to Slay the Spire 2 singleplayer. Neow designs new cards based on your deck and combat history, then adds them to the game's combat card rewards.
 
-Current mod version: `0.1.0`. Target game version: `v0.111.0`. Singleplayer only; compatibility needs to be checked again after game updates. Card artwork uses game placeholders, and no other mods are required.
+Current mod version: `0.2.0`. Target game version: `v0.111.0`. Singleplayer only; compatibility needs to be checked again after game updates. Card artwork uses game placeholders, and no other mods are required.
 
-Changes since the last public release are listed in the [changelog](CHANGELOG.md).
+See the [v0.2.0 release notes](RELEASE_NOTES.md) for highlights and the [changelog](CHANGELOG.md) for details.
 
 ## Installation
 
@@ -41,7 +41,7 @@ Requires the .NET 9 SDK (or a compatible SDK that can build `net9.0`) and a loca
 .\install.ps1 -GameDir 'C:\Games\Slay the Spire 2'
 ```
 
-By default, `build.ps1` runs core tests and game API checks, then creates `build/NeowsCompany/` and `build/NeowsCompany-0.1.0.zip`. If the SDK is not on PATH, pass `-DotnetExe '<path to dotnet.exe>'`. Exit the game before running the installation script; it preserves existing configuration and runtime data. Both English and Chinese READMEs are included in the package.
+By default, `build.ps1` runs core tests and game API checks, then creates `build/NeowsCompany/` and `build/NeowsCompany-0.2.0.zip`. If the SDK is not on PATH, pass `-DotnetExe '<path to dotnet.exe>'`. Exit the game before running the installation script; it preserves existing configuration and runtime data. Both English and Chinese READMEs are included in the package.
 
 You can test the core and generation pipeline without the game or a live LLM:
 

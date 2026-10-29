@@ -62,25 +62,30 @@ public static class CardText
         var previous = baseline?.Add ?? baseline?.Sub ?? baseline?.Mul ?? baseline?.Div;
         if (current is not null && previous is not null && current.Length == previous.Length && Operator(number) == Operator(baseline))
             return "(" + string.Join(Operator(number), current.Select((term, i) => NumberUpgrade(term, previous[i], chinese, fallback, resource, cost))) + ")";
+        // An added wrapper can retain the complete old expression as one of its terms.
+        if (current is not null && current.Any(term => Wire.Encode(Normalize(term)) == Wire.Encode(baseline)))
+            return "(" + string.Join(Operator(number), current.Select(term => NumberUpgrade(term, baseline, chinese, fallback, resource, cost))) + ")";
         // A changed operator/reference or a new subtree has no reliable leaf correspondence.
         return "[green]" + Number(number, chinese, fallback, resource, cost) + "[/green]";
     }
     private static string CountNumber(NumberExpression? number, bool chinese, int fallback = 1, Func<string, string, string>? resource = null, CardCost? cost = null)
         => number?.Value is decimal value ? EffectRules.Count(value).ToString(System.Globalization.CultureInfo.InvariantCulture) : Number(number, chinese, fallback, resource, cost);
-    public static string Condition(EffectCondition? condition, bool chinese, Func<string, string, string>? resource = null, CardCost? cost = null)
+    public static string Condition(EffectCondition? condition, bool chinese, Func<string, string, string>? resource = null, CardCost? cost = null,
+        EffectCondition? upgradeBaseline = null, bool highlightUpgrade = false)
     {
         if (condition is null) return "";
-        if (condition.Not is { } not) return (chinese ? "不满足 " : "not ") + Condition(not, chinese, resource, cost);
-        if (condition.All is { } all) return string.Join(chinese ? "且" : " and ", all.Select(c => Condition(c, chinese, resource, cost)));
-        if (condition.Any is { } any) return string.Join(chinese ? "或" : " or ", any.Select(c => Condition(c, chinese, resource, cost)));
+        if (condition.Not is { } not) return (chinese ? "不满足 " : "not ") + Condition(not, chinese, resource, cost, upgradeBaseline?.Not, highlightUpgrade);
+        if (condition.All is { } all) return string.Join(chinese ? "且" : " and ", all.Select((c, i) => Condition(c, chinese, resource, cost, upgradeBaseline?.All?.ElementAtOrDefault(i), highlightUpgrade)));
+        if (condition.Any is { } any) return string.Join(chinese ? "或" : " or ", any.Select((c, i) => Condition(c, chinese, resource, cost, upgradeBaseline?.Any?.ElementAtOrDefault(i), highlightUpgrade)));
         string op = condition.Op switch { Comparison.Eq => "=", Comparison.Ne => "≠", Comparison.Gt => ">", Comparison.Ge => "≥", Comparison.Lt => "<", _ => "≤" };
-        string Operand(NumberExpression? number, NumberExpression? other)
+        string Operand(NumberExpression? number, NumberExpression? other, NumberExpression? baseline)
         {
-            string text = Number(number, chinese, resource: resource, cost: cost);
+            string text = highlightUpgrade ? NumberUpgrade(number, baseline, chinese, resource: resource, cost: cost)
+                : Number(number, chinese, resource: resource, cost: cost);
             string? kind = other?.Stat switch { "energy" or "paid_energy" => "energy", "stars" or "paid_stars" => "stars", _ => null };
             return number?.Value is not null && kind is not null ? Resource(kind, text, chinese, resource) : text;
         }
-        return Operand(condition.Left, condition.Right) + " " + op + " " + Operand(condition.Right, condition.Left);
+        return Operand(condition.Left, condition.Right, upgradeBaseline?.Left) + " " + op + " " + Operand(condition.Right, condition.Left, upgradeBaseline?.Right);
     }
     public static string Target(EffectTarget? target, bool chinese, Func<string, string, string>? resource = null, CardCost? cost = null, Func<NumberExpression?, int, string>? countText = null)
     {
@@ -110,21 +115,38 @@ public static class CardText
     }
     public static string Pile(CardPileName pile, bool chinese) => chinese ? pile switch { CardPileName.Hand => "手牌", CardPileName.Draw => "抽牌堆", CardPileName.Discard => "弃牌堆", _ => "消耗堆" } : pile.ToString().ToLowerInvariant();
     public static string Render(CardDefinition card, bool chinese, Func<int, string>? amount = null, bool upgraded = false, Func<string, string, string>? resource = null, Func<int, string, NumberExpression?, int, string>? quantity = null, Func<int, int, string>? limit = null) => Render(card.Form(upgraded), chinese, amount, card.Type, resource, quantity, limit);
-    public static string Render(CardForm form, bool chinese, Func<int, string>? amount = null, ForgeCardType? cardType = null, Func<string, string, string>? resource = null, Func<int, string, NumberExpression?, int, string>? quantity = null, Func<int, int, string>? limit = null)
+    public static string Render(CardForm form, bool chinese, Func<int, string>? amount = null, ForgeCardType? cardType = null, Func<string, string, string>? resource = null, Func<int, string, NumberExpression?, int, string>? quantity = null, Func<int, int, string>? limit = null,
+        CardForm? upgradeBaseline = null)
     {
+        var conditions = new Dictionary<EffectCondition, EffectCondition?>(ReferenceEqualityComparer.Instance);
+        if (upgradeBaseline is not null)
+        {
+            var before = upgradeBaseline.AllEffects;
+            foreach (var (effect, i) in form.AllEffects.Select((effect, i) => (effect, i)))
+                if (effect.Condition is { } condition)
+                    conditions[condition] = i < before.Length && effect.Kind == before[i].Kind ? before[i].Condition : null;
+            for (int i = 0; i < form.Listeners.Length; i++)
+                if (form.Listeners[i].Condition is { } condition)
+                    conditions[condition] = upgradeBaseline.Listeners.ElementAtOrDefault(i)?.Condition;
+        }
+        string ConditionText(EffectCondition condition) => Condition(condition, chinese, resource, form.Cost,
+            conditions.GetValueOrDefault(condition), upgradeBaseline is not null);
         int index = 0;
         string Action(CardEffect effect)
         {
             int slot = index++;
+            var before = upgradeBaseline?.AllEffects;
+            var baseline = before is not null && slot < before.Length && before[slot].Kind == effect.Kind ? before[slot] : null;
             return RenderEffect(effect, chinese, amount?.Invoke(slot), resource, form.Cost,
-                quantity is null ? null : (name, value, fallback) => quantity(slot, name, value, fallback), Action);
+                quantity is null ? null : (name, value, fallback) => quantity(slot, name, value, fallback), Action, ConditionText,
+                baseline, upgradeBaseline is not null);
         }
-        var lines = RenderEffects(form.Immediate, chinese, Action, resource, form.Cost).ToList();
+        var lines = RenderEffects(form.Immediate, chinese, Action, resource, form.Cost, ConditionText).ToList();
         for (int i = 0; i < form.Listeners.Length; i++)
         {
             int ruleIndex = i;
             lines.Add(RenderRule(form.Listeners[i], chinese, Action, cardType == ForgeCardType.Power, resource, form.Cost,
-                limit is null ? null : count => limit(ruleIndex, count)));
+                limit is null ? null : count => limit(ruleIndex, count), ConditionText));
         }
         return string.Join("\n", lines);
     }
@@ -141,7 +163,7 @@ public static class CardText
         _ => false
     };
     private static IEnumerable<string> RenderEffects(CardEffect[] effects, bool chinese, Func<CardEffect, string> render,
-        Func<string, string, string>? resource, CardCost? cost)
+        Func<string, string, string>? resource, CardCost? cost, Func<EffectCondition, string>? conditionText = null)
     {
         for (int i = 0; i < effects.Length;)
         {
@@ -154,13 +176,14 @@ public static class CardText
             else
             {
                 var texts = effects[i..end].Select(e => render(e with { Condition = null })).ToArray();
-                yield return (chinese ? "若" : "If ") + Condition(effect.Condition, chinese, resource, cost) + (chinese ? "，" : ": ")
+                yield return (chinese ? "若" : "If ") + (conditionText?.Invoke(effect.Condition!) ?? Condition(effect.Condition, chinese, resource, cost)) + (chinese ? "，" : ": ")
                     + (chinese ? string.Join("，", texts.Select(t => t.TrimEnd('。'))) + "。" : string.Join(" ", texts));
             }
             i = end;
         }
     }
-    public static string RenderRule(CardRule rule, bool chinese, Func<CardEffect, string>? render = null, bool combatIsImplicit = false, Func<string, string, string>? resource = null, CardCost? cost = null, Func<int, string>? limit = null)
+    public static string RenderRule(CardRule rule, bool chinese, Func<CardEffect, string>? render = null, bool combatIsImplicit = false, Func<string, string, string>? resource = null, CardCost? cost = null, Func<int, string>? limit = null,
+        Func<EffectCondition, string>? conditionText = null)
     {
         string actor = EventRelation(rule.Trigger.Where?.Actor ?? "self", chinese);
         string when = rule.Trigger.Event switch
@@ -194,8 +217,8 @@ public static class CardText
                 : scope + (o.First is int firstEnglish ? $"the first {firstEnglish} times you " : o.Nth is int nth ? $"the {nth}th time you " : $"{(scope.Length == 0 ? "Every" : "every")} {o.Every} times you ") + verb + " a " + card;
         }
         string quota = rule.Trigger.Limit is { } quotaLimit ? chinese ? $"（{(quotaLimit.Within == CounterScope.Turn ? "每回合" : "本场战斗")}最多生效{limit?.Invoke(quotaLimit.Count) ?? quotaLimit.Count.ToString()}次）" : $" (at most {limit?.Invoke(quotaLimit.Count) ?? quotaLimit.Count.ToString()} activations per {quotaLimit.Within.ToString().ToLowerInvariant()})" : "";
-        string condition = rule.Condition is null ? "" : (chinese ? "若" : "if ") + Condition(rule.Condition, chinese, resource, cost) + (chinese ? "，" : ": ");
-        var effects = RenderEffects(rule.Effects, chinese, render ?? (e => RenderEffect(e, chinese, resource: resource, cost: cost)), resource, cost);
+        string condition = rule.Condition is null ? "" : (chinese ? "若" : "if ") + (conditionText?.Invoke(rule.Condition) ?? Condition(rule.Condition, chinese, resource, cost)) + (chinese ? "，" : ": ");
+        var effects = RenderEffects(rule.Effects, chinese, render ?? (e => RenderEffect(e, chinese, resource: resource, cost: cost, conditionText: conditionText)), resource, cost, conditionText);
         string text = life + when + quota + (chinese ? "，" : ", ") + condition
             + (chinese ? string.Join(rule.Effects.Any(e => e.Repeat is not null) ? "。" : "，", effects.Select(t => t.TrimEnd('。'))) + "。" : string.Join(" ", effects));
         string eventAmount = rule.Trigger.Event switch
@@ -230,7 +253,7 @@ public static class CardText
     private static string EventWhen(EffectTrigger trigger, bool chinese, Func<string, string, string>? resource)
     {
         var w = trigger.Where;
-        string actor = EventRelation(w?.Actor ?? (trigger.Event == RuleEvent.DamageGiven ? "self_or_osty" : "self"), chinese);
+        string actor = EventRelation(w?.Actor ?? "self", chinese);
         string recipient = EventRelation(w?.Target ?? "self", chinese);
         string damage = chinese ? w?.Attack switch { true => "攻击伤害", false => "非攻击伤害", _ => "伤害" }
             : w?.Attack switch { true => "attack damage", false => "non-attack damage", _ => "damage" };
@@ -341,7 +364,8 @@ public static class CardText
         if (w.AutoPlay is bool auto) yield return chinese ? auto ? "仅限自动打出" : "仅限手动打出" : auto ? "autoplay only" : "manual play only";
         if (w.LastInSeries is bool last) yield return chinese ? last ? "仅限连打的最后一次" : "排除连打的最后一次" : last ? "last play in series only" : "excluding the last play in series";
     }
-    public static string RenderEffect(CardEffect e, bool chinese, string? amount = null, Func<string, string, string>? resource = null, CardCost? cost = null, Func<string, NumberExpression?, int, string>? numeric = null, Func<CardEffect, string>? nested = null)
+    public static string RenderEffect(CardEffect e, bool chinese, string? amount = null, Func<string, string, string>? resource = null, CardCost? cost = null, Func<string, NumberExpression?, int, string>? numeric = null, Func<CardEffect, string>? nested = null,
+        Func<EffectCondition, string>? conditionText = null, CardEffect? upgradeBaseline = null, bool highlightUpgrade = false)
     {
         string Quantity(string slot, NumberExpression? value, int fallback = 1) => numeric?.Invoke(slot, value, fallback) ?? CountNumber(value, chinese, fallback, resource, cost);
         string? repeat = e.Repeat is null ? null : Quantity("repeat", e.Repeat);
@@ -358,6 +382,8 @@ public static class CardText
         if (e.Card?.Pool is not null) source += chinese ? "牌" : "cards";
         if (e.Card?.Pick == SelectionMode.Random) source = (chinese ? "随机" : "random ") + source;
         if (e.Card?.Upgraded == true) source += "+";
+        if (highlightUpgrade && e.Card?.Upgraded == true && upgradeBaseline?.Card?.Upgraded != true)
+            source = "[green]" + source + "[/green]";
         if (e.Card?.Pick == SelectionMode.Choose) source = chinese ? $"从{e.Card.Options ?? 3}张随机{source}中选择1张" : $"choose one of {e.Card.Options ?? 3} random {source}";
         string destination = e.To is { } to ? (chinese ? "你的" : "your ") + Pile(to, chinese) + (to == CardPileName.Draw ? e.Position switch { "bottom" => chinese ? "底部" : " bottom", "random" => chinese ? "随机位置" : " randomly", _ => chinese ? "顶部" : " top" } : "") : "";
         string text = chinese ? e.Kind switch
@@ -398,10 +424,10 @@ public static class CardText
         }
         if (e.OnFatal is { } fatal)
         {
-            var payoff = RenderEffects(fatal, chinese, nested ?? (child => RenderEffect(child, chinese, resource: resource, cost: cost)), resource, cost);
+            var payoff = RenderEffects(fatal, chinese, nested ?? (child => RenderEffect(child, chinese, resource: resource, cost: cost, conditionText: conditionText)), resource, cost, conditionText);
             text += chinese ? "\n斩杀时，" + string.Join(fatal.Any(e => e.Repeat is not null) ? "。" : "，", payoff.Select(t => t.TrimEnd('。'))) + "。" : " Fatal: " + string.Join(" ", payoff);
         }
-        if (e.Condition is not null) text = (chinese ? "若" : "If ") + Condition(e.Condition, chinese, resource, cost) + (chinese ? "，" : ": ") + text;
+        if (e.Condition is not null) text = (chinese ? "若" : "If ") + (conditionText?.Invoke(e.Condition) ?? Condition(e.Condition, chinese, resource, cost)) + (chinese ? "，" : ": ") + text;
         if (repeat is not null && !attackHits)
         {
             // A resolved preview must retain its count slot and upgrade highlighting.
