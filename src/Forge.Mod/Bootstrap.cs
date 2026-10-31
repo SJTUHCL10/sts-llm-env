@@ -59,6 +59,8 @@ public static class Bootstrap
 
     internal static void VerifyCompatibility()
     {
+        if (AccessTools.PropertyGetter(typeof(MegaCrit.Sts2.Core.Runs.RunManager), "State") is null)
+            throw new MissingMemberException("RunManager.State");
         if (AccessTools.Method(typeof(MegaCrit.Sts2.Core.Commands.OrbCmd), "Evoke",
             [typeof(MegaCrit.Sts2.Core.GameActions.Multiplayer.PlayerChoiceContext), typeof(MegaCrit.Sts2.Core.Entities.Players.Player), typeof(MegaCrit.Sts2.Core.Models.OrbModel), typeof(bool)]) is null)
             throw new MissingMethodException("OrbCmd.Evoke");

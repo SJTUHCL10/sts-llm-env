@@ -67,7 +67,7 @@ internal static class RewardPopulatePatch
         var options = (CardCreationOptions?)(Rerolled.GetValue(__instance) is true
             ? RerollOptions.GetValue(__instance) : Options.GetValue(__instance));
         if (options?.Source != CardCreationSource.Encounter) return;
-        __state = new GeneratedRewardCreation(__instance.Player, options, () => runtime.FreezeReward(__instance.Player));
+        __state = new GeneratedRewardCreation(__instance.Player, options, () => runtime.FreezeReward(__instance));
     }
     private static void Postfix(CardReward __instance, GeneratedRewardCreation? __state)
     {
@@ -91,7 +91,7 @@ internal static class RewardSelectPatch
         bool selected = await original;
         Bootstrap.Safe(() =>
         {
-            runtime.RecordRewardChoice(reward.Player);
+            runtime.RecordRewardChoice(reward);
             runtime.Audit("reward_closed", new { selected, deck = runtime.CaptureCards(reward.Player.Deck.Cards) });
         });
         return selected;
@@ -100,6 +100,16 @@ internal static class RewardSelectPatch
 
 [HarmonyPatch(typeof(RunManager), nameof(RunManager.CleanUp))]
 internal static class RunCleanupPatch
+{
+    private static readonly PropertyInfo State = AccessTools.Property(typeof(RunManager), "State");
+    private static void Prefix(RunManager __instance, bool graceful) => Bootstrap.Safe(() =>
+    {
+        if (State.GetValue(__instance) is RunState run) Bootstrap.Runtime?.UnloadRun(run.TotalFloor, graceful);
+    });
+}
+
+[HarmonyPatch(typeof(RunManager), nameof(RunManager.OnEnded))]
+internal static class RunEndedPatch
 {
     private static void Prefix() => Bootstrap.Safe(() => Bootstrap.Runtime?.StopRun());
 }

@@ -10,6 +10,7 @@ using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Rewards;
 
 namespace Forge.Mod;
 
@@ -17,6 +18,7 @@ internal sealed class ForgeRuntime(string root, ForgeConfig config)
 {
     private static readonly HttpClient Http = new() { Timeout = Timeout.InfiniteTimeSpan };
     private GenerationSession? _session;
+    private int _sessionFloor;
     private JsonlJournal? _generationJournal;
     private readonly Queue<JsonElement> _events = new();
     private StateCapture _capture = new();
@@ -24,7 +26,7 @@ internal sealed class ForgeRuntime(string root, ForgeConfig config)
     private Player? _player;
     private int _totalEvents;
     private CandidatePool? _pool;
-    private readonly List<GenerationSession> _retired = new();
+    private readonly List<(int Floor, GenerationSession Session)> _retired = new();
     private CombatSummary _summary = new();
     private JsonElement? _firstRoundSummary;
     private bool _won;
@@ -32,7 +34,7 @@ internal sealed class ForgeRuntime(string root, ForgeConfig config)
     private bool _firstEnemyTurnEnded;
     private bool _ended;
     private bool _frozen;
-    private CardDefinition[] _frozenCards = [];
+    private readonly Dictionary<CardReward, (string CombatKey, string Key)> _rewardKeys = new();
     private GenerationContext? _lastContext;
     internal ForgeConfig Config => config;
     internal bool IsSingleplayer => RunManager.Instance.NetService?.Type == NetGameType.Singleplayer;
@@ -49,7 +51,11 @@ internal sealed class ForgeRuntime(string root, ForgeConfig config)
 
     public void Subscribe()
     {
-        RunManager.Instance.RunStarted += _ => Bootstrap.Safe(StopRun);
+        RunManager.Instance.RunStarted += run => Bootstrap.Safe(() =>
+        {
+            if (IsSingleplayer && LocalContext.GetMe(run) is { } player) EnsurePool(player);
+            else StopRun();
+        });
         var manager = CombatManager.Instance;
         manager.CombatBegan += combat => Bootstrap.Safe(() => Begin(combat));
         manager.TurnStarted += combat => Bootstrap.Safe(() => Boundary(combat, "turn_started"));
@@ -62,10 +68,12 @@ internal sealed class ForgeRuntime(string root, ForgeConfig config)
     {
         Reset();
         if (!IsSingleplayer || !HasCombatCardReward(combat)) return;
-        _player = LocalContext.GetMe(combat);
-        if (_player is null) return;
-        EnsurePool(_player);
+        var player = LocalContext.GetMe(combat);
+        if (player is null) return;
+        EnsurePool(player);
+        _player = player;
         _combat = combat;
+        _sessionFloor = _player.RunState.TotalFloor;
         _capture = new StateCapture();
         string key = CombatKey(_player);
         string filename = key + "-" + DateTimeOffset.UtcNow.ToString("yyyyMMddTHHmmssfffffff") + ".jsonl";
@@ -170,49 +178,80 @@ internal sealed class ForgeRuntime(string root, ForgeConfig config)
         }
     }
 
-    internal CardDefinition[] FreezeReward(Player player)
+    internal CardDefinition[] FreezeReward(CardReward reward)
     {
         if (!Eligible) return [];
+        var player = reward.Player;
         EnsurePool(player);
-        string key = CombatKey(player);
-        if (_session?.Key == key && _frozen) return _frozenCards;
+        string combatKey = CombatKey(player);
+        string key = RewardKey(reward);
         CardDefinition[]? restored = null;
         // Import pre-pool frozen rewards only if written during this run, never from an older same-seed run.
         string legacy = Path.Combine(root, "data", "rewards", key + ".json");
-        if (!_pool!.HasReward(key) && File.Exists(legacy)
+        if (key == combatKey && !_pool!.HasReward(key) && File.Exists(legacy)
             && new DateTimeOffset(File.GetLastWriteTimeUtc(legacy)).ToUnixTimeSeconds() >= RunStartTime())
         {
             try { restored = Wire.Decode<CardDefinition[]>(File.ReadAllText(legacy));
                 if (restored.Length > 3) restored = null; }
             catch { Log.Warn("[NeowsCompany] Invalid legacy reward cache ignored."); }
         }
-        var cards = _pool.FreezeReward(key, config.GeneratedCardsPerReward, restored);
-        if (_session?.Key == key)
+        var cards = _pool!.FreezeReward(key, config.GeneratedCardsPerReward, restored, combatKey);
+        if (_session?.Key == combatKey)
         {
-            _frozen = true; _frozenCards = cards; _session.Seal();
+            _frozen = true; _session.Seal();
         }
         Audit("reward_frozen", new { key, run_key = _pool.RunKey, cards });
         return cards;
     }
 
-    internal void RecordRewardChoice(Player player)
+    private string RewardKey(CardReward reward)
     {
-        _pool?.RecordChoice(CombatKey(player), player.Deck.Cards.OfType<NeowGeneratedCard>().Select(c => c.Definition));
+        if (_rewardKeys.TryGetValue(reward, out var existing)) return existing.Key;
+        string combatKey = CombatKey(reward.Player);
+        // Native Populate order includes groups appended by relic hooks; retain identity for rerolls.
+        int index = _rewardKeys.Values.Count(entry => entry.CombatKey == combatKey);
+        // Keep the original key for group zero so existing snapshots and legacy caches still load.
+        string key = index == 0 ? combatKey : $"{combatKey}:reward:{index}";
+        _rewardKeys.Add(reward, (combatKey, key));
+        return key;
+    }
+
+    internal void RecordRewardChoice(CardReward reward)
+    {
+        if (_rewardKeys.TryGetValue(reward, out var entry))
+            _pool?.RecordChoice(entry.Key, reward.Player.Deck.Cards.OfType<NeowGeneratedCard>().Select(c => c.Definition));
     }
     private static long RunStartTime() => (long)HarmonyLib.AccessTools.Field(typeof(RunManager), "_startTime").GetValue(RunManager.Instance)!;
     private void EnsurePool(Player player)
     {
         var run = player.RunState;
         string key = AtomicStore.Key($"pool-v1|{RunStartTime()}|{run.Rng.StringSeed}|{run.AscensionLevel}|{player.Character.Id.Entry}");
+        ResumeRun(key);
+    }
+
+    internal void ResumeRun(string key)
+    {
         if (_pool?.RunKey == key) return;
-        _pool?.Close();
+        StopRun();
         _pool = new CandidatePool(Path.Combine(root, "data", "runs", key + ".json"), key, config.CandidatePoolCapacity, config.PromptHistoryLimit);
     }
+
+    internal void UnloadRun(int floor, bool graceful)
+    {
+        if (!graceful) { StopRun(); return; }
+        // CleanUp also runs for save/load. Only this floor's requests belong to the discarded attempt.
+        foreach (var item in _retired.Where(item => item.Floor == floor)) item.Session.Dispose();
+        _retired.RemoveAll(item => item.Floor == floor);
+        if (_sessionFloor == floor) { _session?.Dispose(); _won = false; }
+        Reset(preservePending: _sessionFloor < floor);
+        // Keep the same pool instance: historical publishers captured it before the reload.
+    }
+
     internal void StopRun()
     {
         _pool?.Close(); _pool = null;
         _session?.Dispose();
-        foreach (var session in _retired) session.Dispose();
+        foreach (var item in _retired) item.Session.Dispose();
         _retired.Clear();
         _won = false;
         Reset();
@@ -230,20 +269,22 @@ internal sealed class ForgeRuntime(string root, ForgeConfig config)
         return AtomicStore.Key($"v1|{run.Rng.StringSeed}|{run.AscensionLevel}|{player.Character.Id.Entry}|{run.CurrentActIndex}|{run.TotalFloor}|{run.CurrentRoom?.Id}");
     }
 
-    internal void Reset()
+    internal void Reset(bool preservePending = false)
     {
+        _retired.RemoveAll(item => item.Session.WaitForPendingAsync().IsCompleted);
         var session = _session;
         if (session is not null)
         {
-            if (_won) { session.Seal(); _retired.Add(session); }
+            if (_won || preservePending) { session.Seal(); _retired.Add((_sessionFloor, session)); }
             else session.Dispose();
         }
         _session = null;
+        _sessionFloor = 0;
         _ = CloseJournal(session, _generationJournal);
         _generationJournal = null; _events.Clear(); _totalEvents = 0; _ended = false; _frozen = false;
         _activeTurnSide = null; _firstEnemyTurnEnded = false; _won = false;
         _summary = new(); _firstRoundSummary = null;
-        _frozenCards = []; _combat = null; _player = null; _lastContext = null;
+        _rewardKeys.Clear(); _combat = null; _player = null; _lastContext = null;
     }
 
     private static async Task CloseJournal(GenerationSession? session, JsonlJournal? generation)

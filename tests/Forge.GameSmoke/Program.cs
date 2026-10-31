@@ -61,6 +61,7 @@ static class Smoke
         var native = (IEnumerable<Type>)(AccessTools.Property(registry, "All")?.GetValue(null) ?? AccessTools.Field(registry, "All").GetValue(null))!;
         var types = native.Concat([typeof(NeowGeneratedCard), typeof(GeneratedEffectPower)]).ToArray();
         AccessTools.Field(typeof(ModelDb), "_allAbstractModelSubtypes").SetValue(null, types); ModelDb.Init(types);
+        CheckGenerationSessionCleanup().GetAwaiter().GetResult();
         CheckNativeConversionContracts();
         Check(ModelDb.Relic<PrismaticGem>().Id.Entry == "PRISMATIC_GEM");
         foreach (string id in MechanicCatalog.Cards) Check(NativeMechanics.Card(id).IsCanonical);
@@ -147,6 +148,8 @@ static class Smoke
         Check(Harmony.GetPatchInfo(original)!.Postfixes.Any(p => p.owner == harmony.Id));
         Check(Harmony.GetPatchInfo(AccessTools.Method(typeof(MegaCrit.Sts2.Core.Rewards.RewardsSet), "GenerateWithoutOffering"))!
             .Prefixes.Any(p => p.owner == harmony.Id));
+        foreach (string method in new[] { nameof(RunManager.CleanUp), nameof(RunManager.OnEnded) })
+            Check(Harmony.GetPatchInfo(AccessTools.Method(typeof(RunManager), method))!.Prefixes.Any(p => p.owner == harmony.Id));
         Check(Harmony.GetPatchInfo(AccessTools.Method(typeof(CombatHistory), "Add"))!.Prefixes.Any(p => p.owner == harmony.Id));
         Check(power.PackedIconPath == ModelDb.Power<DexterityPower>().PackedIconPath);
         foreach (string property in new[] { nameof(PowerModel.Icon), nameof(PowerModel.BigIcon) })
@@ -1001,6 +1004,96 @@ static class Smoke
     {
         __result = []; return false;
     }
+    private static bool SingleplayerRewardFixture(ref bool __result) { __result = true; return false; }
+    private static void CheckMultipleRewardGroups(Harmony guard, CardDefinition definition)
+    {
+        guard.Patch(AccessTools.PropertyGetter(typeof(ForgeRuntime), nameof(ForgeRuntime.IsSingleplayer)),
+            prefix: new HarmonyMethod(typeof(Smoke), nameof(SingleplayerRewardFixture)));
+        guard.Patch(AccessTools.Method(typeof(MegaCrit.Sts2.Core.Rewards.CardReward), "Populate"),
+            prefix: new HarmonyMethod(typeof(RewardPopulatePatch), "Prefix"),
+            postfix: new HarmonyMethod(typeof(RewardPopulatePatch), "Postfix"),
+            finalizer: new HarmonyMethod(typeof(RewardPopulatePatch), "Finalizer"));
+        var runtimeField = AccessTools.Field(typeof(Bootstrap), "<Runtime>k__BackingField");
+        var previousRuntime = runtimeField.GetValue(null);
+        foreach (var (relic, roomType) in new (RelicModel, RoomType)[]
+            { (ModelDb.Relic<PrayerWheel>().ToMutable(), RoomType.Monster), (ModelDb.Relic<WhiteStar>().ToMutable(), RoomType.Elite) })
+        {
+            string directory = Path.Combine(Path.GetTempPath(), "neow-reward-groups-" + Guid.NewGuid().ToString("N"));
+            var runtime = new ForgeRuntime(directory, new ForgeConfig { GeneratedCardsPerReward = 2 });
+            try
+            {
+                var owner = Player.CreateForNewRun<Regent>(UnlockState.all, 21);
+                var run = RunState.CreateForTest([owner], acts: [ModelDb.Act<Overgrowth>()], seed: "REWARD_GROUPS");
+                var room = new CombatRoom(roomType == RoomType.Monster
+                    ? ModelDb.Encounter<AxebotsNormal>().ToMutable() : ModelDb.Encounter<MechaKnightElite>().ToMutable(), run);
+                run.PushRoom(room);
+                owner.AddRelicInternal(relic, -1, true);
+                AccessTools.Method(typeof(ForgeRuntime), "EnsurePool").Invoke(runtime, [owner]);
+                var pool = (CandidatePool)AccessTools.Field(typeof(ForgeRuntime), "_pool").GetValue(runtime)!;
+                string combatKey = ForgeRuntime.CombatKey(owner);
+                var definitions = Enumerable.Range(20, 5).Select(amount => definition with
+                {
+                    Name = "多组奖励" + amount,
+                    Forms = definition.Forms.Select(f => f with { Effects = [new() { Kind = EffectKind.Block, Amount = amount }] }).ToArray()
+                }).ToArray();
+                pool.Add(combatKey, definitions);
+                // Match the live session path, including the combat-level frozen flag.
+                using var session = new GenerationSession(combatKey, runtime.Config, new PendingGeneration(), (_, _) => { });
+                AccessTools.Field(typeof(ForgeRuntime), "_session").SetValue(runtime, session);
+                runtimeField.SetValue(null, runtime);
+                List<MegaCrit.Sts2.Core.Rewards.CardReward> Groups()
+                {
+                    var rewards = new List<MegaCrit.Sts2.Core.Rewards.Reward>
+                        { new MegaCrit.Sts2.Core.Rewards.CardReward(CardCreationOptions.ForRoom(owner, roomType), 3, owner) };
+                    Check(relic.TryModifyRewards(owner, rewards, room));
+                    var groups = rewards.Cast<MegaCrit.Sts2.Core.Rewards.CardReward>().ToList();
+                    // Also cover more than two groups, partial fill and an exhausted pool.
+                    groups.Add(new(CardCreationOptions.ForRoom(owner, roomType), 3, owner));
+                    groups.Add(new(CardCreationOptions.ForRoom(owner, roomType), 3, owner));
+                    foreach (var group in groups)
+                    {
+                        // Encounter rarity logging initializes Godot; allocation does not depend on rarity odds.
+                        foreach (string field in new[] { "<Options>k__BackingField", "<RerollOptions>k__BackingField" })
+                        {
+                            var info = AccessTools.Field(typeof(MegaCrit.Sts2.Core.Rewards.CardReward), field);
+                            info.SetValue(group, ((CardCreationOptions)info.GetValue(group)!).WithRarityOdds(CardRarityOddsType.Uniform));
+                        }
+                        group.Populate();
+                    }
+                    return groups;
+                }
+                var groups = Groups();
+                CardDefinition[][] Offered() => groups.Select(group => group.Cards.OfType<NeowGeneratedCard>().Select(card => card.Definition).ToArray()).ToArray();
+                var offered = Offered();
+                Check(offered.Select(cards => cards.Length).SequenceEqual(new[] { 2, 2, 1, 0 }));
+                Check(offered.SelectMany(cards => cards).Select(CandidatePool.Fingerprint).Distinct().Count() == 5);
+                Check(pool.History().All(card => card.Status == "shown"));
+                var chosen = groups[0].Cards.OfType<NeowGeneratedCard>().First();
+                owner.Deck.AddInternal(chosen);
+                runtime.RecordRewardChoice(groups[0]);
+                Check(pool.History().Count(card => card.Status == "selected") == 1);
+                Check(pool.History().Count(card => card.Status == "skipped") == 1);
+                Check(pool.History().Count(card => card.Status == "shown") == 3);
+                // Re-population and reroll retain this group's definitions, without taking more candidates.
+                groups[1].Populate();
+                var backingCards = (List<CardCreationResult>)AccessTools.Field(typeof(MegaCrit.Sts2.Core.Rewards.CardReward), "_cards").GetValue(groups[1])!;
+                backingCards.Clear();
+                AccessTools.Field(typeof(MegaCrit.Sts2.Core.Rewards.CardReward), "_hasBeenRerolled").SetValue(groups[1], true);
+                groups[1].Populate();
+                Check(Wire.Encode(offered) == Wire.Encode(Offered()));
+                runtime.StopRun();
+                groups = Groups(); // New native objects after reload must map back to the same frozen groups.
+                Check(Wire.Encode(offered) == Wire.Encode(Offered()));
+                Console.WriteLine($"PASS {relic.GetType().Name} allocates distinct generated reward groups, partial/empty pools, per-group choices, rerolls and reload");
+            }
+            finally
+            {
+                runtimeField.SetValue(null, previousRuntime);
+                runtime.StopRun();
+                if (Directory.Exists(directory)) Directory.Delete(directory, true);
+            }
+        }
+    }
     private static void CheckRewardCreationContracts()
     {
         var guard = new Harmony("neowscompany.tests.reward-creation");
@@ -1092,6 +1185,7 @@ static class Smoke
             using (new GeneratedRewardCreation(owner, options, () => throw new FormatException("fixture")))
                 Check(MegaCrit.Sts2.Core.Factories.CardFactory.CreateForReward(owner, 3, options).Count() == 3);
             Console.WriteLine("PASS generated rewards use native random upgrades, flags, all three eggs, Fresnel eligibility and one Silver Crucible charge; scope/failure isolation");
+            CheckMultipleRewardGroups(guard, definitions[0]);
         }
         finally { guard.UnpatchAll(guard.Id); }
     }
@@ -1458,6 +1552,112 @@ static class Smoke
         }
         Console.WriteLine("PASS native-to-protocol mapping preserves upgrade costs, keywords, selections, fatal rewards and generated-card reconstruction; gaps remain explicit");
     }
+    private static async Task CheckGenerationSessionCleanup()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "neow-session-tests-" + Guid.NewGuid().ToString("N"));
+        var config = new ForgeConfig { GenerationTiming = GenerationTiming.WaitOnReward, RecordGenerationPrompts = false };
+        var card = new CardDefinition
+        {
+            Name = "历史层候选", Type = ForgeCardType.Attack, Rarity = ForgeRarity.Common,
+            Forms = new[] { 5, 7 }.Select(amount => new CardForm
+            { Cost = new() { Energy = 1 }, Effects = [new() { Kind = EffectKind.Damage, Target = "enemy", Amount = amount }] }).ToArray()
+        };
+        var runtime = new ForgeRuntime(directory, config);
+        var pending = new List<(GenerationSession Session, PendingGeneration Generator)>();
+        CandidatePool Pool() => (CandidatePool)AccessTools.Field(typeof(ForgeRuntime), "_pool").GetValue(runtime)!;
+        async Task<(GenerationSession Session, PendingGeneration Generator)> Attach(int floor, bool won = false)
+        {
+            var generator = new PendingGeneration();
+            string key = "floor-" + floor;
+            var pool = Pool();
+            var session = new GenerationSession(key, config, generator, (_, _) => { }, cards => pool.Add(key, cards));
+            var context = new GenerationContext
+            {
+                CombatKey = key, Run = System.Text.Json.JsonSerializer.SerializeToElement(new { character = "IRONCLAD" }),
+                State = System.Text.Json.JsonSerializer.SerializeToElement(new { hp = 50 }), RecentEvents = []
+            };
+            AccessTools.Field(typeof(ForgeRuntime), "_session").SetValue(runtime, session);
+            AccessTools.Field(typeof(ForgeRuntime), "_sessionFloor").SetValue(runtime, floor);
+            AccessTools.Field(typeof(ForgeRuntime), "_won").SetValue(runtime, won);
+            Check(session.TryPrefetch(context, DateTimeOffset.UtcNow));
+            pending.Add((session, generator));
+            await generator.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            return (session, generator);
+        }
+        async Task Finish((GenerationSession Session, PendingGeneration Generator) request)
+        {
+            // Also exercise a provider that returns after cancellation instead of observing its token.
+            request.Generator.Result.TrySetResult(new() { Cards = [card] });
+            await request.Session.WaitForPendingAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        try
+        {
+            runtime.ResumeRun("run-a");
+            var pool = Pool();
+            var history = await Attach(3, won: true);
+            runtime.Reset(); // Native room teardown has already detached the successful combat.
+            var current = await Attach(5);
+            Check(pool.FreezeReward("floor-5", 1).Length == 0);
+            runtime.UnloadRun(5, graceful: true);
+            Check(current.Generator.Token.IsCancellationRequested && !history.Generator.Token.IsCancellationRequested);
+            runtime.ResumeRun("run-a");
+            runtime.UnloadRun(5, graceful: true); runtime.ResumeRun("run-a");
+            Check(ReferenceEquals(pool, Pool()) && !history.Generator.Token.IsCancellationRequested);
+            await Finish(current); Check(!pool.HasCandidates);
+            await Finish(history);
+            Check(pool.HasCandidates && pool.FreezeReward("floor-5", 1).Length == 0);
+            var restored = new CandidatePool(Path.Combine(directory, "data", "runs", "run-a.json"), "run-a", config.CandidatePoolCapacity);
+            Check(restored.HasCandidates && pool.FreezeReward("floor-6", 1).Single().Name == card.Name);
+            Console.WriteLine("PASS repeated same-run reload cancels only the current floor and preserves historical publication, persistence and frozen rewards");
+
+            var rewardPending = await Attach(6, won: true);
+            runtime.Reset(); // A won session from this floor is retired before CleanUp is called.
+            runtime.UnloadRun(6, graceful: true);
+            Check(rewardPending.Generator.Token.IsCancellationRequested);
+            await Finish(rewardPending); Check(!pool.HasCandidates);
+
+            var previousRoom = await Attach(7, won: true);
+            runtime.UnloadRun(8, graceful: true); // An event floor may have no session of its own.
+            runtime.ResumeRun("run-a");
+            Check(!previousRoom.Generator.Token.IsCancellationRequested);
+            runtime.UnloadRun(8, graceful: true);
+            Check(!previousRoom.Generator.Token.IsCancellationRequested);
+            Console.WriteLine("PASS reload cancels retired requests from this floor and retains the previous combat across event-room reloads");
+
+            runtime.ResumeRun("run-b");
+            Check(previousRoom.Generator.Token.IsCancellationRequested && !ReferenceEquals(pool, Pool()));
+            await Finish(previousRoom);
+            Check(!pool.HasCandidates && !Pool().HasCandidates);
+            foreach (bool shutdown in new[] { false, true })
+            {
+                var older = await Attach(2, won: true); runtime.Reset();
+                var active = await Attach(4);
+                if (shutdown) runtime.UnloadRun(4, graceful: false);
+                else runtime.StopRun();
+                Check(older.Generator.Token.IsCancellationRequested && active.Generator.Token.IsCancellationRequested);
+                await Finish(older); await Finish(active);
+                runtime.ResumeRun("run-b"); Check(!Pool().HasCandidates);
+            }
+            Console.WriteLine("PASS new runs, run endings and process shutdown cancel all sessions without leaking late results into either pool");
+        }
+        finally
+        {
+            runtime.StopRun();
+            foreach (var request in pending) await Finish(request);
+        }
+    }
+
+    private sealed class PendingGeneration : IContentGenerator<CardBatch>
+    {
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<CardBatch> Result { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public CancellationToken Token { get; private set; }
+        public Task<CardBatch> GenerateAsync(Prompt prompt, CancellationToken cancellationToken)
+        {
+            Token = cancellationToken; Started.TrySetResult(); return Result.Task;
+        }
+    }
+
     private static bool SkipStartingInventory() => false;
     private static void Check(bool value) { if (!value) throw new Exception("Game contract assertion failed."); }
 }

@@ -86,7 +86,7 @@ public sealed class CandidatePool
         }
     }
 
-    public CardDefinition[] FreezeReward(string key, int count, CardDefinition[]? restored = null)
+    public CardDefinition[] FreezeReward(string key, int count, CardDefinition[]? restored = null, string? combatKey = null)
     {
         lock (_gate)
         {
@@ -99,7 +99,7 @@ public sealed class CandidatePool
             for (int i = 0; restored is null && i < count && candidates.Count > 0; i++)
             {
                 // Prefer this combat's cards, then mechanic variety; ties keep the oldest candidate.
-                var next = candidates.OrderBy(c => c.CombatKey == key ? 0 : 1)
+                var next = candidates.OrderBy(c => c.CombatKey == (combatKey ?? key) ? 0 : 1)
                     .ThenBy(c => recentShapes.Count(s => s == Shape(c.Card))).First();
                 candidates.Remove(next); selected.Add(next); recentShapes.Add(Shape(next.Card));
             }

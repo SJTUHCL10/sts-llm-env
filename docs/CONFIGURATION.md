@@ -79,6 +79,6 @@
 | `invalid_response_json_or_schema` | 输出 JSON 或字段不符合协议 |
 | 校验阶段失败 | 检查效果结构、目标、数值范围与协议版本 |
 | `provider_timeout` | 检查响应耗时与超时设置 |
-| `reward_frozen_or_session_ended` | 会话已结束或取消；当前默认模式冻结奖励本身不会取消在途请求 |
+| `reward_frozen_or_session_ended` | 会话已结束或取消；SL 仅取消当前层请求，历史层请求继续进入本局候选池；默认模式冻结奖励本身不会取消在途请求 |
 
 `wait_on_reward` 会在原版创建奖励列表前等待请求，但不能绕过服务错误、校验失败或已经冻结的空奖励。

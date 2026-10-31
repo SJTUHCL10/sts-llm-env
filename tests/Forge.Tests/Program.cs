@@ -1542,6 +1542,36 @@ await Test("reward preserves mechanic variety within current candidates and fill
     Check(pool.History().Single(c => c.Card.Name == oldAttack.Name).Status == "candidate");
     Directory.Delete(directory, true); return Task.CompletedTask;
 });
+await Test("multiple reward groups consume distinct current candidates and persist independent choices and empty groups", () =>
+{
+    string directory = TestDirectory(); string path = Path.Combine(directory, "pool.json");
+    var pool = new CandidatePool(path, "run", 24);
+    CardDefinition Card(int amount) => valid with { Name = "分组奖励" + amount, Forms = valid.Forms.Select(f => f with
+        { Effects = [new() { Kind = EffectKind.Damage, Target = "enemy", Amount = amount }] }).ToArray() };
+    var current = Enumerable.Range(20, 5).Select(Card).ToArray();
+    pool.Add("older", [engine]); pool.Add("combat", current);
+    var first = pool.FreezeReward("combat", 2);
+    var second = pool.FreezeReward("combat:reward:1", 2, combatKey: "combat");
+    Check(first.Concat(second).All(c => current.Any(card => card.Name == c.Name)));
+    var third = pool.FreezeReward("combat:reward:2", 2, combatKey: "combat");
+    Check(third.Length == 2 && third[0].Name == current[4].Name && third[1].Name == engine.Name);
+    Check(first.Concat(second).Concat(third).Select(CandidatePool.Fingerprint).Distinct().Count() == 6);
+    Check(pool.History().All(c => c.Status == "shown") && !pool.HasCandidates);
+    Check(pool.FreezeReward("combat:reward:3", 2, combatKey: "combat").Length == 0);
+    pool.RecordChoice("combat", [first[0]]);
+    Check(pool.History().Single(c => c.Card.Name == first[0].Name).Status == "selected");
+    Check(pool.History().Single(c => c.Card.Name == first[1].Name).Status == "skipped");
+    Check(pool.History().Where(c => second.Concat(third).Any(card => card.Name == c.Card.Name)).All(c => c.Status == "shown"));
+    pool.RecordChoice("combat:reward:1", [first[0], second[1]]);
+    pool = new CandidatePool(path, "run", 24);
+    Check(Wire.Encode(first) == Wire.Encode(pool.FreezeReward("combat", 2)));
+    Check(Wire.Encode(second) == Wire.Encode(pool.FreezeReward("combat:reward:1", 2, combatKey: "combat")));
+    Check(Wire.Encode(third) == Wire.Encode(pool.FreezeReward("combat:reward:2", 2, combatKey: "combat")));
+    Check(pool.History().Count(c => c.Status == "selected") == 2);
+    pool.Add("combat", [Card(30)]);
+    Check(pool.FreezeReward("combat:reward:3", 2, combatKey: "combat").Length == 0 && pool.HasCandidates);
+    Directory.Delete(directory, true); return Task.CompletedTask;
+});
 await Test("reward without current candidates keeps mechanic variety and oldest-first ties", () =>
 {
     string directory = TestDirectory();
