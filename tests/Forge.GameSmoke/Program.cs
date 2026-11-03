@@ -16,6 +16,7 @@ using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Characters;
 using MegaCrit.Sts2.Core.Models.Acts;
+using MegaCrit.Sts2.Core.Models.Badges;
 using MegaCrit.Sts2.Core.Models.Encounters;
 using MegaCrit.Sts2.Core.Models.Powers;
 using MegaCrit.Sts2.Core.Models.Monsters;
@@ -141,9 +142,11 @@ static class Smoke
         engine.DowngradeInternal(); Check(Wire.Decode<GeneratedPowerSnapshot>(power.RuntimePayload).Amounts[0] == 2);
         Console.WriteLine("PASS rule instances preserve captured form, grouped counters and clone isolation through native properties");
         CheckCombatContracts();
+        CheckGeneratedDeckIdentity(patched: false);
         var harmony = new Harmony("neowscompany.tests");
         typeof(Bootstrap).GetMethod("VerifyCompatibility", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, null);
         harmony.PatchAll(typeof(Bootstrap).Assembly);
+        CheckGeneratedDeckIdentity(patched: true);
         var original = typeof(MegaCrit.Sts2.Core.Rewards.CardReward).GetMethod("OnSelect", BindingFlags.Instance | BindingFlags.NonPublic)!;
         Check(Harmony.GetPatchInfo(original)!.Postfixes.Any(p => p.owner == harmony.Id));
         Check(Harmony.GetPatchInfo(AccessTools.Method(typeof(MegaCrit.Sts2.Core.Rewards.RewardsSet), "GenerateWithoutOffering"))!
@@ -166,6 +169,79 @@ static class Smoke
         harmony.UnpatchAll(harmony.Id);
         Console.WriteLine("PASS native Harmony reward/history/description hooks and embedded 64/256px power icon contracts");
         Console.WriteLine("PASS game API smoke checks (rendered UI/live combat not exercised)");
+    }
+    private static void CheckGeneratedDeckIdentity(bool patched)
+    {
+        NeowGeneratedCard Create(int block)
+        {
+            var card = (NeowGeneratedCard)ModelDb.Card<NeowGeneratedCard>().ToMutable();
+            // Same title, different mechanics: titles alone cannot identify a card kind.
+            card.DefinitionPayload = Wire.Encode(NeowGeneratedCard.Fallback with
+            {
+                Forms = new[] { block, block + 3 }.Select(amount => new CardForm
+                {
+                    Cost = new() { Energy = 1 }, Effects = [new() { Kind = EffectKind.Block, Amount = amount }]
+                }).ToArray()
+            });
+            return card;
+        }
+        var player = new SerializablePlayer { NetId = 91 };
+        var run = new SerializableRun { Players = [player] };
+        var honed = new Honed(run, true, player.NetId);
+        var highlander = new Highlander(run, true, player.NetId);
+        player.Deck = Enumerable.Range(5, 5).Select(amount => Create(amount).ToSerializable()).ToList();
+        if (!patched)
+        {
+            Check(player.Deck.GroupBy(card => card).Single().Count() == 5);
+            Check(honed.IsObtained() && !highlander.IsObtained());
+            Console.WriteLine("PASS reproduced native generated-card history merging and false Honed badge");
+            return;
+        }
+        Check(player.Deck.GroupBy(card => card).Count() == 5);
+        Check(!honed.IsObtained() && highlander.IsObtained());
+        Check(player.Deck.GroupBy(card => card).Select(group => (NeowGeneratedCard)CardModel.FromSerializable(group.Key))
+            .Select(card => card.ActiveForm.ImmediateEffects.Single().Amount!.Value).SequenceEqual(new decimal?[] { 5, 6, 7, 8, 9 }));
+
+        foreach (var item in player.Deck)
+        {
+            var restored = (NeowGeneratedCard)CardModel.FromSerializable(item);
+            var roundTrip = restored.ToSerializable();
+            Check(item.Equals(roundTrip) && roundTrip.Equals(item) && item.GetHashCode() == roundTrip.GetHashCode());
+            Check(restored.InstanceKey == item.Props!.strings!.Single(property => property.name == nameof(NeowGeneratedCard.InstanceKey)).value);
+        }
+
+        var source = Create(5);
+        var copy = (NeowGeneratedCard)source.ClonePreservingMutability();
+        Check(copy.InstanceKey != source.InstanceKey);
+        var original = source.ToSerializable();
+        var duplicate = copy.ToSerializable(); duplicate.FloorAddedToDeck = 10;
+        Check(original.Equals(duplicate) && original.GetHashCode() == duplicate.GetHashCode());
+        Func<object?, bool> equals = original.Equals;
+        Check(!equals(null) && !equals(new object()));
+        copy.UpgradeInternal(); copy.FinalizeUpgradeInternal();
+        var upgraded = copy.ToSerializable();
+        Check(!original.Equals(upgraded) && !upgraded.Equals(original));
+        var enchanted = Create(5).ToSerializable();
+        enchanted.Enchantment = new SerializableEnchantment
+        {
+            Id = ModelDb.Enchantment<MegaCrit.Sts2.Core.Models.Enchantments.Nimble>().Id, Amount = 2
+        };
+        Check(!original.Equals(enchanted) && !enchanted.Equals(original));
+        player.Deck = [original, duplicate, Create(5).ToSerializable(), upgraded, enchanted];
+        Check(player.Deck.GroupBy(card => card).Select(group => group.Count()).Order().SequenceEqual(new[] { 1, 1, 3 }));
+        Check(honed.IsObtained() && !highlander.IsObtained());
+        player.Deck.RemoveAt(0);
+        Check(!honed.IsObtained() && !highlander.IsObtained());
+
+        SerializableCard Native<T>() where T : CardModel => ModelDb.Card<T>().ToMutable().ToSerializable();
+        player.Deck = Enumerable.Range(0, 5).Select(_ => Native<MegaCrit.Sts2.Core.Models.Cards.StrikeIronclad>()).ToList();
+        player.Deck.Add(original);
+        Check(!honed.IsObtained() && highlander.IsObtained()); // Basic duplicates are excluded.
+        player.Deck.AddRange(Enumerable.Range(0, 5).Select(_ => Native<MegaCrit.Sts2.Core.Models.Cards.ShrugItOff>()));
+        Check(honed.IsObtained() && !highlander.IsObtained()); // Native qualifying sets still count.
+        player.Deck = Enumerable.Range(0, 5).Select(_ => Native<MegaCrit.Sts2.Core.Models.Cards.ShrugItOff>()).ToList();
+        Check(player.Deck.GroupBy(card => card).Single().Count() == 5 && honed.IsObtained() && !highlander.IsObtained());
+        Console.WriteLine("PASS generated definition identity in native history grouping, save/load, copies, upgrades, enchantments and deck badges");
     }
     private static void CheckPlanningCapture()
     {
