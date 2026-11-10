@@ -20,6 +20,9 @@ public static class ObservationProjector
     private static JsonObject Card(JsonObject card)
     {
         var result = Pick(card, "upgraded", "enchantment", "affliction");
+        if (result["enchantment"] is JsonObject enchantment && enchantment.Remove("description", out var enchantmentText)
+            && enchantmentText is JsonValue text && text.TryGetValue<string>(out var descriptionText))
+            enchantment["text"] = Clean(descriptionText);
         if ((card["name"] ?? card["title"] ?? card["id"]) is { } name) result["name"] = name.DeepClone();
         foreach (string key in new[] { "type", "rarity" })
             if (card[key] is { } value) result[key] = value.ToString().ToLowerInvariant();
@@ -55,7 +58,8 @@ public static class ObservationProjector
     {
         var run = JsonNode.Parse(context.Run.GetRawText()) as JsonObject ?? new();
         var state = JsonNode.Parse(context.State.GetRawText()) as JsonObject ?? new();
-        var result = Pick(run, "character", "ascension", "act", "floor", "gold");
+        var result = Pick(run, "character", "ascension", "act", "floor", "gold", "hp", "max_hp");
+        var mechanics = CharacterMechanics.FromRun(context.Run);
         int? ascension = run["ascension"] is JsonValue ascensionValue && ascensionValue.TryGetValue<int>(out int level) && level >= 0
             ? level : null;
         if (run["planning"] is JsonObject planning)
@@ -122,12 +126,22 @@ public static class ObservationProjector
             combat["encounter"] = new JsonObject { ["type"] = roomType.ToString().ToLowerInvariant() };
         if (combat["encounter"]?["type"]?.ToString() == "boss" && result["planning"] is JsonObject futurePlanning)
             futurePlanning["bosses"] = new JsonArray();
-        if (state["player"] is JsonObject player) combat["player"] = Creature(player);
-        else foreach (string key in new[] { "hp", "max_hp" }) if (state[key] is { } field) combat[key] = field.DeepClone();
+        if (state["player"] is JsonObject player)
+        {
+            var creature = Creature(player);
+            creature.Remove("id");
+            foreach (string key in new[] { "hp", "max_hp" })
+                if (creature.Remove(key, out var field) && !result.ContainsKey(key)) result[key] = field;
+            combat["player"] = creature;
+        }
+        else foreach (string key in new[] { "hp", "max_hp" })
+            if (!result.ContainsKey(key) && state[key] is { } field) result[key] = field.DeepClone();
         if (state["player_combat"] is JsonObject pcs)
         {
-            foreach (string key in new[] { "energy", "max_energy", "stars", "orb_capacity" }) if (pcs[key] is { } field) combat[key] = field.DeepClone();
-            if (pcs["orbs"] is JsonArray orbs && orbs.Count > 0) combat["orbs"] = new JsonArray(orbs.OfType<JsonObject>().Select(o => (JsonNode)Pick(o, "id")).ToArray());
+            foreach (string key in new[] { "energy", "max_energy", "stars", "orb_capacity" })
+                if ((key != "stars" || mechanics.Stars) && (key != "orb_capacity" || mechanics.Defect)
+                    && pcs[key] is { } field) combat[key] = field.DeepClone();
+            if (mechanics.Defect && pcs["orbs"] is JsonArray orbs && orbs.Count > 0) combat["orbs"] = new JsonArray(orbs.OfType<JsonObject>().Select(o => (JsonNode)Pick(o, "id")).ToArray());
         }
         if (state["allies"] is JsonArray allies && allies.Count > 0) combat["allies"] = new JsonArray(allies.OfType<JsonObject>().Select(c => (JsonNode)Creature(c)).ToArray());
         if (state["enemies"] is JsonArray enemies)
@@ -141,6 +155,13 @@ public static class ObservationProjector
         {
             var stats = JsonNode.Parse(summary.GetRawText())!.AsObject();
             combat["summary"] = Pick(stats, "complete", "won", "cards_played", "damage_dealt", "damage_taken", "damage_blocked", "block_gained", "stars_gained", "stars_spent", "energy_spent", "event_counts");
+            if (stats["cards_played"] is JsonArray plays)
+                combat["summary"]!["cards_played"] = new JsonArray(plays.OfType<JsonObject>().Select(play =>
+                {
+                    var card = Card(play);
+                    foreach (string key in new[] { "origin", "count" }) if (play[key] is { } field) card[key] = field.DeepClone();
+                    return (JsonNode)card;
+                }).ToArray());
         }
         else if (context.RecentEvents.Length > 0)
         {
@@ -209,7 +230,7 @@ public sealed class CombatSummary
     public JsonElement Snapshot(bool complete = false, bool? won = null) => JsonSerializer.SerializeToElement(new
     {
         complete, won, event_counts = _events, cards_played = _plays.Select(p => new
-        { id = p.Key.Split('|')[0], title = p.Value.Title, type = p.Value.Type, origin = p.Value.Origin, count = p.Value.Count }).ToArray(),
+        { name = p.Value.Title, type = p.Value.Type.ToLowerInvariant(), origin = p.Value.Origin, count = p.Value.Count }).ToArray(),
         damage_dealt = _damageDealt, damage_taken = _damageTaken, damage_blocked = _blocked, block_gained = _blockGained,
         stars_gained = _starsGained, stars_spent = _starsSpent, energy_spent = _energySpent
     }, Wire.Json);

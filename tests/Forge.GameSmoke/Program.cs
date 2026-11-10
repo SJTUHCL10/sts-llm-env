@@ -475,11 +475,17 @@ static class Smoke
         var localization = (LocManager)RuntimeHelpers.GetUninitializedObject(typeof(LocManager));
         AccessTools.Field(typeof(LocManager), "_tables").SetValue(localization,
             new Dictionary<string, LocTable> { ["cards"] = new("cards", new()),
+                ["enchantments"] = new("enchantments", new() { ["NIMBLE.description"] = "额外获得[blue]{Amount}[/blue]点格挡。" }),
                 ["card_keywords"] = new("card_keywords", new() { ["RETAIN.title"] = "保留", ["EXHAUST.title"] = "消耗", ["PERIOD"] = "。" }) });
         AccessTools.PropertySetter(typeof(LocManager), nameof(LocManager.Language)).Invoke(localization, ["zhs"]);
         AccessTools.PropertySetter(typeof(LocManager), nameof(LocManager.CultureInfo)).Invoke(localization, [System.Globalization.CultureInfo.InvariantCulture]);
         AccessTools.Method(typeof(LocManager), "LoadLocFormatters").Invoke(localization, null);
         AccessTools.PropertySetter(typeof(LocManager), nameof(LocManager.Instance)).Invoke(null, [localization]);
+        var enchantedCard = ModelDb.Card<MegaCrit.Sts2.Core.Models.Cards.DefendIronclad>().ToMutable();
+        enchantedCard.EnchantInternal(ModelDb.Enchantment<MegaCrit.Sts2.Core.Models.Enchantments.Nimble>().ToMutable(), 2);
+        var capturedEnchantment = new StateCapture().Detach(new StateCapture().Card(enchantedCard)).GetProperty("enchantment");
+        Check(capturedEnchantment.GetProperty("description").GetString() == "额外获得[blue]2[/blue]点格挡。");
+        Console.WriteLine("PASS enchantment capture formats native descriptions with current amounts");
         var guard = new Harmony("neowscompany.tests.saves");
         guard.Patch(AccessTools.PropertyGetter(typeof(SaveManager), nameof(SaveManager.Instance)), prefix: new HarmonyMethod(typeof(Smoke), nameof(SkipSaveManager)));
         guard.Patch(AccessTools.Method(typeof(Player), "PopulateStartingInventory"), prefix: new HarmonyMethod(typeof(Smoke), nameof(SkipStartingInventory)));

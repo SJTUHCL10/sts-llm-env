@@ -34,6 +34,7 @@ internal sealed class StateCapture
             map_path = run is RunState concrete ? concrete.VisitedMapCoords.Select(c => new { c.row, c.col }).ToArray() : null,
             planning = CapturePlanning(run),
             deck = player.Deck.Cards.Select(Card).ToArray(), gold = player.Gold,
+            hp = player.Creature.CurrentHp, max_hp = player.Creature.MaxHp,
             relics = player.Relics.Select(m => new { id = m.Id.Entry, title = Safe(() => m.Title.GetFormattedText()),
                 description = Safe(() => m.DynamicDescription.GetFormattedText()), state = Scalars(m) }).ToArray(),
             potions = player.Potions.Select(m => new { id = m.Id.Entry, title = Safe(() => m.Title.GetFormattedText()),
@@ -158,7 +159,8 @@ internal sealed class StateCapture
         target = card.TargetType.ToString(), keywords = card.Keywords.Select(k => k.ToString()).ToArray(),
         variables = card.DynamicVars.ToDictionary(v => v.Key, v => new { base_value = v.Value.BaseValue, preview = v.Value.PreviewValue }),
         description = Safe(() => card.GetDescriptionForPile(card.Pile?.Type ?? PileType.Deck)),
-        enchantment = card.Enchantment is { } en ? new { id = en.Id.Entry, en.Amount } : null,
+        enchantment = card.Enchantment is { } en ? new { id = en.Id.Entry, en.Amount,
+            description = Safe(() => en.DynamicDescription.GetFormattedText()) } : null,
         affliction = card.Affliction is { } af ? new { id = af.Id.Entry, af.Amount } : null,
         generated_definition = card is NeowGeneratedCard generated ? generated.Definition : null
     };

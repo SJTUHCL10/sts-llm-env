@@ -1311,7 +1311,7 @@ await Test("standard cached-token diagnostics are read without inventing cache m
     await new OpenAiCardGenerator(client, new(), value => response = value).GenerateAsync(new("s", "u"), default);
     Check(response is { PromptCacheHitTokens: 12, PromptCacheMissTokens: null });
 });
-await Test("combat summaries retain opening card sequence counts and enemy damage after event trimming", () =>
+await Test("combat summaries retain aggregate card counts and enemy damage after event trimming", () =>
 {
     var summary = new CombatSummary();
     summary.Add(JsonSerializer.SerializeToElement(new { detail = new { type = "CardPlayFinishedEntry", fields = new
@@ -1321,8 +1321,50 @@ await Test("combat summaries retain opening card sequence counts and enemy damag
         { Actor = new { id = "MONSTER" }, DamageResults = new[] { new { Receiver = new { id = "REGENT" }, UnblockedDamage = 3, BlockedDamage = 5 } } } } }), "REGENT");
     var snapshot = summary.Snapshot(true);
     Check(snapshot.GetProperty("damage_taken").GetInt32() == 3 && snapshot.GetProperty("damage_blocked").GetInt32() == 5
-        && snapshot.GetProperty("cards_played")[0].GetProperty("title").GetString() == "崇拜"
+        && snapshot.GetProperty("cards_played")[0].GetProperty("name").GetString() == "崇拜"
         && snapshot.GetProperty("energy_spent").GetInt32() == 1);
+    return Task.CompletedTask;
+});
+await Test("observation moves health to run scope, gates resources and normalizes legacy cards", () =>
+{
+    var observed = context with
+    {
+        Run = JsonSerializer.SerializeToElement(new { character = "IRONCLAD", gold = 50, deck = new[] {
+            new { title = "Defend", enchantment = new { id = "NIMBLE", amount = 2, description = "Gain [blue]2[/blue] Block." } } } }),
+        State = JsonSerializer.SerializeToElement(new { player = new { id = "IRONCLAD", hp = 40, max_hp = 80, block = 3 },
+            player_combat = new { energy = 2, stars = 0, orb_capacity = 0 } }),
+        CombatSummary = JsonSerializer.SerializeToElement(new { cards_played = new[] {
+            new { id = "DEFEND", title = "Defend", type = "Skill", origin = "native", count = 2 } } })
+    };
+    var projected = ObservationProjector.Project(observed);
+    var combat = projected.GetProperty("combat");
+    Check(projected.GetProperty("hp").GetInt32() == 40 && projected.GetProperty("max_hp").GetInt32() == 80);
+    Check(!combat.GetProperty("player").TryGetProperty("id", out _) && !combat.GetProperty("player").TryGetProperty("hp", out _));
+    Check(!combat.TryGetProperty("stars", out _) && !combat.TryGetProperty("orb_capacity", out _));
+    Check(projected.GetProperty("deck")[0].GetProperty("enchantment").GetProperty("text").GetString() == "Gain 2 Block.");
+    var play = combat.GetProperty("summary").GetProperty("cards_played")[0];
+    Check(play.GetProperty("name").GetString() == "Defend" && play.GetProperty("type").GetString() == "skill" && !play.TryGetProperty("id", out _));
+    foreach (var character in new[] { "REGENT", "DEFECT" })
+    {
+        combat = ObservationProjector.Project(observed with { Run = JsonSerializer.SerializeToElement(new { character }) }).GetProperty("combat");
+        Check(combat.TryGetProperty("stars", out _) == (character == "REGENT"));
+        Check(combat.TryGetProperty("orb_capacity", out _) == (character == "DEFECT"));
+    }
+    projected = ObservationProjector.Project(observed with { Run = JsonSerializer.SerializeToElement(new { character = "IRONCLAD", hp = 35, max_hp = 85,
+        relics = new[] { new { id = "PRISMATIC_GEM" } } }) });
+    Check(projected.GetProperty("hp").GetInt32() == 35 && projected.GetProperty("max_hp").GetInt32() == 85);
+    Check(projected.GetProperty("combat").TryGetProperty("stars", out _) && projected.GetProperty("combat").TryGetProperty("orb_capacity", out _));
+    return Task.CompletedTask;
+});
+await Test("combat play counts merge nonconsecutive completed plays", () =>
+{
+    var summary = new CombatSummary();
+    foreach (string id in new[] { "STRIKE", "DEFEND", "STRIKE" })
+        summary.Add(JsonSerializer.SerializeToElement(new { detail = new { type = "CardPlayFinishedEntry", fields = new {
+            Actor = new { id = "IRONCLAD" }, CardPlay = new { card = new { id, title = id, type = "Attack" } } } } }), "IRONCLAD");
+    var plays = summary.Snapshot().GetProperty("cards_played");
+    Check(plays.GetArrayLength() == 2 && plays[0].GetProperty("count").GetInt32() == 2);
+    Check(plays[0].GetProperty("type").GetString() == "attack" && !plays[0].TryGetProperty("id", out _));
     return Task.CompletedTask;
 });
 await Test("combat projection preserves encounter type and event source; generated play origins survive compaction", () =>
