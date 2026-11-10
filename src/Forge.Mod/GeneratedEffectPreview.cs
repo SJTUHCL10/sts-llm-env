@@ -31,8 +31,9 @@ internal static class GeneratedEffectPreview
         }
         else if (effect.Kind == EffectKind.Block)
         {
-            if (!triggered) amount = EnchantBlock(card, amount);
+            amount = Math.Max(0, amount);
             if (hooks) amount = Hook.ModifyBlock(card.CombatState!, card.Owner.Creature, amount, BlockProps(triggered), triggered ? null : card, null, out _);
+            else if (!triggered) amount = EnchantBlock(card, amount);
         }
         return effect.Kind switch
         {

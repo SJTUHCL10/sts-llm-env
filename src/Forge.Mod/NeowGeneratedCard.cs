@@ -171,16 +171,40 @@ public sealed class NeowGeneratedCard : CardModel
         LocManager.Instance.GetTable("cards").MergeWith(new Dictionary<string, string> { [key] = description });
         return new LocString("cards", key);
     }
-    internal string RuntimeDescriptionText(bool chinese) => CardText.Render(ActiveForm, chinese,
-        i => ActiveForm.AllEffects[i].Amount?.Value is null && !GeneratedEffectPreview.CanResolve(this, i) ? FormulaText(i, 'E', ActiveForm.AllEffects[i].Amount, chinese, 1)
-            : ActiveForm.AllEffects[i].Kind == EffectKind.Draw ? DrawAmountText(DynamicVars[$"E{i}"])
-            : ActiveForm.AllEffects[i].Kind is EffectKind.GainEnergy or EffectKind.GainStars or EffectKind.SetCost or EffectKind.OrbSlots ? DynamicVars[$"E{i}"].ToHighlightedString(false) : $"{{E{i}:diff()}}",
-        _definition.Type, (kind, value) => CardText.ResourceText(kind, value, EnergyIconHelper.GetPrefix(this)),
-        (i, slot, value, fallback) => value?.Value is null && value is not null && !GeneratedEffectPreview.CanResolve(this, i)
-            ? FormulaText(i, slot == "count" ? 'C' : slot == "repeat" ? 'R' : 'T', value, chinese, fallback)
-            : $"{{{(slot == "count" ? 'C' : slot == "repeat" ? 'R' : 'T')}{i}:diff()}}",
-        limit: (i, _) => $"{{L{i}:diff()}}",
-        upgradeBaseline: IsUpgraded && _upgradePreviewDepth > 0 ? _definition.Forms[0] : null);
+    internal string RuntimeDescriptionText(bool chinese)
+    {
+        var form = ActiveForm;
+        var effects = form.AllEffects;
+        string Resource(string kind, string value) => CardText.ResourceText(kind, value, EnergyIconHelper.GetPrefix(this));
+        string Amount(int i) => IsFormula(effects[i].Amount) ? FormulaText(i, 'E', effects[i].Amount, chinese, 1) : ResolvedAmount(effects[i], i);
+        string Quantity(int i, string slot, NumberExpression? value, int fallback) => IsFormula(value)
+            ? FormulaText(i, QuantitySlot(slot), value, chinese, fallback)
+            : ResolvedQuantity(i, slot);
+
+        string text = CardText.Render(form, chinese, Amount, _definition.Type, Resource, Quantity,
+            limit: (i, _) => $"{{L{i}:diff()}}",
+            upgradeBaseline: IsUpgraded && _upgradePreviewDepth > 0 ? _definition.Forms[0] : null);
+        for (int i = 0; i < effects.Length; i++)
+        {
+            var effect = effects[i];
+            if (!(IsFormula(effect.Amount) || IsFormula(effect.Repeat) || IsFormula(effect.Count) || IsFormula(effect.Target?.Count))
+                || !GeneratedEffectPreview.CanResolve(this, i)) continue;
+            int index = i;
+            string result = CardText.RenderEffect(effect with { OnFatal = null }, chinese, ResolvedAmount(effect, index), Resource, form.Cost,
+                numeric: (slot, _, _) => ResolvedQuantity(index, slot), showResolvedAmount: true).TrimEnd('。', '.');
+            text += chinese ? $"\n（{result}）" : $"\n({result})";
+        }
+        return text;
+    }
+    private static bool IsFormula(NumberExpression? value) => value is { Value: null };
+    private static char QuantitySlot(string slot) => slot == "count" ? 'C' : slot == "repeat" ? 'R' : 'T';
+    private static string ResolvedQuantity(int i, string slot) => $"{{{QuantitySlot(slot)}{i}:diff()}}";
+    private string ResolvedAmount(CardEffect effect, int index) => effect.Kind switch
+    {
+        EffectKind.Draw => DrawAmountText(DynamicVars[$"E{index}"]),
+        EffectKind.GainEnergy or EffectKind.GainStars or EffectKind.SetCost or EffectKind.OrbSlots => DynamicVars[$"E{index}"].ToHighlightedString(false),
+        _ => $"{{E{index}:diff()}}"
+    };
     private string FormulaText(int index, char slot, NumberExpression? value, bool chinese, int fallback)
     {
         string Resource(string kind, string amount) => CardText.ResourceText(kind, amount, EnergyIconHelper.GetPrefix(this));

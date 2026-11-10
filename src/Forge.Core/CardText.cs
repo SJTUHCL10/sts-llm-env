@@ -365,13 +365,13 @@ public static class CardText
         if (w.LastInSeries is bool last) yield return chinese ? last ? "仅限连打的最后一次" : "排除连打的最后一次" : last ? "last play in series only" : "excluding the last play in series";
     }
     public static string RenderEffect(CardEffect e, bool chinese, string? amount = null, Func<string, string, string>? resource = null, CardCost? cost = null, Func<string, NumberExpression?, int, string>? numeric = null, Func<CardEffect, string>? nested = null,
-        Func<EffectCondition, string>? conditionText = null, CardEffect? upgradeBaseline = null, bool highlightUpgrade = false)
+        Func<EffectCondition, string>? conditionText = null, CardEffect? upgradeBaseline = null, bool highlightUpgrade = false, bool showResolvedAmount = false)
     {
         string Quantity(string slot, NumberExpression? value, int fallback = 1) => numeric?.Invoke(slot, value, fallback) ?? CountNumber(value, chinese, fallback, resource, cost);
         string? repeat = e.Repeat is null ? null : Quantity("repeat", e.Repeat);
         bool attackHits = chinese && e.Kind == EffectKind.Damage && e.Condition is null && e.Repeat is not null
             && (e.Repeat.Value is not null || UsesX(e.Repeat, cost));
-        string n = UsesX(e.Amount, cost) ? amount is not null && amount.Contains('X') ? amount : Number(e.Amount, chinese, resource: resource, cost: cost)
+        string n = !showResolvedAmount && UsesX(e.Amount, cost) ? amount is not null && amount.Contains('X') ? amount : Number(e.Amount, chinese, resource: resource, cost: cost)
             : amount ?? Number(e.Amount, chinese, resource: resource, cost: cost);
         if (e.Kind == EffectKind.Draw && decimal.TryParse(n, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out decimal draws))
             n = decimal.Ceiling(Math.Max(0, draws)).ToString(System.Globalization.CultureInfo.InvariantCulture);

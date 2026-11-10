@@ -510,7 +510,8 @@ static class Smoke
             owner.PlayerCombatState.Hand.AddInternal(card);
             card.UpdateDynamicVarPreview(CardPreviewMode.Normal, other.Creature, card.DynamicVars);
             Check(card.DynamicVars["E0"].PreviewValue == 18 && card.DynamicVars["E0"].BaseValue == 0 && owner.PlayerCombatState.Stars == 5);
-            Check(card.GetDescriptionForPile(PileType.Hand, other.Creature).Contains("18"));
+            string attackText = card.GetDescriptionForPile(PileType.Hand, other.Creature);
+            Check(attackText.Contains("8 +") && attackText.Contains("\n（造成") && attackText.Contains("18"));
             card.UpdateDynamicVarPreview(CardPreviewMode.Normal, null, card.DynamicVars);
             Check(card.DynamicVars["E0"].PreviewValue == 12 && card.GetDescriptionForPile(PileType.Hand).Contains("12"));
             var loaded = (NeowGeneratedCard)CardModel.FromSerializable(card.ToSerializable()); loaded.Owner = owner;
@@ -525,7 +526,9 @@ static class Smoke
             var xForm = form with { Cost = new() { StarsX = true }, Effects = [new() { Kind = EffectKind.Damage, Target = "enemy", Amount = new() { Mul = [5, new() { Stat = "paid_stars" }] } }] };
             card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "碎星", Type = ForgeCardType.Attack, Rarity = ForgeRarity.Uncommon, Forms = [xForm, xForm] });
             card.UpdateDynamicVarPreview(CardPreviewMode.Normal, other.Creature, card.DynamicVars);
-            Check(card.DynamicVars["E0"].PreviewValue == 30.375m && card.GetDescriptionForPile(PileType.Hand, other.Creature).Contains("(5 × X)") && owner.PlayerCombatState.Stars == 5);
+            string xText = card.GetDescriptionForPile(PileType.Hand, other.Creature);
+            Check(card.DynamicVars["E0"].PreviewValue == 30.375m && xText.Contains("(5 × X)") && xText.Contains("\n（造成[green]30[/green]点伤害）")
+                && owner.PlayerCombatState.Stars == 5);
             owner.PlayerCombatState.Hand.RemoveInternal(card); owner.PlayerCombatState.DrawPile.AddInternal(card);
             card.UpdateDynamicVarPreview(CardPreviewMode.Normal, null, card.DynamicVars);
             Check(card.RuntimeDescriptionText(true) == "造成(5 × X)点伤害。");
@@ -537,7 +540,8 @@ static class Smoke
             card.DowngradeInternal();
             var energyX = xForm with { Cost = new() { EnergyX = true }, Effects = [new() { Kind = EffectKind.Draw, Amount = new() { Stat = "paid_energy" } }] };
             card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "蓄势", Type = ForgeCardType.Skill, Rarity = ForgeRarity.Common, Forms = [energyX, energyX] });
-            Check(card.RuntimeDescriptionText(true) == "抽X张牌。");
+            card.UpdateDynamicVarPreview(CardPreviewMode.Normal, null, card.DynamicVars);
+            Check(card.GetDescriptionForPile(PileType.Hand).StartsWith("抽X张牌。\n（抽"));
             var slots = new CardForm { Cost = new(), Effects = [new() { Kind = EffectKind.OrbSlots, Amount = -1 }] };
             card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "球槽压缩", Type = ForgeCardType.Skill, Rarity = ForgeRarity.Uncommon,
                 Forms = [slots, slots with { Effects = [new() { Kind = EffectKind.OrbSlots, Amount = -2 }] }] });
@@ -552,7 +556,8 @@ static class Smoke
             card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "动态栏位", Type = ForgeCardType.Skill, Rarity = ForgeRarity.Uncommon, Forms = [subtraction, subtraction] });
             card.UpdateDynamicVarPreview(CardPreviewMode.Normal, null, card.DynamicVars);
             slotText = card.GetDescriptionForPile(PileType.Hand);
-            Check(card.DynamicVars["E0"].PreviewValue == -3 && slotText.Contains("失去") && slotText.Contains("3") && !slotText.Contains("-3"));
+            Check(card.DynamicVars["E0"].PreviewValue == -3 && slotText.Contains("负数表示失去") && slotText.Contains("\n（失去")
+                && slotText.Contains("3") && !slotText.Contains("-3"));
             var savedSlots = (NeowGeneratedCard)CardModel.FromSerializable(card.ToSerializable());
             Check(savedSlots.DefinitionPayload == card.DefinitionPayload);
             Console.WriteLine("PASS signed orb-slot wording and subtraction preview survive upgrade and native serialization");
@@ -860,8 +865,8 @@ static class Smoke
         try
         {
             repeated.UpdateDynamicVarPreview(CardPreviewMode.Normal, null, repeated.DynamicVars);
-            Check(repeated.RuntimeDescriptionText(true).StartsWith("重复{R0:diff()}次：『获得"));
-            Check(repeated.GetDescriptionForPile(PileType.Hand).EndsWith("』。\n抽2张牌。"));
+            Check(repeated.RuntimeDescriptionText(true).StartsWith("手牌中每有一张牌，就获得"));
+            Check(repeated.GetDescriptionForPile(PileType.Hand).Contains("\n抽2张牌。\n（重复"));
             var reloaded = (NeowGeneratedCard)CardModel.FromSerializable(repeated.ToSerializable()); reloaded.Owner = owner;
             Check(reloaded.RuntimeDescriptionText(true).StartsWith("手牌中每有一张牌，就获得"));
         }
@@ -995,6 +1000,7 @@ static class Smoke
         guard.Patch(AccessTools.PropertyGetter(typeof(CombatManager), nameof(CombatManager.IsEnding)), prefix: new HarmonyMethod(typeof(Smoke), nameof(KeepCombatOpen)));
         guard.Patch(AccessTools.Method(typeof(CreatureCmd), nameof(CreatureCmd.GainBlock), [typeof(Creature), typeof(decimal), typeof(ValueProp), typeof(CardPlay), typeof(bool)]),
             prefix: new HarmonyMethod(typeof(Smoke), nameof(GainBlockWithoutVisuals)));
+        CheckNimbleBlockContracts(card, owner);
         ((DexterityPower)ModelDb.Power<DexterityPower>().ToMutable()).ApplyInternal(owner.Creature, 3, silent: true);
         var immediate = new CardEffect { Kind = EffectKind.Block, Amount = 4 };
         var listener = new CardRule { Trigger = new() { Event = RuleEvent.CardPlayed, Filter = new() { Cost = 0 } }, Effects = [new() { Kind = EffectKind.Block, Amount = 2 }] };
@@ -1026,6 +1032,50 @@ static class Smoke
         }
         card.DowngradeInternal();
         Console.WriteLine("PASS native Dexterity/Frail apply to direct block only, with matching executor/preview/upgrade/save properties");
+    }
+    private static void CheckNimbleBlockContracts(NeowGeneratedCard card, Player owner)
+    {
+        if (card.IsUpgraded) card.DowngradeInternal();
+        var hand = owner.PlayerCombatState!.Hand;
+        var playPile = PileType.Play.GetPile(owner);
+        hand.RemoveInternal(card);
+        var combat = owner.Creature.CombatState!;
+        var fillers = Enumerable.Range(0, 3).Select(_ => combat.CreateCard<MegaCrit.Sts2.Core.Models.Cards.DefendIronclad>(owner)).ToArray();
+        foreach (var filler in fillers) hand.AddInternal(filler);
+        card.EnchantInternal(ModelDb.Enchantment<MegaCrit.Sts2.Core.Models.Enchantments.Nimble>().ToMutable(), 2);
+        int originalBlock = owner.Creature.Block;
+        foreach (bool formula in new[] { false, true })
+        {
+            NumberExpression amount = formula ? new NumberExpression { Mul = [new() { Stat = "hand_size" }, 3] } : 5;
+            var block = new CardEffect { Kind = EffectKind.Block, Amount = amount };
+            var discard = new CardEffect { Kind = EffectKind.Discard, Target = new() { Pile = CardPileName.Hand, Pick = SelectionMode.All } };
+            var form = new CardForm { Cost = new() { Energy = 1 }, Effects = formula ? [block, discard] : [block] };
+            card.DefinitionPayload = Wire.Encode(new CardDefinition { Name = "断尾求生", Type = ForgeCardType.Skill, Rarity = ForgeRarity.Uncommon, Forms = [form, form] });
+            int expected = formula ? 3 * hand.Cards.Count + 2 : 7;
+            card.UpdateDynamicVarPreview(CardPreviewMode.Normal, null, card.DynamicVars);
+            string deckText = card.GetDescriptionForPile(PileType.Deck);
+            Check(deckText == (formula ? "获得等量于(你的手牌数 × 3)的格挡。\n丢弃你的手牌中的所有牌。" : "获得7点格挡。"));
+
+            hand.AddInternal(card);
+            card.UpdateDynamicVarPreview(CardPreviewMode.Normal, null, card.DynamicVars);
+            string handText = card.GetDescriptionForPile(PileType.Hand);
+            Check(card.DynamicVars["E0"].PreviewValue == expected);
+            Check(handText == (formula ? $"{deckText}\n（获得[green]{expected}[/green]点格挡）" : deckText));
+
+            hand.RemoveInternal(card);
+            playPile.AddInternal(card);
+            var play = new CardPlay { Card = card, Player = owner, Target = null, IsAutoPlay = false,
+                Resources = new() { EnergySpent = 1, EnergyValue = 1, StarsSpent = 0, StarValue = 0 }, ResultPile = PileType.Discard, PlayIndex = 0, PlayCount = 1 };
+            int before = owner.Creature.Block;
+            GeneratedEffectExecutor.ExecuteGroup(new(card, new BlockingPlayerChoiceContext(), play), [block], 0).GetAwaiter().GetResult();
+            Check(owner.Creature.Block - before == expected);
+            playPile.RemoveInternal(card);
+        }
+        owner.Creature.LoseBlockInternal(owner.Creature.Block - originalBlock);
+        card.ClearEnchantmentInternal();
+        foreach (var filler in fillers) hand.RemoveInternal(filler);
+        hand.AddInternal(card);
+        Console.WriteLine("PASS Nimble adds two block once in deck previews, hand previews and execution; calculated block retains its formula");
     }
     private static void CheckCreatedCardPreviewContracts(Player owner, CombatState combat)
     {
